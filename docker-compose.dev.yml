@@ -1,0 +1,60 @@
+# raph-vision/docker-compose.dev.yml
+# Usage: docker compose -f docker-compose.dev.yml --env-file .env.dev up
+name: raph-vision
+
+services:
+  backend:
+    build:
+      context: backend
+      dockerfile: Dockerfile.dev
+    container_name: raph-vision-backend-${CONTAINER_SUFFIX:-dev}
+    network_mode: host
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ${DATA_DIR:-/tmp/raph_vision_data}:/data
+    environment:
+      - DATABASE_URL=postgresql://raph:raph123@localhost:${POSTGRES_PORT:-9432}/raph_vision_dev
+      - REDIS_URL=redis://localhost:${REDIS_PORT:-9379}
+      - REDIS_HOST=localhost
+      - REDIS_PORT=${REDIS_PORT:-9379}
+      - PYTHONPATH=/app
+      - ENV=development
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    command: >
+      bash -c "alembic upgrade head &&
+              python3 -m debugpy --listen 0.0.0.0:${DEBUGPY_PORT:-9679}
+              -m uvicorn app.main:app --host 0.0.0.0 --port ${BACKEND_PORT:-9001} --reload"
+  db:
+    image: postgres:15-alpine
+    container_name: raph-vision-postgres-${CONTAINER_SUFFIX:-dev}
+    environment:
+      - POSTGRES_USER=raph
+      - POSTGRES_PASSWORD=raph123
+      - POSTGRES_DB=raph_vision_dev
+    ports:
+      - "${POSTGRES_PORT:-9432}:5432" # different from GCM 5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U raph" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: raph-vision-redis-${CONTAINER_SUFFIX:-dev}
+    ports:
+      - "${REDIS_PORT:-9379}:6379" # different from GCM 6379
+    restart: unless-stopped
+
+volumes:
+  pgdata:

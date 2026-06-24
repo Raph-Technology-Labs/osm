@@ -1,0 +1,53 @@
+# raph-vision/backend/Dockerfile.dev
+FROM ubuntu:22.04
+
+WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3-pip \
+    python3.11-dev \
+    libgl1 \
+    libglib2.0-0 \
+    libpq-dev \
+    curl \
+    unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3.11 /usr/bin/python
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt debugpy
+
+# Arena API — only installed when INSTALL_ARENA=true
+ARG INSTALL_ARENA=false
+COPY . /build_context/
+RUN if [ "$INSTALL_ARENA" = "true" ]; then \
+    unzip /build_context/arena_api-2.7.1-py3-none-any.zip \
+    -d /tmp/arena_api && \
+    pip install /tmp/arena_api/arena_api-2.7.1-py3-none-any.whl && \
+    echo "Arena API installed"; \
+    else \
+    echo "Skipping Arena API (dev mode)"; \
+    fi
+
+# Arena SDK linker config
+RUN echo '/opt/arena_sdk/ArenaSDK_Linux_x64/lib64' \
+    > /etc/ld.so.conf.d/Arena_SDK.conf && \
+    echo '/opt/arena_sdk/ArenaSDK_Linux_x64/GenICam/library/lib/Linux64_x64' \
+    >> /etc/ld.so.conf.d/Arena_SDK.conf && \
+    echo '/opt/arena_sdk/ArenaSDK_Linux_x64/ffmpeg' \
+    >> /etc/ld.so.conf.d/Arena_SDK.conf
+
+# copy project files
+# note: app/ and alembic/ are volume mounted in dev
+# these COPY lines are fallback so image builds without mounts
+COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
+
+EXPOSE 8001
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]

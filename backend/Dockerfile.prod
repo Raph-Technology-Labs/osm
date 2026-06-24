@@ -1,0 +1,48 @@
+# raph-vision/backend/Dockerfile.prod
+FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
+
+WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3-pip \
+    python3.11-dev \
+    libgl1 \
+    libglib2.0-0 \
+    libpq-dev \
+    curl \
+    unzip \
+    libibverbs1 \
+    librdmacm1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3.11 /usr/bin/python
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Arena API — always installed in prod
+COPY arena_api-2.7.1-py3-none-any.zip /tmp/
+RUN unzip /tmp/arena_api-2.7.1-py3-none-any.zip -d /tmp/arena_api && \
+    pip install /tmp/arena_api/arena_api-2.7.1-py3-none-any.whl && \
+    rm -rf /tmp/arena_api /tmp/arena_api-2.7.1-py3-none-any.zip
+
+# Arena SDK linker config
+RUN echo '/opt/arena_sdk/ArenaSDK_Linux_x64/lib64' \
+    > /etc/ld.so.conf.d/Arena_SDK.conf && \
+    echo '/opt/arena_sdk/ArenaSDK_Linux_x64/GenICam/library/lib/Linux64_x64' \
+    >> /etc/ld.so.conf.d/Arena_SDK.conf && \
+    echo '/opt/arena_sdk/ArenaSDK_Linux_x64/ffmpeg' \
+    >> /etc/ld.so.conf.d/Arena_SDK.conf && \
+    echo '/opt/arena_sdk/ArenaSDK_Linux_x64/Metavision/lib' \
+    >> /etc/ld.so.conf.d/Arena_SDK.conf
+
+COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
+
+EXPOSE 8001
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]

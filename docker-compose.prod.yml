@@ -1,0 +1,60 @@
+# raph-vision/docker-compose.prod.yml
+# Usage: docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+name: raph-vision
+
+services:
+  backend:
+    build:
+      context: backend
+      dockerfile: Dockerfile.prod
+    image: raph-vision-backend:prod
+    container_name: raph-vision-backend-prod
+    network_mode: host
+    stdin_open: true
+    tty: true
+    runtime: nvidia
+    volumes:
+      - /opt/arena-sdk:/opt/arena_sdk
+      - ${DATA_DIR:-/opt/raph/raph-vision/data}:/data
+      - /home/thor/snehal/raph-vision/backend/app/config/machine_config.yaml:/app/app/config/machine_config.yaml:ro
+    environment:
+      - DATABASE_URL=postgresql://raph:raph123@localhost:${POSTGRES_PORT:-9432}/raph_vision
+      - REDIS_URL=redis://localhost:${REDIS_PORT:-9379}
+      - REDIS_HOST=localhost
+      - PYTHONPATH=/app
+      - ENV=production
+      - LD_LIBRARY_PATH=/opt/arena_sdk/ArenaSDK_Linux_x64/lib64:/opt/arena_sdk/ArenaSDK_Linux_x64/GenICam/library/lib/Linux64_x64:/opt/arena_sdk/ArenaSDK_Linux_x64/ffmpeg:/opt/arena_sdk/ArenaSDK_Linux_x64/Metavision/lib
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    command: >
+      bash -c "ldconfig && alembic upgrade head &&
+               uvicorn app.main:app --host 0.0.0.0 --port ${BACKEND_PORT:-9001}"
+
+  db:
+    image: postgres:15-alpine
+    container_name: raph-vision-postgres-prod
+    network_mode: host
+    environment:
+      - POSTGRES_USER=raph
+      - POSTGRES_PASSWORD=raph123
+      - POSTGRES_DB=raph_vision
+    volumes:
+      - ${DATA_DIR:-/opt/raph/raph-vision/data}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U raph" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: raph-vision-redis-prod
+    network_mode: host
+    restart: unless-stopped

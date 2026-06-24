@@ -197,20 +197,26 @@ class PartDefect(Base):
         Integer,
         ForeignKey("company_sessions.id", ondelete="CASCADE")
     )
-
     part_id = Column(
         Integer,
         ForeignKey("parts.part_id", ondelete="CASCADE")
     )
 
-    thread_missing = Column(Integer, default=0)
-    dent = Column(Integer, default=0)
-    scratch = Column(Integer, default=0)
-    rust = Column(Integer, default=0)
+    # config-driven — any defects from machine_config.yaml land here
+    # e.g. {"rust": 3, "scratch": 1, "crack": 0, "thread_missing": 2}
+    defects_data = Column(JSON, nullable=False, default=dict)
+
+    # which camera captured this
+    cam_id = Column(String(50))          # "cam1", "cam2"
+    trigger_id = Column(String(50))      # "trigger1"
+
+    # overall result for this inspection
+    part_ok = Column(Boolean, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     session = relationship("CompanySession", back_populates="defects")
     part = relationship("Part", back_populates="defects")
-
 
 # ==========================================================
 # SCM → MASTER MEASUREMENT CONFIG (= Master / expected values (what the part should be)
