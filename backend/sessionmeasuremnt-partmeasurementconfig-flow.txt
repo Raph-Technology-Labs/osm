@@ -1,0 +1,116 @@
+That table is for live measurement results during a session.
+
+Think of it like this:
+
+part_measurement_configs
+
+= Master / expected values (what the part should be)
+
+Example:
+
+{
+  "length": 25.0,
+  "width": 10.0,
+  "angle": 90,
+  "diameter": 15.5
+}
+
+Stored once per part.
+
+session_measurements
+
+= Actual measured values from machine during runtime (what the machine detected)
+
+Example:
+
+Session 101:
+
+{
+  "length": 24.8,
+  "width": 10.1,
+  "angle": 89.7,
+  "diameter": 15.4
+}
+
+Status:
+
+OK
+
+or
+
+NOK
+
+Flow:
+
+Part created
+   ↓
+Store expected dimensions
+(part_measurement_configs)
+
+Session starts
+   ↓
+Machine measures live values
+   ↓
+Store every measured result
+(session_measurements)
+   ↓
+Compare with master config
+   ↓
+Mark OK / NOK
+
+Example:
+
+If part is:
+
+Bolt A
+Expected length = 50mm
+Expected width = 20mm
+
+Run session:
+
+Machine checks:
+
+Piece 1:
+
+Length = 50.1
+Width = 20.0
+Status = OK
+
+Piece 2:
+
+Length = 49.2
+Width = 19.5
+Status = NOK
+
+These go into session_measurements.
+
+Why separate table?
+
+Because one session can have many measured pieces.
+
+Example:
+
+Session 1:
+
+Part count = 5000
+Measurements = 5000 rows
+
+If stored inside company_sessions, it becomes messy.
+
+Better:
+
+company_sessions → 1 row
+session_measurements → many rows
+
+Relation:
+
+company_sessions (1)
+      |
+      |----< session_measurements (many)
+
+So in short:
+
+company_sessions = session summary
+session_measurements = detailed measurement logs
+
+If your machine only stores one final measurement summary per session (not every piece), then this table is not needed and you can keep measurement JSON directly inside company_sessions. That depends on your actual SCM flow.
