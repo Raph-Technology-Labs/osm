@@ -1,271 +1,294 @@
+# backend/app/models/models.py
+import hashlib
+from typing import Optional
+
 from sqlalchemy import (
-    Column,
-    Integer,
-    String,
-    Text,
-    ForeignKey,
-    Boolean,
-    DateTime,
-    CheckConstraint,
-    Float,
-    JSON,
-    LargeBinary
+    Boolean, CheckConstraint, Column, DateTime,
+    Float, ForeignKey, Integer, JSON,
+    LargeBinary, String, Text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.sql import func
+
+from app.db.db import SessionLocal
 
 
 class Base(DeclarativeBase):
     pass
 
 
-# ==========================================================
+# ─────────────────────────────────────────────────────────────────
 # USERS
-# ==========================================================
+# ─────────────────────────────────────────────────────────────────
+
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(Text, nullable=False)
-    username = Column(Text, unique=True, nullable=False)
+    id            = Column(Integer, primary_key=True, index=True)
+    name          = Column(Text, nullable=False)
+    username      = Column(Text, unique=True, nullable=False)
     password_hash = Column(Text, nullable=False)
-    role = Column(Text, nullable=False)
+    role          = Column(Text, nullable=False)
+    # operator | administrator | superadministrator
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
-    parts = relationship("Part", back_populates="creator")
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('operator','administrator','superadministrator')",
+            name="ck_users_role",
+        ),
+    )
+
+    parts        = relationship("Part", back_populates="creator")
+    part_configs = relationship("PartConfig", back_populates="created_by_user")
+
+    @staticmethod
+    def _hash(password: str) -> str:
+        return hashlib.sha256(password.encode()).hexdigest()
+
+    @staticmethod
+    def can_login(username: str, password: str) -> Optional[dict]:
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.username == username).first()
+            if user and User._hash(password) == user.password_hash:
+                return {
+                    "message":   "Login successful",
+                    "role":      user.role,
+                    "user_id":   user.id,
+                    "user_name": user.name,
+                }
+            return None
+        finally:
+            db.close()
 
 
-# ==========================================================
+# ─────────────────────────────────────────────────────────────────
 # CATEGORIES
-# ==========================================================
+# ─────────────────────────────────────────────────────────────────
+
 class Category(Base):
     __tablename__ = "categories"
 
-    category_id = Column(Integer, primary_key=True, index=True)
+    category_id   = Column(Integer, primary_key=True, index=True)
     category_name = Column(Text, unique=True, nullable=False)
 
     parts = relationship("Part", back_populates="category")
 
 
-# ==========================================================
-# PARTS (UNCHANGED)
-# ==========================================================
+# ─────────────────────────────────────────────────────────────────
+# PARTS
+#
+# defects (JSON) — per-part defect thresholds:
+#   {
+#     "rust":    { "conf_thresh": 0.70, "severity": "critical", "notes": "" },
+#     "crack":   { "conf_thresh": 0.65, "severity": "critical", "notes": "" },
+#     "scratch": { "conf_thresh": 0.90, "severity": "minor",    "notes": "" }
+#   }
+#
+# dimensions (JSON) — per-parameter nominal + tolerance:
+#   {
+#     "diameter_mm": {
+#       "nominal": 25.0, "upper_limit": 26.0, "lower_limit": 24.0,
+#       "unit": "mm", "notes": "shank diameter"
+#     },
+#     "length_mm": { ... }
+#   }
+#
+# Pipeline config lives in PartConfig (versioned yaml), not here.
+# active_config_id → points to currently active PartConfig.
+# ─────────────────────────────────────────────────────────────────
+
 class Part(Base):
     __tablename__ = "parts"
 
-    part_id = Column(Integer, primary_key=True, index=True)
-    part_code = Column(String(50), unique=True, nullable=False)
-    part_name = Column(Text, nullable=False)
+    part_id     = Column(Integer, primary_key=True, index=True)
+    part_code   = Column(String(50), unique=True, nullable=False)
+    part_name   = Column(Text, nullable=False)
+    category_id = Column(Integer, ForeignKey("categories.category_id"), nullable=True)
+    created_by  = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    image       = Column(LargeBinary, nullable=True)
+    part_weight = Column(Float, nullable=True)
+    notes       = Column(Text, nullable=True)
 
-    category_id = Column(Integer, ForeignKey("categories.category_id"))
-    created_by = Column(Integer, ForeignKey("users.id"))
+    # ── Defect parameters ──────────────────────────────────────────
+    # { class_name: { conf_thresh, severity, notes } }
+    defects     = Column(JSON, nullable=True)
 
-    parts_metadata = Column(Text)
+    # ── Measurement parameters ─────────────────────────────────────
+    # { param_name: { nominal, upper_limit, lower_limit, unit, notes } }
+    dimensions  = Column(JSON, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # ── Pipeline flags (set when PartConfig saved) ─────────────────
+    has_defect_pipeline      = Column(Boolean, default=False, nullable=False)
+    has_measurement_pipeline = Column(Boolean, default=False, nullable=False)
 
-    image = Column(LargeBinary)
-
-    part_weight = Column(Float)
-    part_height = Column(Float)
-    part_width = Column(Float)
-    part_diameter = Column(Float)
-
-    plc_speed_factor_feeder1 = Column(Float, server_default="1.0")
-    plc_speed_factor_feeder2 = Column(Float, server_default="1.0")
-    plc_speed_factor_hopper = Column(Float, server_default="1.0")
-    plc_gate_hopper_opening_factor = Column(Float, server_default="1.0")
-
-    plain_primary = Column(Float, server_default="1.0")
-    plain_secondary = Column(Float, server_default="1.0")
-    corrugated_primary = Column(Float, server_default="1.0")
-    corrugated_secondary = Column(Float, server_default="1.0")
-
-    category = relationship("Category", back_populates="parts")
-    creator = relationship("User", back_populates="parts")
-    sessions = relationship("CompanySession", back_populates="part")
-
-    operation_modes = relationship("PartOperationMode", back_populates="part")
-    defects = relationship("PartDefect", back_populates="part")
-    measurement_configs = relationship(
-        "PartMeasurementConfig",
-        back_populates="part"
-    )
-
-
-# ==========================================================
-# COMPANY SESSIONS (UNCHANGED)
-# ==========================================================
-class CompanySession(Base):
-    __tablename__ = "company_sessions"
-
-    id = Column(Integer, primary_key=True, index=True)
-
-    part_id = Column(Integer, ForeignKey("parts.part_id"))
-    part_code = Column(String(50), nullable=False)
-    part_name = Column(Text, nullable=False)
-
-    mode = Column(Text, nullable=False)
-    batching_mode = Column(Text, nullable=False, server_default="auto")
-
-    no_of_batches = Column(Integer)
-    batch_delay = Column(Integer)
-    number_of_parts_per_batches = Column(Integer)
-
-    part_count = Column(Integer, nullable=False)
-    batch_counts = Column(JSON)
-
-    parts_per_minute = Column(Integer)
-
-    session_start = Column(DateTime(timezone=True), server_default=func.now())
-    session_end = Column(DateTime(timezone=True))
-
-    notes = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    session_weight = Column(Float)
-    order_no = Column(String(50))
-
-    counting_type = Column(String(50))  # 'Conveyor' | 'GCM' | 'SCM' | 'Batch' | 'Bulk' — only set when mode == 'Counting'
-
-    is_calibration = Column(Boolean, default=False)
-
-    calibration_expected_per_run = Column(Integer)
-    calibration_total_runs = Column(Integer)
-    calibration_runs = Column(JSON)
-
-    calibration_avg_count = Column(Float)
-    calibration_avg_accuracy = Column(Float)
-
-    calibration_passed = Column(Boolean)
-
-    calibration_completed_at = Column(DateTime(timezone=True))
-
-    part = relationship("Part", back_populates="sessions")
-
-    defects = relationship("PartDefect", back_populates="session")
-    measurements = relationship(
-        "SessionMeasurement",
-        back_populates="session"
-    )
-
-
-# ==========================================================
-# SCM → PART OPERATION MODES
-# ==========================================================
-class PartOperationMode(Base):
-    __tablename__ = "part_operation_modes"
-
-    id = Column(Integer, primary_key=True)
-
-    part_id = Column(
+    # ── Active config pointer ──────────────────────────────────────
+    active_config_id = Column(
         Integer,
-        ForeignKey("parts.part_id", ondelete="CASCADE"),
-        nullable=False
+        ForeignKey("part_configs.id", use_alter=True, name="fk_parts_active_config"),
+        nullable=True,
     )
 
-    mode_of_operation = Column(String(100), nullable=False)
-
-    created_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now()
+    category      = relationship("Category", back_populates="parts")
+    creator       = relationship("User", back_populates="parts")
+    configs       = relationship(
+        "PartConfig", back_populates="part", foreign_keys="PartConfig.part_id"
     )
+    active_config = relationship(
+        "PartConfig", foreign_keys=[active_config_id], uselist=False
+    )
+    sessions      = relationship("PartSession", back_populates="part")
+
+
+# ─────────────────────────────────────────────────────────────────
+# PART CONFIG — versioned pipeline config per part
+#
+# Each save from pipeline builder → new version row.
+# Only one is_active=True per part at a time.
+# config_yaml → full yaml stored as string (source of truth).
+# config_path → /configs/{part_code}.yaml (written to disk).
+# ─────────────────────────────────────────────────────────────────
+
+class PartConfig(Base):
+    __tablename__ = "part_configs"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    part_id     = Column(Integer, ForeignKey("parts.part_id"), nullable=False)
+    version     = Column(Integer, nullable=False, default=1)
+    config_yaml = Column(Text, nullable=False)
+    config_path = Column(Text, nullable=False)
+    is_active   = Column(Boolean, default=True, nullable=False)
+    created_by  = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    notes       = Column(Text, nullable=True)
+
+    part             = relationship("Part", back_populates="configs", foreign_keys=[part_id])
+    created_by_user  = relationship("User", back_populates="part_configs")
+    sessions         = relationship("PartSession", back_populates="part_config")
+
+
+# ─────────────────────────────────────────────────────────────────
+# PART SESSION — one production run
+#
+# Links to exact PartConfig version active at session start.
+# Counters (total_fired, total_passed, total_failed) updated
+# incrementally after each trigger fire — avoids COUNT() queries.
+# ─────────────────────────────────────────────────────────────────
+
+class PartSession(Base):
+    __tablename__ = "part_sessions"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    part_id        = Column(Integer, ForeignKey("parts.part_id"), nullable=False)
+    part_config_id = Column(Integer, ForeignKey("part_configs.id"), nullable=False)
+
+    # Denormalized for fast reads
+    part_code      = Column(String(50), nullable=False)
+    part_name      = Column(Text, nullable=False)
+
+    trigger_id     = Column(String(50), nullable=False, default="trig1")
+    trigger_type   = Column(Text, nullable=False, default="inspection")
+    # inspection | counting
+    trigger_source = Column(Text, nullable=False, default="simulation")
+    # simulation | plc | ui_button
+
+    order_no       = Column(String(50), nullable=True)
+    target_count   = Column(Integer, nullable=True)
+    notes          = Column(Text, nullable=True)
+
+    # Live counters — incremented after each trigger fire
+    total_fired    = Column(Integer, default=0, nullable=False)
+    total_passed   = Column(Integer, default=0, nullable=False)
+    total_failed   = Column(Integer, default=0, nullable=False)
+
+    session_start  = Column(DateTime(timezone=True), server_default=func.now())
+    session_end    = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
-            "mode_of_operation IN ("
-            "'Counting', "
-            "'Defect Detection', "
-            "'Measurement', "
-            "'Measurement & Defect Detection'"
-            ")",
-            name="operation_mode_check"
+            "trigger_type IN ('inspection','counting')",
+            name="ck_session_trigger_type",
+        ),
+        CheckConstraint(
+            "trigger_source IN ('simulation','plc','ui_button')",
+            name="ck_session_trigger_source",
         ),
     )
 
-    part = relationship("Part", back_populates="operation_modes")
+    part        = relationship("Part", back_populates="sessions")
+    part_config = relationship("PartConfig", back_populates="sessions")
+    results     = relationship("SessionResult", back_populates="session")
 
 
-# ==========================================================
-# SCM → DEFECT TABLE
-# ==========================================================
-class PartDefect(Base):
-    __tablename__ = "part_defects"
+# ─────────────────────────────────────────────────────────────────
+# SESSION RESULT — one row per trigger fire
+#
+# trigger_fire_no → sequential within session (1, 2, 3 …)
+# overall_passed  → aggregated across all cameras in trigger
+# ─────────────────────────────────────────────────────────────────
 
-    id = Column(Integer, primary_key=True)
+class SessionResult(Base):
+    __tablename__ = "session_results"
 
-    session_id = Column(
-        Integer,
-        ForeignKey("company_sessions.id", ondelete="CASCADE")
-    )
-    part_id = Column(
-        Integer,
-        ForeignKey("parts.part_id", ondelete="CASCADE")
-    )
+    id              = Column(Integer, primary_key=True, index=True)
+    session_id      = Column(Integer, ForeignKey("part_sessions.id"), nullable=False)
+    trigger_fire_no = Column(Integer, nullable=False)
+    fired_at        = Column(DateTime(timezone=True), server_default=func.now())
+    overall_passed  = Column(Boolean, nullable=True)
+    plc_written     = Column(Boolean, default=False, nullable=False)
 
-    # config-driven — any defects from machine_config.yaml land here
-    # e.g. {"rust": 3, "scratch": 1, "crack": 0, "thread_missing": 2}
-    defects_data = Column(JSON, nullable=False, default=dict)
-
-    # which camera captured this
-    cam_id = Column(String(50))          # "cam1", "cam2"
-    trigger_id = Column(String(50))      # "trigger1"
-
-    # overall result for this inspection
-    part_ok = Column(Boolean, nullable=False)
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    session = relationship("CompanySession", back_populates="defects")
-    part = relationship("Part", back_populates="defects")
-
-# ==========================================================
-# SCM → MASTER MEASUREMENT CONFIG (= Master / expected values (what the part should be)
-# ==========================================================
-class PartMeasurementConfig(Base):
-    __tablename__ = "part_measurement_configs"
-
-    id = Column(Integer, primary_key=True)
-
-    part_id = Column(
-        Integer,
-        ForeignKey("parts.part_id", ondelete="CASCADE")
-    )
-
-    actual_measurement_data = Column(JSON)
-
-    created_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now()
-    )
-
-    part = relationship("Part", back_populates="measurement_configs")
+    session        = relationship("PartSession", back_populates="results")
+    camera_results = relationship("CameraResult", back_populates="session_result")
 
 
-# ==========================================================
-# SCM → SESSION LIVE MEASUREMENTS (= Actual measured values from machine during runtime (what the machine detected)
-# ==========================================================
-class SessionMeasurement(Base):
-    __tablename__ = "session_measurements"
+# ─────────────────────────────────────────────────────────────────
+# CAMERA RESULT — one row per camera per trigger fire
+#
+# detection_bbox (JSON):
+#   { x1, y1, x2, y2, confidence, class_name }
+#   from object_detection step — null if no obj_detection in pipeline
+#
+# all_detections (JSON):
+#   [ { class_name, confidence, bbox: [x1,y1,x2,y2] }, ... ]
+#   from defect_detection step
+#
+# measurement_data (JSON):
+#   {
+#     "diameter_mm": {
+#       "nominal": 25.0, "upper_limit": 26.0, "lower_limit": 24.0,
+#       "measured": 25.3, "deviation": 0.3, "passed": true, "unit": "mm"
+#     },
+#     "length_mm": { ... }
+#   }
+#   calibration_factor applied per-parameter before comparison
+# ─────────────────────────────────────────────────────────────────
 
-    id = Column(Integer, primary_key=True)
+class CameraResult(Base):
+    __tablename__ = "camera_results"
 
-    session_id = Column(
-        Integer,
-        ForeignKey("company_sessions.id", ondelete="CASCADE")
-    )
+    id                = Column(Integer, primary_key=True, index=True)
+    session_result_id = Column(Integer, ForeignKey("session_results.id"), nullable=False)
+    camera_id         = Column(String(50), nullable=False)
+    pipeline_name     = Column(String(50), nullable=False, default="pipeline1")
+    captured_at       = Column(DateTime(timezone=True), server_default=func.now())
 
-    measured_realtime_data = Column(JSON)
+    # Object detection step output
+    detection_bbox    = Column(JSON, nullable=True)
 
-    overall_status = Column(
-        String(20),
-        CheckConstraint(
-            "overall_status IN ('OK', 'NOK')"
-        )
-    )
+    # Defect detection step output
+    is_defective      = Column(Boolean, nullable=True)
+    defect_label      = Column(Text, nullable=True)
+    defect_confidence = Column(Float, nullable=True)
+    all_detections    = Column(JSON, nullable=True)
 
-    created_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now()
-    )
+    # Measurement step output
+    measurement_data   = Column(JSON, nullable=True)
+    measurement_passed = Column(Boolean, nullable=True)
 
-    session = relationship("CompanySession", back_populates="measurements")
+    # Overall camera result
+    camera_passed    = Column(Boolean, nullable=True)
+    annotated_image  = Column(LargeBinary, nullable=True)
+
+    session_result = relationship("SessionResult", back_populates="camera_results")
