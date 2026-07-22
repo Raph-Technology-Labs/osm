@@ -1,19 +1,11 @@
-# ─────────────────────────────────────────────────────────────────
-# machine_config.yaml — raph-vision
-# Generated per part. Saved at /configs/{part_code}.yaml
-# ─────────────────────────────────────────────────────────────────
-
 machine:
   part_code: bolt_m8
   part_name: "Bolt M8 x 1.25"
 
-# ─────────────────────────────────────────────────────────────────
-# SHARED INFRA
-# ─────────────────────────────────────────────────────────────────
-
 plc:
   ip: "192.168.6.41"
   port: 502
+  vendor: siemens
   sim:
     enabled: true
     host: "localhost"
@@ -29,156 +21,87 @@ redis:
     result: "rv_inspection_result"
     trigger: "rv_trigger_event"
 
-# ─────────────────────────────────────────────────────────────────
-# TRIGGERS
-#
-# type: inspection  → triggered mode (defect / measurement / both)
-# type: counting    → continuous stream mode
-#
-# EXECUTION RULES (derived from allowed_cameras overlap):
-#   cam in defect.allowed_cameras ∩ measurement.allowed_cameras
-#     → CMD (serial): defect first → bbox/crop reused by measurement
-#   cam in defect.allowed_cameras only     → parallel
-#   cam in measurement.allowed_cameras only → parallel
-#
-# object_detection (nested inside defect / measurement):
-#   present → locate object first, crop bbox, run block on crop
-#   absent  → run block on full ROI frame
-#   CMD camera → obj_detect result shared, NOT run twice
-#
-# calibration_factor is per-parameter (not global per camera)
-#   because different dimensions may need different scale factors
-# ─────────────────────────────────────────────────────────────────
+part_aggregation:
+  pass_if: all_triggers_pass
+  result_write:
+    part_id_reg: 100
+    result_reg: 101
+    ack_reg: 102
 
 triggers:
 
-  # ── Trigger 1 — Station 1 ──────────────────────────────────────
-  # cam1 → CMD (defect + measurement, serial)
-  # cam2 → defect only (parallel)
-  # cam3, cam4 → registered, not used in this pipeline
-  # ───────────────────────────────────────────────────────────────
   - id: trig1
     name: "Station 1 - Surface + Dimension"
     type: inspection
+    is_last_trigger: false
 
     source:
-      type: simulation              # simulation | plc | ui_button
+      type: simulation
       sim_interval_ms: 3000
 
-    # PLC registers — only active when source.type: plc
     plc:
-      trigger_reg: 8                # PLC writes 1 to fire
-      ok_reg: 9                     # backend writes 1 on pass
-      nok_reg: 10                   # backend writes 1 on fail
-      rejection_reg: 11             # optional — energise reject gate
-      reset_reg: 12                 # optional
+      trigger_reg: 8
+      part_id_reg: 7
 
-    # Hardware registry — all cameras available on this trigger
     cameras:
       cam1:
         ip: "192.168.5.41"
         resolution: { x: 1920, y: 1080 }
         fps: 30
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
         sim:
           enabled: true
           image_path: "/data/sim/cam1.jpg"
-          # video_path: "/data/sim/cam1.mp4"
 
       cam2:
         ip: "192.168.5.42"
         resolution: { x: 1920, y: 1080 }
         fps: 30
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
         sim:
           enabled: true
           image_path: "/data/sim/cam2.jpg"
 
-      cam3:
-        ip: "192.168.5.43"
-        resolution: { x: 1920, y: 1080 }
-        fps: 30
-        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
-        sim:
-          enabled: false
-
-      cam4:
-        ip: "192.168.5.44"
-        resolution: { x: 1920, y: 1080 }
-        fps: 30
-        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
-        sim:
-          enabled: false
-
     pipeline:
 
-      # ── Defect block ──────────────────────────────────────────
+      # single model, one inference call — detects locator class(es) + defect class(es) together
       defect:
         model_path: "/models/defect_v1.pt"
-        model_type: yolo            # yolo | nanodet | onnx | tensorrt | torchvision
-        conf_thresh: 0.50           # global floor
-        classes:
-          rust:    0.70             # per-class conf threshold
-          crack:   0.65
-          scratch: 0.90
+        model_type: yolo
+        conf_thresh: 0.50
         allowed_cameras: [cam1, cam2]
-        allowed_classes: [rust, crack, scratch]
+        detect_classes: [bolt, rust, crack, scratch]   # everything this model outputs
+        allowed_defects: [rust, crack, scratch]        # ok/nok decided ONLY on these
 
-        # Object detection as locator (optional)
-        # present → find bolt bbox → crop → run defect on crop
-        # absent  → run defect on full ROI frame
-        object_detection:
-          classes:
-            bolt: 0.70
-            nut:  0.65
-          allowed_classes: [bolt, nut]
-
-      # ── Measurement block ─────────────────────────────────────
+      # no model_path -> reuses defect's raw detections, just filters allowed_classes
       measurement:
-        method: caliper             # caliper | contour | ellipse
-        allowed_cameras: [cam1]     # cam1 in both → CMD (serial)
-        allowed_classes: [bolt]     # measure bboxes of this class only
-
-        # Per-parameter calibration factor
-        # Different dimensions may need different scale factors
-        # (e.g. vertical vs horizontal px/mm may differ per lens)
+        allowed_cameras: [cam1]              # cam1 also in defect -> CMD (serial, same camera)
+        allowed_classes: [bolt]              # pull this class out of defect's detections
+        method: caliper
         parameters:
           diameter_mm:
-            calibration_factor: 10.5   # px per mm for this dimension
-          length_mm:
-            calibration_factor: 10.2   # may differ slightly
-          head_dia_mm:
             calibration_factor: 10.5
-
-        # Object detection locator (optional)
-        # CMD camera → bbox already in context from defect block
-        # obj_detection NOT run again — reuses defect's result
-        object_detection:
-          classes:
-            bolt: 0.70
-          allowed_classes: [bolt]
+          length_mm:
+            calibration_factor: 10.2
 
       result:
-        pass_if: all_cameras_pass   # all_cameras_pass | any_camera_pass
+        pass_if: all_cameras_pass
+        save_result: true
+        draw_result: true
 
-  # ── Trigger 2 — Station 2 ──────────────────────────────────────
-  # cam5 → measurement only (parallel)
-  # cam6 → defect only (parallel)
-  # no CMD cameras → both run in parallel
-  # ───────────────────────────────────────────────────────────────
   - id: trig2
     name: "Station 2 - Thread + Diameter Check"
     type: inspection
+    is_last_trigger: true
 
     source:
       type: plc
 
     plc:
       trigger_reg: 20
-      ok_reg: 21
-      nok_reg: 22
-      rejection_reg: 23
-      reset_reg: 24
+      part_id_reg: 19
 
     cameras:
       cam5:
@@ -186,6 +109,7 @@ triggers:
         resolution: { x: 1920, y: 1080 }
         fps: 30
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
         sim:
           enabled: true
           image_path: "/data/sim/cam5.jpg"
@@ -195,6 +119,7 @@ triggers:
         resolution: { x: 1920, y: 1080 }
         fps: 30
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
         sim:
           enabled: true
           video_path: "/data/sim/cam6.mp4"
@@ -205,88 +130,24 @@ triggers:
         model_path: "/models/defect_v2.pt"
         model_type: yolo
         conf_thresh: 0.55
-        classes:
-          dent: 0.60
-          rust: 0.70
         allowed_cameras: [cam6]
-        allowed_classes: [dent, rust]
+        detect_classes: [bolt, dent, rust]
+        allowed_defects: [dent, rust]
 
-        object_detection:
-          classes:
-            bolt: 0.65
-          allowed_classes: [bolt]
-
+      # different model than defect -> needs its own inference call
       measurement:
-        method: caliper
         allowed_cameras: [cam5]
         allowed_classes: [bolt]
-
+        model_path: "/models/bolt_locate.pt"   # explicit -> separate call, cam5 isn't in defect anyway
+        model_type: yolo
+        method: caliper
         parameters:
           diameter_mm:
             calibration_factor: 12.0
           head_dia_mm:
             calibration_factor: 11.8
 
-        object_detection:
-          classes:
-            bolt: 0.65
-          allowed_classes: [bolt]
-
       result:
         pass_if: all_cameras_pass
-
-  # ── Trigger 3 — Counting ───────────────────────────────────────
-  - id: trig3
-    name: "Station 3 - Part Counting"
-    type: counting
-    sub_mode: conveyor              # conveyor | gcm | scm | batch | bulk
-
-    source:
-      type: ui_button
-
-    plc:
-      start_stop: 6
-      count_out: 7
-      speeds:
-        feeder_primary:   4100
-        feeder_secondary: 4101
-        hopper: 0
-      switches:
-        feeder_primary:   4096
-        feeder_secondary: 4097
-        hopper: 3
-      errors:
-        feeder_primary:   17
-        feeder_secondary: 18
-        hopper: 10
-      hopper_gate: 13
-      hopper_gate_ack: 14
-
-    speeds:
-      feeder_primary:   { min: 30, max: 30 }
-      feeder_secondary: { min: 40, max: 40 }
-      hopper:           { min: 0,  max: 0  }
-
-    camera:
-      id: cam_count
-      ip: "192.168.5.41"
-      resolution: { x: 1920, y: 720 }
-      fps: 116
-      roi: { x1: 38, y1: 14, x2: 1920, y2: 720 }
-      sim:
-        enabled: true
-        video_path: "/data/sim/counting_feed.mp4"
-
-    pipeline:
-      model_path: "/models/counting.pt"
-      model_type: yolo
-      conf_thresh: 0.50
-      iou: 0.45
-      conveyor:
-        line_position: 400
-        counting_line_y: 300
-        max_missed: 5
-        min_movement: 5
-        fsm:
-          count_threshold: 20
-          count_threshold_last: 5
+        save_result: true
+        draw_result: true

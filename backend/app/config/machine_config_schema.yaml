@@ -1,0 +1,109 @@
+# ─────────────────────────────────────────────────────────────────
+# config_schema.yaml — raph-vision
+# REFERENCE ONLY — not loaded by the engine at runtime.
+# Actual config lives in DB: machine_configs, stations,
+# station_cameras, station_pipelines tables.
+# See app/config/config_loader.py::load_machine_config()
+# ─────────────────────────────────────────────────────────────────
+
+machine:
+  part_code: string          # FK to parts.part_code
+  part_name: string
+
+plc:                         # machine_configs.plc_infra (JSONB)
+  ip: string
+  port: integer
+  vendor: enum[siemens, delta]
+  sim:
+    enabled: boolean
+    host: string
+    port: integer
+
+zmq:                         # machine_configs.zmq_port
+  port: integer
+
+redis:                       # machine_configs.redis_config (JSONB)
+  host: string
+  port: integer
+  keys:
+    result: string
+    trigger: string
+
+part_aggregation:            # machine_configs.part_aggregation (JSONB)
+  pass_if: enum[all_stations_pass, any_station_pass]
+  result_write:
+    part_id_reg: integer
+    result_reg: integer      # 1 = ok, 0 = nok
+    ack_reg: integer
+
+stations:                    # stations table, one row per station
+  - id: string                        # station_code, e.g. "station1"
+    name: string
+    is_last_station: boolean          # triggers part_aggregation when true
+
+    source:
+      type: enum[simulation, plc, ui_button]
+      sim_interval_ms: integer        # only if type: simulation
+
+    plc:
+      trigger_reg: integer
+      part_id_reg: integer            # PLC writes part_id here, read with trigger
+
+    cameras:                          # station_cameras table, FK station_id
+      <camera_code>:
+        ip: string
+        resolution: { x: integer, y: integer }
+        fps: integer
+        roi: { x1: integer, y1: integer, x2: integer, y2: integer }
+        capture_mode: enum[single_shot, burst]
+        burst:                        # only if capture_mode: burst
+          stop_condition: enum[duration_ms, pulse_count, plc_stop_reg]
+          duration_ms: integer
+          max_frames: integer
+          frame_interval_ms: integer
+          pulse_reg: integer          # only if stop_condition: pulse_count
+          plc_stop_reg: integer       # only if stop_condition: plc_stop_reg
+          frame_select: enum[all_frames, best_frame]
+        sim:
+          enabled: boolean
+          image_path: string          # for static single_shot sim
+          video_path: string          # for burst / continuous sim
+
+    pipeline:                         # station_pipelines table, FK station_id (1:1)
+      defect:                         # nullable — station_pipelines.defect_config (JSONB)
+        model_path: string
+        model_type: enum[yolo, nanodet, onnx, tensorrt, torchvision, sam3]
+        conf_thresh: float            # global floor, used if class not resolved
+        classes: [string]             # names only — conf_thresh resolved from parts.defects
+        allowed_cameras: [string]
+        allowed_classes: [string]
+        object_detection:             # optional locator sub-step
+          classes: [string]
+          allowed_classes: [string]
+
+      measurement:                    # nullable — station_pipelines.measurement_config (JSONB)
+        method: enum[caliper, contour, ellipse]
+        allowed_cameras: [string]
+        allowed_classes: [string]
+        parameters:
+          <param_name>:
+            calibration_factor: float   # camera-specific, DB-stored here only
+            # nominal_value / upper_limit / lower_limit / unit
+            # resolved from parts.dimensions at load time — not stored here
+        object_detection:
+          classes: [string]
+          allowed_classes: [string]
+
+      result:                         # station_pipelines flat columns
+        pass_if: enum[all_cameras_pass, any_camera_pass]
+        save_result: boolean
+        draw_result: boolean
+
+# ─────────────────────────────────────────────────────────────────
+# Resolved externally at session-start (app/config/config_loader.py):
+#   parts.defects[class_name].conf_thresh    -> defect.resolved_classes
+#   parts.dimensions[param_name].nominal_value -> measurement.parameters[param].nominal_value
+#   parts.dimensions[param_name].upper_limit   -> measurement.parameters[param].upper_limit
+#   parts.dimensions[param_name].lower_limit   -> measurement.parameters[param].lower_limit
+#   parts.dimensions[param_name].unit          -> measurement.parameters[param].unit
+# ─────────────────────────────────────────────────────────────────
