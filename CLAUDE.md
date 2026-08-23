@@ -26,11 +26,11 @@ twin view), and a FastAPI backend serving all of it.
 
 Three roles, each strictly additive in privilege (Operator ⊂ Admin ⊂ Super Admin):
 
-| Role | Who | Can do |
-|---|---|---|
-| Super Admin | Raph developers | Edit config, create recipes, add/delete parts |
-| Admin | Client engineers | Add/delete parts |
-| Operator | Machine operators | Select part, start/view sessions only |
+| Role        | Who               | Can do                                        |
+| ----------- | ----------------- | --------------------------------------------- |
+| Super Admin | Raph developers   | Edit config, create recipes, add/delete parts |
+| Admin       | Client engineers  | Add/delete parts                              |
+| Operator    | Machine operators | Select part, start/view sessions only         |
 
 Role checks belong in the backend (route-level authorization), never
 enforced only in the frontend. More roles/permissions will be added later —
@@ -62,7 +62,7 @@ design the permission model to extend, not to be rewritten.
    separate shape
 8. **Technical Support** — static Raph contact/support info (content pending)
 9. **Digital Twin** — real-time visual of current indexer state (reference
-   HTML to be provided) — this is a *view* onto `IndexerSlotTracker`'s live
+   HTML to be provided) — this is a _view_ onto `IndexerSlotTracker`'s live
    state, not a separate tracking implementation
 
 Every page: Raph logo placed consistently, footer with rights message +
@@ -84,7 +84,7 @@ tagline (content pending).
   never read back
 - `frontend/` — React, pages per Section 3
 
-*(Adjust paths above to match the actual repo once code lands.)*
+_(Adjust paths above to match the actual repo once code lands.)_
 
 ## 5. Code Style
 
@@ -106,7 +106,7 @@ tagline (content pending).
   3. **Live camera feed: ZMQ direct to Electron's main process, drop-old
      semantics, not a queue.** Backend `PUB`s at full pipeline rate; Electron
      main `SUB`s directly (no WebSocket, no HTTP — see Section 9 for why).
-     Hold only the *latest* frame per camera and overwrite as new ones
+     Hold only the _latest_ frame per camera and overwrite as new ones
      arrive — never queue a backlog to "catch up." A live preview is
      CCTV-style: dropping frames under load is correct behavior, not a bug.
      Non-real-time pages (Dashboard, reports, config) can use plain REST
@@ -117,6 +117,7 @@ tagline (content pending).
   for GPU inference (GPU/OpenCV release the GIL) is the right shape. This is
   not a case for reaching past Python/FastAPI — the risk at 900 PPM is
   orchestration overhead, not raw inference throughput.
+
 - Prefer O(1) lookups (dict/set) over scanning, generators over building
   large lists in the hot path, and keep the vision pipeline's hot path free
   of anything that isn't either numpy/OpenCV/PyTorch vectorized C or
@@ -135,25 +136,27 @@ These extend the existing schema (already covers `stations`, `pipeline`,
 
 ```yaml
 ui:
-  barcode_present: true          # controls cursor auto-focus on Create Session
+  barcode_present: true # controls cursor auto-focus on Create Session
 health_check:
   registers:
     - name: "PLC_STATUS"
       reg: 50
     # ... more, name/reg pairs, driven entirely by config, never hardcoded in frontend
 device_settings:
-  speed_setpoint_reg: 51         # PC -> PLC, Write. Motor speed is tuned
-                                  # per-part empirically (mechanical/handling,
-                                  # not software's call) — decide: does the
-                                  # software enforce a max (e.g. don't accept
-                                  # a setpoint the pipeline can't keep up
-                                  # with), or is that entirely the operator's
-                                  # responsibility?
+  speed_setpoint_reg:
+    51 # PC -> PLC, Write. Motor speed is tuned
+    # per-part empirically (mechanical/handling,
+    # not software's call) — decide: does the
+    # software enforce a max (e.g. don't accept
+    # a setpoint the pipeline can't keep up
+    # with), or is that entirely the operator's
+    # responsibility?
 stations:
   - id: s1
-    capture_mode: parallel       # NEW — "parallel" | "serial", station-level
-                                  # (separate from the existing defect/measurement
-                                  # serial-vs-parallel convention, which is per-camera)
+    capture_mode:
+      parallel # NEW — "parallel" | "serial", station-level
+      # (separate from the existing defect/measurement
+      # serial-vs-parallel convention, which is per-camera)
 ```
 
 `capture_mode` and `health_check.registers` are proposed shapes — confirm
@@ -240,6 +243,7 @@ maintaining two different data paths (one IPC-based, one browser-safe) for
 no real benefit.
 
 **Two local processes, talking over localhost ZMQ — not microservices:**
+
 - **Python backend** — FastAPI + vision pipeline + `IndexerSlotTracker` +
   PLC comms, all in one process (threaded, not multiprocessed — GPU/OpenCV
   release the GIL, `ModelRegistry` avoids duplicating GPU memory across
@@ -273,8 +277,6 @@ passthrough via `nvidia-container-toolkit`) — `docker-compose.dev.yml`/
 ships separately as a native installer/AppImage, not inside a container —
 matches the AppImage + `COMPOSE_MODE` pattern already established on the
 broader raph-vision platform.
-
-
 
 If a task needs actual current register addresses, part spec, or station
 layout and they're not in this repo's recipe YAML, ask rather than inventing

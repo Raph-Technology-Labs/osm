@@ -44,6 +44,7 @@ reason — later specs assume earlier ones are settled.
 
 This is the highest-risk page given the 1200 PPM target — it's the one
 actually in the hot path. Its spec needs:
+
 - Real numbers from the Stage 0 performance budget spec, not placeholders
 - The exact toast/alarm behavior for "reject not discarded" — currently
   marked TBD in CLAUDE.md, needs a decision before this spec can be marked
