@@ -59,7 +59,17 @@ design the permission model to extend, not to be rewritten.
 7. **Config** — recipe editor (part name, category with add-new, indexer
    pitch/CPR editable) — this is the authoring UI for the same YAML schema
    already established, must stay in sync with it, not diverge into a
-   separate shape
+   separate shape. **`n_slots` is editable, not read-only** — commissioning
+   sometimes needs a manual offset from the computed default (e.g. to sync
+   with actual indexer speed behavior). Guardrails required, not optional:
+   - Validate `encoder_cpr % n_slots == 0` on save — reject otherwise
+   - Show both the computed default AND the active value if they differ, so
+     a manual override is visible, not indistinguishable from the
+     theoretical baseline
+   - Recompute and preview every station's `station_offset` live when
+     `n_slots` changes, before save — changing `n_slots` silently shifts
+     where every station's trigger lands
+   - Audit log: who changed it, when, old → new value
 8. **Technical Support** — static Raph contact/support info (content pending)
 9. **Digital Twin** — real-time visual of current indexer state (reference
    HTML to be provided) — this is a _view_ onto `IndexerSlotTracker`'s live
@@ -200,39 +210,52 @@ needs to match the real final schema, not an assumed one.
 
 8. Never commit `.env`, PATs, or DB connection strings.
 
-## 8. Staged Development Plan (frontend design isn't ready yet)
+## 8. Development Plan — Parallel Frontend + Backend, Per Page
 
-Build backend-first and API-contract-first, so frontend work can start the
-moment wireframes exist, without waiting on backend implementation to finish:
+Frontend and backend build **in parallel, per page** — not backend-then-
+frontend as separate stages. The one non-negotiable gate that makes this
+safe: **the API Contract is locked and reviewed before either side starts
+building against it.** Without that gate, parallel work means frontend
+builds against a guess.
 
 **Stage 0 — Performance Budget spec.** Benchmark inference latency,
 determine real throughput ceiling, determine reject-deadline time-of-flight.
 Gates everything else — do this before Stage 1.
 
-**Stage 1 — Backend foundations.** Auth/RBAC, DB schema finalization
-(including any new tables/fields Section 6 needs), `IndexerSlotTracker` +
-dispatcher (if not already built), Modbus client + register list finalized
-(including new health-check and device-settings registers).
+**Stage 1 — Shared foundations, sequential (both sides depend on these).**
+Auth/RBAC, DB schema finalization, `IndexerSlotTracker` + dispatcher (if not
+already built), Modbus client + register list finalized, the Electron↔ZMQ
+IPC bridge contract (Section 9). Nothing page-specific starts until these
+exist.
 
-**Stage 2 — API contracts, no UI yet.** Write the spec (Section 3's page
-list, one spec per page via `/create-spec`) with API Contract sections fully
-filled in, even before frontend design exists. This is what unblocks
-frontend work later without backend being the bottleneck.
+**Stage 2 — Per-page loop, repeated for each page in Section 3's list:**
 
-**Stage 3 — Core inspection loop.** Create Session → Inspection page backend
-support (this is the highest-risk page given the PPM target — build and load
-test this before the lower-stakes pages).
+1. `/create-spec <page>` — API Contract section gets real, specific
+   attention, not a placeholder to fill in later
+2. **Review and lock the contract explicitly** — this is the actual gate,
+   not just "the spec exists"
+3. **Backend and frontend build in parallel** from that point:
+   - Frontend builds against a **mock server matching the locked contract**
+     (e.g. MSW or an equivalent), not against a real backend that doesn't
+     exist yet
+   - Backend builds the real implementation against the same contract
+4. **Integration point** — frontend swaps the mock for the real endpoint.
+   Test this seam specifically; it's where any contract drift actually
+   surfaces
+5. `/test-feature` + `/review-feature` on backend; equivalent frontend
+   testing before the page is considered done
 
-**Stage 4 — Remaining pages**, roughly in the order listed in Section 3,
-each via its own spec.
+**The rule that makes parallel work safe, not risky:** if backend discovers
+mid-implementation that the locked contract needs to change, that's a
+**stop-and-resync moment** — flag it, update the spec, tell whoever's
+building frontend against it. Never silently change a locked contract and
+let frontend discover the mismatch at integration.
 
-**Stage 5 — Frontend**, once wireframes/theme exist — implement against the
-API contracts from Stage 2, page by page.
-
-Don't skip straight to page-by-page full-stack work — the risk with this
-project specifically is that the PPM target invalidates an architecture
-decision late, and it's much cheaper to discover that in Stage 0/1 than
-after 5 pages are built against it.
+**Suggested page order** (highest-risk / most-depended-on first, same
+reasoning as before): Create Session → Inspection (highest risk, given the
+throughput SLA — build and load-test this pair before the lower-stakes
+pages), then Config, Health Check, Device Settings, Dashboard, Login,
+Technical Support, Digital Twin.
 
 ## 9. System Architecture
 

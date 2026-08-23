@@ -1,60 +1,54 @@
-# Spec Checklist — Run These In Claude Code, One At A Time
+# Spec Checklist — Run These In Claude Code
 
-Each of these is a `/create-spec` invocation. Do NOT write all of these specs
-in one sitting and rubber-stamp them — review each one before moving to the
-next. A spec written on top of a wrong assumption from spec #2 will propagate
-into every spec after it.
+Matches CLAUDE.md Section 8 (parallel frontend + backend, per page). Each
+`/create-spec` line below is one invocation. Review and lock the contract
+before either side of a page starts building — that's the gate that makes
+parallel work safe.
 
-Order matches CLAUDE.md Section 8 (Staged Plan). Don't reorder without a
-reason — later specs assume earlier ones are settled.
+## Stage 0 — do this first, gates everything else
 
-## Stage 0
+- [ ] `/create-spec performance budget — inference latency benchmark, Modbus batch-read register layout, DB write batching, ZMQ drop-old frame buffer rate, reject-deadline time-of-flight across the configured speed range`
+      Every other spec's Constraints section should reference numbers from
+      this one, not assume them. Pin down the Throughput Design
+      Requirements (CLAUDE.md Section 5) as concrete decisions — which
+      registers are contiguous, the DB batch flush interval, the frame push
+      rate — not general principles to figure out later.
 
-- [ ] `/create-spec performance budget — inference latency benchmark, Modbus batch-read register layout, DB write batching, WebSocket throttle rate, reject-deadline time-of-flight at max configured speed`
-      **Do this first.** Every other spec's Constraints section should
-      reference numbers from this one, not assume them. This spec should
-      pin down the three Throughput Design Requirements from CLAUDE.md
-      Section 5 as concrete implementation decisions (which registers are
-      contiguous, the DB batch flush interval, the WS push rate cap) — not
-      leave them as general principles to figure out later.
-
-## Stage 1
+## Stage 1 — shared foundations, sequential, both sides depend on these
 
 - [ ] `/create-spec role-based auth — Super Admin, Admin, Operator`
-- [ ] `/create-spec indexer slot tracker` (if not already fully spec'd from earlier work)
-- [ ] `/create-spec modbus register finalization — health check + device settings registers`
+- [ ] `/create-spec indexer slot tracker` (if not already fully spec'd)
+- [ ] `/create-spec modbus register finalization — health check + device settings registers, including speed_setpoint_reg`
 - [ ] `/create-spec electron-backend IPC bridge — ZMQ pub/sub, drop-old frame buffer, ipcMain/ipcRenderer contract`
-      Locks in the Section 9 architecture decision as a concrete interface
-      spec before any page that displays live camera feeds gets built
-      against it.
 
-## Stage 2 — one spec per page, API contract first
+Nothing page-specific starts until these are done — both frontend and
+backend for every page below depend on auth, the register list, and the IPC
+bridge contract.
 
-- [ ] `/create-spec login page`
-- [ ] `/create-spec dashboard page — production analysis, filters, reports`
-- [ ] `/create-spec health check page`
-- [ ] `/create-spec device settings page`
-- [ ] `/create-spec create session page — part selection, barcode flag behavior`
-- [ ] `/create-spec inspection page — station-grouped live feeds, aggregation, alerts`
-- [ ] `/create-spec config page — recipe editor`
-- [ ] `/create-spec technical support page`
-- [ ] `/create-spec digital twin page`
+## Stage 2 — per page, in this order, parallel frontend + backend within each
 
-## Before writing the Inspection page spec specifically
+For every page: `/create-spec` → review and **lock the API contract** →
+backend and frontend build in parallel (frontend against a mock server
+matching the locked contract) → integration → test both sides.
 
-This is the highest-risk page given the 1200 PPM target — it's the one
-actually in the hot path. Its spec needs:
+- [ ] **Create Session** — `/create-spec create session page — part selection, barcode flag behavior`
+- [ ] **Inspection** — `/create-spec inspection page — station-grouped live feeds, aggregation, alerts`
+      Highest-risk page given the throughput SLA — build and load-test this
+      pair before the lower-stakes pages. Before writing this spec: - Real numbers from the Stage 0 performance budget spec, not placeholders - The exact toast/alarm behavior for "reject not discarded" — currently
+      marked TBD in CLAUDE.md, needs an actual decision first, not left
+      open inside the spec - Confirm the `capture_mode` (parallel/serial) config shape (Section 6)
+- [ ] **Config** — `/create-spec config page — recipe editor, n_slots override with validation + station-offset preview + audit log (see CLAUDE.md Section 3, page 7)`
+- [ ] **Health Check** — `/create-spec health check page`
+- [ ] **Device Settings** — `/create-spec device settings page`
+- [ ] **Dashboard** — `/create-spec dashboard page — production analysis, filters, reports`
+- [ ] **Login** — `/create-spec login page`
+- [ ] **Technical Support** — `/create-spec technical support page`
+- [ ] **Digital Twin** — `/create-spec digital twin page`
 
-- Real numbers from the Stage 0 performance budget spec, not placeholders
-- The exact toast/alarm behavior for "reject not discarded" — currently
-  marked TBD in CLAUDE.md, needs a decision before this spec can be marked
-  complete, not left as an open question inside the spec itself
-- Confirmation of the `capture_mode` (parallel/serial) config shape from
-  CLAUDE.md Section 6
+## The rule that makes this safe
 
-## After all specs exist
-
-Only then move to Stage 3 (core inspection loop implementation) per
-CLAUDE.md's staged plan — don't let spec-writing and implementation
-interleave across different pages, or you lose the benefit of having
-reviewed the full picture before committing to any one part of it.
+If backend discovers mid-implementation that a locked contract needs to
+change: **stop, flag it, update the spec, tell whoever's building frontend
+against it.** Never silently diverge from a locked contract — that's how
+parallel work turns into an integration-time surprise instead of a caught
+problem.
