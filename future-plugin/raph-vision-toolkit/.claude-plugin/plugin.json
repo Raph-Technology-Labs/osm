@@ -1,0 +1,10 @@
+{
+  "name": "raph-vision-toolkit",
+  "version": "0.1.0",
+  "description": "Shared Claude Code toolkit for raph-vision projects — Modbus register design conventions, vision pipeline config rules, and PLC/ring-math safety review subagents. Reusable across OSM, bolt-detection-sks, kc-diapers-anomaly, lug-inspection, and other raph-vision inspection projects.",
+  "author": {
+    "name": "Raph Technology Labs"
+  },
+  "repository": "https://github.com/Raph-Technology-Labs/raph-vision-toolkit",
+  "license": "UNLICENSED"
+}

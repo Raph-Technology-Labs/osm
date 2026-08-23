@@ -1,2 +1,15 @@
-**/__pycache__/
-**/*.pyc
+# Secrets — never commit
+.env
+.env.local
+
+# Personal Claude Code settings (not shared with team)
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Debug config snapshot — never the source of truth, don't commit accidentally
+config.yaml

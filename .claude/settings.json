@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "black ${CLAUDE_PROJECT_DIR} 2>/dev/null; ruff check --fix ${CLAUDE_PROJECT_DIR} 2>/dev/null; exit 0"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/block_dangerous.py"
+          }
+        ]
+      }
+    ]
+  }
+}
