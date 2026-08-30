@@ -2,6 +2,7 @@
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
+  "main": "public/electron.js",
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
@@ -18,13 +19,21 @@
     "react-scripts": "5.0.1",
     "react-transition-group": "^4.4.5",
     "recharts": "^3.8.1",
-    "web-vitals": "^2.1.4"
+    "web-vitals": "^2.1.4",
+    "zeromq": "^6.6.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^33.4.11",
+    "wait-on": "^8.0.5"
   },
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "electron:dev": "concurrently \"cross-env BROWSER=none PORT=4001 npm start\" \"wait-on http://localhost:4001 && cross-env BACKEND_PORT=9001 ZMQ_PORT=5558 PORT=4001 electron .\""
   },
   "eslintConfig": {
     "extends": [
