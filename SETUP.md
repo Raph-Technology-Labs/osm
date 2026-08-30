@@ -119,6 +119,53 @@ Code to implement anything against it — the two review steps (spec review,
 then technical-design review) are what catch a wrong assumption before it's
 in code, not an optional step to skip when in a hurry.
 
+## 8. Database setup on other machines (thor, beast, ...)
+
+This repo has **3 separate env-var concerns** — don't conflate them:
+
+1. `backend/.env` — the FastAPI app's own read-write `DATABASE_URL`.
+2. Root `.env` (from `.env.example`) — a *different*, deliberately
+   **read-only** `DATABASE_URL` (`claude_readonly` role), used only by the
+   `postgres-mcp` MCP server in step 2 above.
+3. `.env.dev` / `.env.prod` — feed `docker-compose.dev.yml` /
+   `docker-compose.prod.yml` (ports, `DATA_DIR`, container suffix). Not
+   committed, machine-specific.
+
+**Docker path (use this on thor/beast/any non-Mac Linux box)** — this is
+what the repo is actually built for there:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d      # dev box
+# or, on the production tower:
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+```
+
+`DATABASE_URL` is already baked into the compose file's backend
+`environment:` block, pointing at the sibling `db` container — nothing to
+edit. The backend container's startup command runs `alembic upgrade head`
+automatically before `uvicorn` starts, so the frozen baseline schema applies
+itself on first boot. `backend/.env`'s `DATABASE_URL` is irrelevant to the
+containerized app in this path.
+
+**Native path (no Docker)** — only if running the backend directly on that
+machine, outside a container (this is what's done on a Mac dev checkout):
+make sure a target database exists (`createdb <name>` or equivalent), point
+`backend/.env`'s `DATABASE_URL` at it, then from `backend/`:
+
+```bash
+alembic upgrade head
+```
+
+So: yes, changing `DATABASE_URL` is most of it for the native path — but the
+database it points to has to already exist first. `alembic upgrade head`
+creates the *tables*, not the database itself.
+
+Either way, the schema is defined once, in the committed baseline Alembic
+migration under `backend/alembic/versions/` — every machine just needs
+`DATABASE_URL` pointing somewhere reachable and `alembic upgrade head`
+(automatic under Docker, manual otherwise) to end up with an identical
+schema. Never hand-craft tables on a new machine.
+
 ## Golden rules (worth keeping in mind going forward)
 
 - Keep the MCP server list minimal — every connected server's tool

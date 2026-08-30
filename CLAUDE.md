@@ -59,17 +59,7 @@ design the permission model to extend, not to be rewritten.
 7. **Config** — recipe editor (part name, category with add-new, indexer
    pitch/CPR editable) — this is the authoring UI for the same YAML schema
    already established, must stay in sync with it, not diverge into a
-   separate shape. **`n_slots` is editable, not read-only** — commissioning
-   sometimes needs a manual offset from the computed default (e.g. to sync
-   with actual indexer speed behavior). Guardrails required, not optional:
-   - Validate `encoder_cpr % n_slots == 0` on save — reject otherwise
-   - Show both the computed default AND the active value if they differ, so
-     a manual override is visible, not indistinguishable from the
-     theoretical baseline
-   - Recompute and preview every station's `station_offset` live when
-     `n_slots` changes, before save — changing `n_slots` silently shifts
-     where every station's trigger lands
-   - Audit log: who changed it, when, old → new value
+   separate shape
 8. **Technical Support** — static Raph contact/support info (content pending)
 9. **Digital Twin** — real-time visual of current indexer state (reference
    HTML to be provided) — this is a _view_ onto `IndexerSlotTracker`'s live
@@ -210,52 +200,39 @@ needs to match the real final schema, not an assumed one.
 
 8. Never commit `.env`, PATs, or DB connection strings.
 
-## 8. Development Plan — Parallel Frontend + Backend, Per Page
+## 8. Staged Development Plan (frontend design isn't ready yet)
 
-Frontend and backend build **in parallel, per page** — not backend-then-
-frontend as separate stages. The one non-negotiable gate that makes this
-safe: **the API Contract is locked and reviewed before either side starts
-building against it.** Without that gate, parallel work means frontend
-builds against a guess.
+Build backend-first and API-contract-first, so frontend work can start the
+moment wireframes exist, without waiting on backend implementation to finish:
 
 **Stage 0 — Performance Budget spec.** Benchmark inference latency,
 determine real throughput ceiling, determine reject-deadline time-of-flight.
 Gates everything else — do this before Stage 1.
 
-**Stage 1 — Shared foundations, sequential (both sides depend on these).**
-Auth/RBAC, DB schema finalization, `IndexerSlotTracker` + dispatcher (if not
-already built), Modbus client + register list finalized, the Electron↔ZMQ
-IPC bridge contract (Section 9). Nothing page-specific starts until these
-exist.
+**Stage 1 — Backend foundations.** Auth/RBAC, DB schema finalization
+(including any new tables/fields Section 6 needs), `IndexerSlotTracker` +
+dispatcher (if not already built), Modbus client + register list finalized
+(including new health-check and device-settings registers).
 
-**Stage 2 — Per-page loop, repeated for each page in Section 3's list:**
+**Stage 2 — API contracts, no UI yet.** Write the spec (Section 3's page
+list, one spec per page via `/create-spec`) with API Contract sections fully
+filled in, even before frontend design exists. This is what unblocks
+frontend work later without backend being the bottleneck.
 
-1. `/create-spec <page>` — API Contract section gets real, specific
-   attention, not a placeholder to fill in later
-2. **Review and lock the contract explicitly** — this is the actual gate,
-   not just "the spec exists"
-3. **Backend and frontend build in parallel** from that point:
-   - Frontend builds against a **mock server matching the locked contract**
-     (e.g. MSW or an equivalent), not against a real backend that doesn't
-     exist yet
-   - Backend builds the real implementation against the same contract
-4. **Integration point** — frontend swaps the mock for the real endpoint.
-   Test this seam specifically; it's where any contract drift actually
-   surfaces
-5. `/test-feature` + `/review-feature` on backend; equivalent frontend
-   testing before the page is considered done
+**Stage 3 — Core inspection loop.** Create Session → Inspection page backend
+support (this is the highest-risk page given the PPM target — build and load
+test this before the lower-stakes pages).
 
-**The rule that makes parallel work safe, not risky:** if backend discovers
-mid-implementation that the locked contract needs to change, that's a
-**stop-and-resync moment** — flag it, update the spec, tell whoever's
-building frontend against it. Never silently change a locked contract and
-let frontend discover the mismatch at integration.
+**Stage 4 — Remaining pages**, roughly in the order listed in Section 3,
+each via its own spec.
 
-**Suggested page order** (highest-risk / most-depended-on first, same
-reasoning as before): Create Session → Inspection (highest risk, given the
-throughput SLA — build and load-test this pair before the lower-stakes
-pages), then Config, Health Check, Device Settings, Dashboard, Login,
-Technical Support, Digital Twin.
+**Stage 5 — Frontend**, once wireframes/theme exist — implement against the
+API contracts from Stage 2, page by page.
+
+Don't skip straight to page-by-page full-stack work — the risk with this
+project specifically is that the PPM target invalidates an architecture
+decision late, and it's much cheaper to discover that in Stage 0/1 than
+after 5 pages are built against it.
 
 ## 9. System Architecture
 
@@ -300,6 +277,137 @@ passthrough via `nvidia-container-toolkit`) — `docker-compose.dev.yml`/
 ships separately as a native installer/AppImage, not inside a container —
 matches the AppImage + `COMPOSE_MODE` pattern already established on the
 broader raph-vision platform.
+
+## 10. Testing
+
+- pytest for backend, one test module per app/ subpackage (test_tracker.py,
+  test_dispatcher.py, ...)
+- IndexerSlotTracker and dispatcher: pure unit tests, no PLC/hardware — mock
+  the Modbus client
+- Modbus client: integration tests against a Modbus simulator (e.g.
+  pymodbus server), never a real PLC in CI
+- Pipeline steps: golden-image regression tests (fixed input frame ->
+  expected OK/NOK + measurement values)
+- Throughput-critical paths (register batching, DB write batching):
+  benchmark tests with assertions against the latency budget from the
+  Stage 0 spec, not just correctness
+- Frontend: React Testing Library for components, no live camera feed
+  testing in unit tests (mock the ZMQ/IPC bridge)
+- Coverage target: 100% on app/indexer/ and app/plc/ (safety-critical),
+  best-effort elsewhere
+
+## 11. Security
+
+- All API routes require auth except /health
+- Session-based auth: server-side session (in-memory dict or Redis, already
+  in the stack), opaque session token issued at login — no JWT/refresh flow,
+  this runs locally in Electron, not across services or browsers
+- Session token held in the Electron main process (not localStorage/
+  renderer) — no third-party web content is loaded, so this avoids
+  XSS-in-renderer concerns entirely
+- Role checks as a FastAPI dependency (require_role("admin")), applied at
+  route level — never inferred from frontend state (Rule 6)
+- Session expiry: long-lived is fine (operator shouldn't get logged out
+  mid-shift); tie invalidation to explicit logout or app close
+- Modbus TCP has no auth — network segmentation is the control; document
+  the PLC subnet assumption, don't try to add app-level auth to Modbus
+  itself
+- No secrets in recipes/\*.yaml or config.yaml — DB creds via env vars only
+  (.env, gitignored per Rule 8)
+- Input validation on recipe import (recipe_import.py) — untrusted YAML
+  from disk, use pydantic models, never yaml.load without SafeLoader
+- CSV/PDF export (Dashboard): sanitize filenames, cap row count
+  server-side even if UI requests unbounded
+
+## 12. API Conventions
+
+- REST, versioned under /api/v1
+- Pydantic models for all request/response bodies — schema is the
+  contract, matches the Stage 2 API-contract-first specs
+- Pagination: cursor or limit/offset on every list endpoint, default limit
+  enforced server-side (ties to Section 3's "never unbounded queries")
+- Errors: consistent {detail, code} shape, HTTP status matches semantics
+  (403 vs 401 not interchangeable)
+- Live inspection state is NOT REST — explicitly excluded per Section 9,
+  ZMQ/IPC only
+- Idempotency: session creation and reject-ack endpoints must be safe to
+  retry (client-generated request IDs where retries are plausible)
+- No business logic in route handlers — routes call into
+  app/{indexer,plc,pipeline}/, stay thin
+
+## 13. Frontend Conventions
+
+- Match theme.js once provided — no ad-hoc colors/spacing, no competing
+  component library
+- One page = one route = one top-level component under frontend/pages/
+- Shared layout (logo, footer) in a layout wrapper, not duplicated per page
+- IPC contract (ipcMain/ipcRenderer channel names) documented in the
+  electron-backend IPC bridge spec — don't invent new channels ad hoc per
+  page
+- Loading/error states required on every data-fetching component — no
+  bare spinners with no timeout/error path
+
+## 14. Logging & Observability
+
+- Structured logging (JSON) for anything touching PLC comms — every
+  \_CMD/\_ACK pair logged with timestamp, for post-incident reconstruction
+  of missed-ACK escalations (Rule 4)
+- STOP_COMMAND and FAULT_STATUS triggers: always logged at ERROR with a
+  full register state snapshot, never silently handled
+- Every FAULT_STATUS/STOP_COMMAND log entry must include enough context to
+  replay the sequence offline (register snapshot + preceding N \_CMD/\_ACK
+  entries) — the log is the only debugging tool available once deployed
+  (see Section 16), design its content for that, not just for "something
+  went wrong"
+- Throughput metrics (parts/sec, Modbus round-trip time, DB flush latency)
+  exported so the Stage 0 performance budget is validated continuously,
+  not just once
+
+## 15. Error Handling
+
+- PLC connection loss: watchdog (app/plc/watchdog.py) must detect and
+  trigger the STOP_COMMAND path, not silently retry forever
+- Camera disconnect mid-session: mark the station unavailable, don't crash
+  the pipeline — degrade to remaining stations if part_aggregation allows
+  it, otherwise halt and alert
+- DB write failure on the batched hot path (Section 5.2): buffer must not
+  silently drop results — log + retry + surface to the Health Check page,
+  never fail silently
+- Uncaught exceptions in pipeline steps: caught per-station, logged with
+  part_id + station, defaults to NOK (fail-safe, not fail-open)
+
+## 16. Debugging
+
+**Dev environment only — never enable in a client deployment.**
+
+- Electron app launched with `--remote-debugging-port=9333` in the dev
+  script only (not in the production Electron build/installer)
+- An Electron MCP server (CDP-based) bridges Claude Code to the running
+  renderer for UI-level debugging: screenshots, console errors, DOM
+  inspection, JS evaluation on pages like Inspection/Dashboard/Config
+- Scope limit: CDP reaches the **renderer process** only. It does not see
+  the Electron **main** process (ipcMain, ZMQ SUB) or the Python backend
+  (PLC comms, tracker state, DB). Don't expect it to diagnose Modbus/PLC/
+  slot-tracker bugs — those are backend, use logs (Section 14) and
+  standard Python debugging (pdb/logging), not CDP.
+- Typical use: "Inspection page OK/NOK counter isn't updating" — Claude
+  drives the UI and reads live renderer state instead of manual repro
+  steps pasted in chat.
+
+**Production (client tower PC): no live debug connection.**
+
+- No `--remote-debugging-port` in the shipped build — an open CDP port is
+  an unnecessary attack surface on a client machine, and no engineer is
+  live-driving Claude Code against it anyway.
+- Fault diagnosis is log-based: structured logs (Section 14) are pulled
+  after the fact — via AnyDesk remote session (Section 9) or the client
+  sending log files — and handed to Claude Code as files. This is plain
+  file reading, not an MCP concern.
+- If deeper runtime introspection into a live production instance is ever
+  needed, that means a small custom read-only diagnostic endpoint/MCP tool
+  (e.g. "dump current IndexerSlotTracker state," "last N PLC
+  transactions") built and reviewed deliberately — not a debug CDP port
+  left open.
 
 If a task needs actual current register addresses, part spec, or station
 layout and they're not in this repo's recipe YAML, ask rather than inventing

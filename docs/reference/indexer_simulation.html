@@ -1,0 +1,600 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Indexer · slot ring simulation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+
+<style>
+:root{
+  --cabinet:#1B222C;
+  --panel:#232C38;
+  --panel-hi:#2C3644;
+  --rule:#3A4756;
+  --rule-soft:#2F3B49;
+  --ink:#E6EBF0;
+  --ink-dim:#8A99AB;
+  --ink-faint:#5D6C7E;
+
+  --sig-plc:#5AA9DC;      /* instrument blue  - PLC voice   */
+  --sig-pc:#E8C547;       /* signal yellow    - PC voice    */
+  --sig-good:#4FB286;     /* pass / accepted                */
+  --sig-crit:#E0574F;     /* critical defect  - R1          */
+  --sig-cosm:#E08A3C;     /* cosmetic defect  - R2          */
+  --sig-unk:#B266C9;      /* unknown / timeout              */
+
+  --r:3px;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--cabinet);
+  color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,sans-serif;
+  font-size:13px;
+  line-height:1.5;
+  padding:14px;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:12px;}
+
+/* ---------- shared panel chrome ---------- */
+.panel{
+  background:var(--panel);
+  border:1px solid var(--rule);
+  border-radius:var(--r);
+}
+.panel-hd{
+  display:flex;align-items:baseline;gap:10px;
+  padding:7px 11px;
+  border-bottom:1px solid var(--rule-soft);
+  font-family:"IBM Plex Sans Condensed",sans-serif;
+  font-weight:700;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-dim);
+}
+.panel-hd .sub{
+  font-family:"IBM Plex Mono",monospace;font-weight:400;letter-spacing:.02em;
+  text-transform:none;font-size:10.5px;color:var(--ink-faint);margin-left:auto;
+}
+.mono{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;}
+
+/* ---------- header ---------- */
+header.bar{
+  display:flex;flex-wrap:wrap;align-items:center;gap:18px;
+  padding:10px 14px;
+}
+header.bar h1{
+  margin:0;font-family:"IBM Plex Sans Condensed",sans-serif;
+  font-size:15px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+}
+header.bar h1 span{color:var(--ink-faint);font-weight:500;}
+.readout{display:flex;flex-direction:column;line-height:1.25;}
+.readout .k{
+  font-family:"IBM Plex Sans Condensed",sans-serif;font-size:9.5px;
+  letter-spacing:.15em;text-transform:uppercase;color:var(--ink-faint);
+}
+.readout .v{font-family:"IBM Plex Mono",monospace;font-size:15px;font-weight:500;font-variant-numeric:tabular-nums;}
+.lamp{
+  margin-left:auto;display:flex;align-items:center;gap:7px;
+  font-family:"IBM Plex Sans Condensed",sans-serif;font-size:11px;
+  letter-spacing:.14em;text-transform:uppercase;font-weight:600;
+}
+.lamp i{width:8px;height:8px;border-radius:50%;display:block;background:var(--sig-good);box-shadow:0 0 8px currentColor;color:var(--sig-good);}
+.lamp.purge i{background:var(--sig-cosm);color:var(--sig-cosm);}
+.lamp.purge{color:var(--sig-cosm);}
+.hb{width:7px;height:7px;border-radius:50%;background:var(--sig-plc);opacity:.25;transition:opacity .12s;}
+.hb.on{opacity:1;box-shadow:0 0 7px var(--sig-plc);}
+
+/* ---------- controls ---------- */
+.controls{display:flex;align-items:center;gap:14px;padding:11px 14px;flex-wrap:wrap;}
+.btn{
+  background:var(--panel-hi);color:var(--ink);
+  border:1px solid var(--rule);border-radius:var(--r);
+  font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:600;
+  font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+  padding:6px 12px;cursor:pointer;
+}
+.btn:hover{border-color:var(--sig-plc);color:#fff;}
+.btn:focus-visible{outline:2px solid var(--sig-pc);outline-offset:2px;}
+.btn.primary{background:var(--sig-plc);border-color:var(--sig-plc);color:#0F1720;}
+input[type=range]{
+  flex:1;min-width:200px;accent-color:var(--sig-pc);height:22px;cursor:pointer;
+}
+input[type=range]:focus-visible{outline:2px solid var(--sig-pc);outline-offset:3px;}
+.hint{font-size:11px;color:var(--ink-faint);}
+
+/* ---------- main grid ---------- */
+.stage{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:12px;}
+@media(max-width:860px){.stage{grid-template-columns:1fr;}}
+
+.disc-wrap{padding:6px 6px 2px;}
+svg.disc{width:100%;height:auto;display:block;}
+.rotor{transform-origin:0 0;transition:transform .34s cubic-bezier(.4,0,.2,1);}
+@media(prefers-reduced-motion:reduce){.rotor{transition:none;}}
+
+.stn-label{
+  font-family:"IBM Plex Sans Condensed",sans-serif;font-size:12px;font-weight:700;
+  letter-spacing:.1em;fill:var(--ink);
+}
+.stn-role{font-family:"IBM Plex Mono",monospace;font-size:7.5px;fill:var(--ink-faint);letter-spacing:.06em;}
+.slot-num{font-family:"IBM Plex Mono",monospace;font-size:7px;fill:var(--ink-faint);}
+.hub-k{font-family:"IBM Plex Sans Condensed",sans-serif;font-size:8.5px;letter-spacing:.16em;fill:var(--ink-faint);}
+.hub-v{font-family:"IBM Plex Mono",monospace;font-size:19px;fill:var(--ink);font-variant-numeric:tabular-nums;}
+.hub-s{font-family:"IBM Plex Mono",monospace;font-size:9px;fill:var(--ink-dim);}
+
+/* ---------- bus log ---------- */
+.bus{display:flex;flex-direction:column;min-height:0;}
+.bus-body{
+  overflow-y:auto;padding:6px 8px;flex:1;min-height:300px;max-height:432px;
+  display:flex;flex-direction:column-reverse;gap:2px;
+  scrollbar-width:thin;scrollbar-color:var(--rule) transparent;
+}
+.msg{
+  display:grid;grid-template-columns:34px 12px 1fr;gap:6px;align-items:baseline;
+  font-family:"IBM Plex Mono",monospace;font-size:10.5px;line-height:1.45;
+  padding:2px 4px;border-radius:2px;
+}
+.msg .t{color:var(--ink-faint);font-size:9.5px;}
+.msg .ar{font-weight:600;}
+.msg.p2c .ar{color:var(--sig-plc);}
+.msg.c2p .ar{color:var(--sig-pc);}
+.msg.p2c{background:linear-gradient(90deg,rgba(90,169,220,.10),transparent 65%);}
+.msg.c2p{background:linear-gradient(90deg,rgba(232,197,71,.10),transparent 65%);}
+.msg b{font-weight:600;}
+.msg.p2c b{color:var(--sig-plc);}
+.msg.c2p b{color:var(--sig-pc);}
+.msg .d{color:var(--ink-dim);}
+.msg .ok{color:var(--sig-good);}
+.msg .crit{color:var(--sig-crit);}
+.msg .cosm{color:var(--sig-cosm);}
+.msg .unk{color:var(--sig-unk);}
+.bus-empty{color:var(--ink-faint);font-size:11px;padding:14px 6px;font-family:"IBM Plex Mono",monospace;}
+
+/* ---------- slot memory strip ---------- */
+.mem{padding:9px 11px 11px;}
+.mem-grid{
+  display:grid;grid-template-columns:repeat(40,1fr);gap:2px;
+}
+@media(max-width:660px){.mem-grid{grid-template-columns:repeat(20,1fr);}}
+.cell{
+  aspect-ratio:1/1.5;border-radius:1.5px;background:#1A212A;
+  border:1px solid #2B3542;position:relative;cursor:default;
+}
+.cell.head{outline:1.5px solid var(--ink);outline-offset:1px;z-index:2;}
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:10.5px;color:var(--ink-dim);}
+.legend span{display:flex;align-items:center;gap:5px;}
+.legend i{width:9px;height:9px;border-radius:1.5px;display:block;}
+
+/* ---------- counters ---------- */
+.tallies{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--rule-soft);}
+.tally{flex:1;min-width:96px;padding:8px 11px;border-right:1px solid var(--rule-soft);}
+.tally:last-child{border-right:0;}
+.tally .k{font-family:"IBM Plex Sans Condensed",sans-serif;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);}
+.tally .v{font-family:"IBM Plex Mono",monospace;font-size:17px;font-variant-numeric:tabular-nums;}
+.conserve{padding:8px 11px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--ink-dim);border-top:1px solid var(--rule-soft);}
+.conserve.bad{color:var(--sig-crit);}
+.conserve b{color:var(--sig-good);font-weight:600;}
+
+/* ---------- station strip ---------- */
+.stnstrip{display:grid;grid-template-columns:repeat(8,1fr);gap:1px;background:var(--rule-soft);}
+@media(max-width:700px){.stnstrip{grid-template-columns:repeat(4,1fr);}}
+.stncell{background:var(--panel);padding:7px 8px;}
+.stncell .n{font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:700;font-size:11px;letter-spacing:.1em;}
+.stncell .sl{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--ink-faint);}
+.stncell .oc{font-family:"IBM Plex Mono",monospace;font-size:11px;margin-top:2px;}
+.stncell .oc.empty{color:var(--ink-faint);}
+</style>
+
+<div class="wrap">
+
+  <div class="panel">
+    <header class="bar">
+      <h1>Indexer <span>· 80 slots · 8 stations</span></h1>
+      <div class="readout"><span class="k">Encoder</span><span class="v" id="rdEnc">0</span></div>
+      <div class="readout"><span class="k">Slot at entry</span><span class="v" id="rdSlot">0</span></div>
+      <div class="readout"><span class="k">Rev</span><span class="v" id="rdRev">0</span></div>
+      <div class="readout"><span class="k">In flight</span><span class="v" id="rdFlight">0</span></div>
+      <div class="lamp" id="lamp"><i></i><span id="lampTxt">Running</span><span class="hb" id="hb"></span></div>
+    </header>
+    <div class="controls">
+      <button class="btn primary" id="play">Play</button>
+      <button class="btn" id="stepB">◀ Step</button>
+      <button class="btn" id="stepF">Step ▶</button>
+      <input type="range" id="slider" min="0" max="320" value="0" step="1" aria-label="Advance the disc by one slot per step">
+      <span class="hint">Tick <b class="mono" id="tickTxt">0</b> / 320 — one tick = one slot = 4.5° = 45 counts</span>
+    </div>
+  </div>
+
+  <div class="stage">
+
+    <div class="panel disc-wrap">
+      <svg class="disc" viewBox="-252 -248 504 496" id="svg" role="img"
+           aria-label="Plan view of the rotating indexer disc with fixed station markers"></svg>
+    </div>
+
+    <div class="panel bus">
+      <div class="panel-hd">Message bus
+        <span class="sub"><span style="color:var(--sig-plc)">▶ PLC→PC</span> &nbsp; <span style="color:var(--sig-pc)">◀ PC→PLC</span></span>
+      </div>
+      <div class="bus-body" id="bus"></div>
+    </div>
+
+  </div>
+
+  <div class="panel">
+    <div class="panel-hd">Slot table <span class="sub">static array · 80 records · allocated at startup, never created or destroyed</span></div>
+    <div class="mem">
+      <div class="mem-grid" id="mem"></div>
+      <div class="legend">
+        <span><i style="background:#1A212A;border:1px solid #2B3542"></i>Empty</span>
+        <span><i style="background:#6B7A8C"></i>Occupied, no results yet</span>
+        <span><i style="background:var(--sig-good)"></i>All results so far pass</span>
+        <span><i style="background:var(--sig-crit)"></i>Critical defect → R1</span>
+        <span><i style="background:var(--sig-cosm)"></i>Cosmetic defect → R2</span>
+        <span><i style="background:var(--sig-unk)"></i>Result missing → UNKNOWN → R1</span>
+      </div>
+    </div>
+    <div class="stnstrip" id="stn"></div>
+    <div class="tallies">
+      <div class="tally"><div class="k">Entered</div><div class="v" id="cEnt">0</div></div>
+      <div class="tally"><div class="k">Accepted</div><div class="v" id="cAcc" style="color:var(--sig-good)">0</div></div>
+      <div class="tally"><div class="k">Rejected R1</div><div class="v" id="cR1" style="color:var(--sig-crit)">0</div></div>
+      <div class="tally"><div class="k">Rejected R2</div><div class="v" id="cR2" style="color:var(--sig-cosm)">0</div></div>
+      <div class="tally"><div class="k">Unknown</div><div class="v" id="cUnk" style="color:var(--sig-unk)">0</div></div>
+      <div class="tally"><div class="k">In flight</div><div class="v" id="cFly">0</div></div>
+    </div>
+    <div class="conserve" id="cons"></div>
+  </div>
+
+</div>
+
+<script>
+/* ============================================================
+   MACHINE CONSTANTS
+   ============================================================ */
+const SLOTS = 80, CPR = 3600, CPS = CPR / SLOTS;   // 45 counts per slot
+const DEG   = 360 / SLOTS;                          // 4.5° per slot
+const TOTAL = 320;
+
+const STATIONS = [
+  {id:'ENTRY', off: 0,  kind:'load', role:'load'},
+  {id:'S1',    off:10,  kind:'cam',  role:'dimension', defect:'DIM',     sev:'crit'},
+  {id:'S2',    off:20,  kind:'cam',  role:'burr',      defect:'BURR',    sev:'crit'},
+  {id:'S3',    off:30,  kind:'cam',  role:'surface',   defect:'SCRATCH', sev:'cosm'},
+  {id:'S4',    off:40,  kind:'cam',  role:'contam',    defect:'CONTAM',  sev:'cosm'},
+  {id:'R1',    off:50,  kind:'rej',  role:'critical'},
+  {id:'R2',    off:60,  kind:'rej',  role:'cosmetic'},
+  {id:'EXIT',  off:70,  kind:'exit', role:'accept'},
+];
+const CAMS = STATIONS.filter(s => s.kind === 'cam');
+const OFF  = Object.fromEntries(STATIONS.map(s => [s.id, s.off]));
+
+/* ============================================================
+   DETERMINISTIC PART TIMELINE
+   Every part's whole life is decided up front from a seeded PRNG,
+   so scrubbing the slider backwards gives identical state.
+   ============================================================ */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t^t+Math.imul(t^t>>>7,61|t);return((t^t>>>14)>>>0)/4294967296;};}
+const rng = mulberry32(20260813);
+
+const parts = [];                 // parts[t0] = record | null
+let serial = 10400;
+for (let t0 = 0; t0 <= TOTAL; t0++){
+  if (rng() > 0.78){ parts[t0] = null; continue; }   // feeder gap
+  const p = {
+    t0, slot: t0 % SLOTS, serial: ++serial,
+    fail: {}, lost: null
+  };
+  for (const c of CAMS) p.fail[c.id] = rng() < 0.055;
+  if (rng() < 0.028) p.lost = CAMS[Math.floor(rng()*CAMS.length)].id;  // vision result never arrives
+
+  // ---- verdict arbitration (this is the PLC's rule, evaluated at R1) ----
+  if (p.lost)                                     { p.exit='R1';   p.cls='UNKNOWN'; }
+  else if (p.fail.S1 || p.fail.S2)                { p.exit='R1';   p.cls = p.fail.S1 ? 'DIM' : 'BURR'; }
+  else if (p.fail.S3 || p.fail.S4)                { p.exit='R2';   p.cls = p.fail.S3 ? 'SCRATCH' : 'CONTAM'; }
+  else                                            { p.exit='EXIT'; p.cls = 'PASS'; }
+  p.exitTick = t0 + OFF[p.exit];
+  parts[t0] = p;
+}
+
+/* live parts at tick t: present from load until the tick they are removed */
+function liveAt(t){
+  const out = [];
+  for (let d = 0; d <= 70; d++){
+    const p = parts[t - d];
+    if (p && t <= p.exitTick) out.push(p);
+  }
+  return out;
+}
+/* what the system KNOWS about a part at tick t (progressive, not final) */
+function knowledge(p, t){
+  const age = t - p.t0;
+  const done = CAMS.filter(c => age >= c.off);
+  const missing = done.some(c => p.lost === c.id);
+  let worst = null;
+  for (const c of done){ if (p.lost === c.id) continue;
+    if (p.fail[c.id]){ if (c.sev === 'crit'){ worst = 'crit'; break; } worst = worst || 'cosm'; } }
+  const decided = age >= OFF.R1;
+  return {age, nDone:done.length, missing, worst, decided};
+}
+function stateColor(p, t){
+  const k = knowledge(p, t);
+  if (k.decided && k.missing) return 'var(--sig-unk)';
+  if (k.worst === 'crit')     return 'var(--sig-crit)';
+  if (k.worst === 'cosm')     return 'var(--sig-cosm)';
+  if (k.nDone === 0)          return '#6B7A8C';
+  return 'var(--sig-good)';
+}
+
+/* ============================================================
+   MESSAGES GENERATED AT A GIVEN TICK
+   ============================================================ */
+function messagesAt(t){
+  const m = [];
+  const enc = t * CPS;
+  const push = (dir, type, body) => m.push({t, dir, type, body});
+
+  // 1. load event — proximity sensor at ENTRY
+  const born = parts[t];
+  if (born) push('p2c','PART_ENTERED',
+    `slot=<b>${pad(born.slot)}</b> serial=${born.serial} count=${enc}`);
+
+  // 2 & 3. camera triggers, and the verdicts coming back
+  for (const c of CAMS){
+    const p = parts[t - c.off];
+    if (!p || t > p.exitTick) continue;
+    const deadline = (p.t0 + OFF.R1) * CPS;
+    push('p2c','STATION_TRIGGERED',
+      `slot=<b>${pad(p.slot)}</b> stn=${c.id} deadline=${deadline}`);
+    if (p.lost === c.id){
+      push('c2p','— no result —',
+      `<span class="unk">slot=${pad(p.slot)} stn=${c.id} vision overrun, nothing sent</span>`);
+    } else {
+      const f = p.fail[c.id];
+      push('c2p','STATION_RESULT',
+        `slot=<b>${pad(p.slot)}</b> stn=${c.id} ` +
+        (f ? `<span class="${c.sev==='crit'?'crit':'cosm'}">FAIL ${c.defect}</span>`
+           : `<span class="ok">PASS</span>`) +
+        ` <span class="d">Δ${(6 + Math.round(((p.serial*7)%22)))}ms</span>`);
+    }
+  }
+
+  // 4. R1 deadline check + ejection
+  {
+    const p = parts[t - OFF.R1];
+    if (p && t <= p.exitTick){
+      if (p.exit === 'R1'){
+        const unk = p.cls === 'UNKNOWN';
+        push('p2c','DISPOSITION',
+          `slot=<b>${pad(p.slot)}</b> ` +
+          (unk ? `<span class="unk">UNKNOWN → fail-safe eject R1</span>`
+               : `<span class="crit">REJECTED_R1 ${p.cls}</span>`) +
+          ` <span class="d">confirmed · slot freed</span>`);
+      }
+    }
+  }
+  // 5. R2 ejection
+  {
+    const p = parts[t - OFF.R2];
+    if (p && t <= p.exitTick && p.exit === 'R2')
+      push('p2c','DISPOSITION',
+        `slot=<b>${pad(p.slot)}</b> <span class="cosm">REJECTED_R2 ${p.cls}</span> <span class="d">confirmed · slot freed</span>`);
+  }
+  // 6. EXIT discharge
+  {
+    const p = parts[t - OFF.EXIT];
+    if (p && t <= p.exitTick && p.exit === 'EXIT')
+      push('p2c','DISPOSITION',
+        `slot=<b>${pad(p.slot)}</b> <span class="ok">ACCEPTED</span> <span class="d">discharged · slot freed</span>`);
+  }
+  // 7. heartbeat — every 3rd tick, so the log stays readable
+  if (t % 3 === 0) push('p2c','HEARTBEAT',
+    `<span class="d">count=${enc} slot_index=${pad(t % SLOTS)} state=RUNNING</span>`);
+
+  return m;
+}
+const pad = n => String(n).padStart(2,'0');
+
+/* ============================================================
+   DISC — built once, rotated per tick
+   ============================================================ */
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('svg');
+const R_OUT = 196, R_IN = 118, R_HUB = 96, R_STN = 214;
+const el = (n,a={}) => { const e = document.createElementNS(NS,n); for(const k in a) e.setAttribute(k,a[k]); return e; };
+const pol = (r,deg) => { const a=(deg-90)*Math.PI/180; return [r*Math.cos(a), r*Math.sin(a)]; };
+
+/* --- fixed layer: sector shading behind the rotor --- */
+const gBack = el('g'); svg.appendChild(gBack);
+STATIONS.forEach((s,i) => {
+  const a0 = s.off*DEG, a1 = a0 + 10*DEG;
+  const [x0,y0]=pol(R_OUT+8,a0),[x1,y1]=pol(R_OUT+8,a1),[x2,y2]=pol(R_HUB-4,a1),[x3,y3]=pol(R_HUB-4,a0);
+  gBack.appendChild(el('path',{
+    d:`M${x0} ${y0}A${R_OUT+8} ${R_OUT+8} 0 0 1 ${x1} ${y1}L${x2} ${y2}A${R_HUB-4} ${R_HUB-4} 0 0 0 ${x3} ${y3}Z`,
+    fill: i%2 ? '#202934' : '#1D2530'
+  }));
+});
+
+/* --- rotor: 80 slot wedges --- */
+const rotor = el('g',{class:'rotor'}); svg.appendChild(rotor);
+const wedges = [];
+for (let s = 0; s < SLOTS; s++){
+  const base = -s*DEG, g = 0.55;
+  const a0 = base + g, a1 = base + DEG - g;
+  const [x0,y0]=pol(R_OUT,a0),[x1,y1]=pol(R_OUT,a1),[x2,y2]=pol(R_IN,a1),[x3,y3]=pol(R_IN,a0);
+  const w = el('path',{
+    d:`M${x0} ${y0}A${R_OUT} ${R_OUT} 0 0 1 ${x1} ${y1}L${x2} ${y2}A${R_IN} ${R_IN} 0 0 0 ${x3} ${y3}Z`,
+    fill:'#1A212A', stroke:'#2B3542','stroke-width':.8
+  });
+  rotor.appendChild(w); wedges.push(w);
+  if (s % 5 === 0){
+    const [tx,ty] = pol((R_OUT+R_IN)/2, base + DEG/2);
+    const tl = el('text',{x:tx,y:ty+2.4,class:'slot-num','text-anchor':'middle',
+                          transform:`rotate(${base+DEG/2} ${tx} ${ty})`});
+    tl.textContent = pad(s); rotor.appendChild(tl);
+  }
+}
+/* rotation-direction chevrons ride on the rotor */
+for (let k = 0; k < 8; k++){
+  const a = -k*45 - 22;
+  const [cx,cy] = pol(R_OUT+13, a);
+  const ch = el('path',{d:'M-4 -3 L2 0 L-4 3', fill:'none', stroke:'var(--rule)','stroke-width':1.4,
+                        transform:`translate(${cx} ${cy}) rotate(${a})`});
+  rotor.appendChild(ch);
+}
+
+/* --- fixed layer: station markers (these never rotate) --- */
+const gStn = el('g'); svg.appendChild(gStn);
+const stnDot = {};
+STATIONS.forEach(s => {
+  const a = s.off*DEG;
+  const [x1,y1]=pol(R_OUT+2,a+DEG/2), [x2,y2]=pol(R_STN-6,a+DEG/2);
+  gStn.appendChild(el('line',{x1,y1,x2,y2,stroke:'var(--ink-faint)','stroke-width':1}));
+  const [dx,dy]=pol(R_OUT+9,a+DEG/2);
+  const dot = el('circle',{cx:dx,cy:dy,r:4.2,fill:'#1B222C',stroke:'var(--ink-faint)','stroke-width':1.4});
+  gStn.appendChild(dot); stnDot[s.id]=dot;
+
+  const [lx,ly]=pol(R_STN+10,a+DEG/2);
+  const anchor = (Math.abs(lx)<14) ? 'middle' : (lx>0 ? 'start':'end');
+  const t1 = el('text',{x:lx,y:ly,class:'stn-label','text-anchor':anchor}); t1.textContent=s.id;
+  const t2 = el('text',{x:lx,y:ly+9,class:'stn-role','text-anchor':anchor}); t2.textContent=`+${s.off} · ${s.role}`;
+  gStn.appendChild(t1); gStn.appendChild(t2);
+});
+
+/* --- hub readout --- */
+const gHub = el('g'); svg.appendChild(gHub);
+gHub.appendChild(el('circle',{cx:0,cy:0,r:R_HUB-8,fill:'#151B23',stroke:'var(--rule)','stroke-width':1}));
+const hK1=el('text',{x:0,y:-30,class:'hub-k','text-anchor':'middle'}); hK1.textContent='ENCODER COUNT';
+const hV1=el('text',{x:0,y:-10,class:'hub-v','text-anchor':'middle'});
+const hK2=el('text',{x:0,y:14,class:'hub-k','text-anchor':'middle'}); hK2.textContent='SLOT AT ENTRY';
+const hV2=el('text',{x:0,y:34,class:'hub-v','text-anchor':'middle'});
+const hS =el('text',{x:0,y:52,class:'hub-s','text-anchor':'middle'});
+[hK1,hV1,hK2,hV2,hS].forEach(n=>gHub.appendChild(n));
+
+/* ============================================================
+   SLOT MEMORY GRID + STATION STRIP  (built once)
+   ============================================================ */
+const memEl = document.getElementById('mem'), cells = [];
+for (let s = 0; s < SLOTS; s++){
+  const c = document.createElement('div');
+  c.className = 'cell'; c.title = `slot ${pad(s)}`;
+  memEl.appendChild(c); cells.push(c);
+}
+const stnEl = document.getElementById('stn'), stnCells = {};
+STATIONS.forEach(s => {
+  const d = document.createElement('div'); d.className='stncell';
+  d.innerHTML = `<div class="n">${s.id}</div><div class="sl">offset +${s.off}</div><div class="oc empty">—</div>`;
+  stnEl.appendChild(d); stnCells[s.id] = d.querySelector('.oc');
+});
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+const busEl = document.getElementById('bus');
+let tick = 0;
+
+function render(t){
+  const live = liveAt(t);
+  const byslot = new Map(live.map(p => [p.slot, p]));
+
+  /* disc rotation — slot s sits at station offset o when t = s + o */
+  rotor.setAttribute('transform', `rotate(${t*DEG})`);
+
+  /* wedge fills */
+  for (let s = 0; s < SLOTS; s++){
+    const p = byslot.get(s);
+    if (p){ wedges[s].setAttribute('fill', stateColor(p,t)); wedges[s].setAttribute('stroke','#0F1720'); }
+    else  { wedges[s].setAttribute('fill', '#1A212A');       wedges[s].setAttribute('stroke','#2B3542'); }
+  }
+
+  /* station dots light when occupied */
+  for (const s of STATIONS){
+    const p = byslot.get(((t - s.off) % SLOTS + SLOTS) % SLOTS);
+    const occupied = p && (t - p.t0) === s.off;
+    stnDot[s.id].setAttribute('fill', occupied ? stateColor(p,t) : '#1B222C');
+    stnCells[s.id].className = 'oc' + (occupied ? '' : ' empty');
+    stnCells[s.id].innerHTML = occupied
+      ? `slot ${pad(p.slot)} · #${p.serial}`
+      : '—';
+  }
+
+  /* hub */
+  hV1.textContent = (t*CPS).toLocaleString();
+  hV2.textContent = pad(t % SLOTS);
+  hS.textContent  = `rev ${Math.floor(t/SLOTS)} · ${live.length} in flight`;
+
+  /* memory grid */
+  for (let s = 0; s < SLOTS; s++){
+    const p = byslot.get(s);
+    cells[s].style.background = p ? stateColor(p,t) : '#1A212A';
+    cells[s].style.borderColor = p ? 'transparent' : '#2B3542';
+    cells[s].classList.toggle('head', s === t % SLOTS);
+    cells[s].title = p
+      ? `slot ${pad(s)} · serial ${p.serial} · ${knowledge(p,t).nDone}/4 stations reported`
+      : `slot ${pad(s)} · EMPTY`;
+  }
+
+  /* message bus — replay the last few ticks so scrubbing works */
+  const msgs = [];
+  for (let k = Math.max(0, t-7); k <= t; k++) msgs.push(...messagesAt(k));
+  busEl.innerHTML = msgs.length
+    ? msgs.slice(-46).map(m =>
+        `<div class="msg ${m.dir}"><span class="t">t${pad(m.t)}</span>` +
+        `<span class="ar">${m.dir==='p2c'?'▶':'◀'}</span>` +
+        `<span><b>${m.type}</b> ${m.body}</span></div>`).reverse().join('')
+    : `<div class="bus-empty">Bus idle — drag the slider to start the disc.</div>`;
+
+  /* tallies */
+  let ent=0, acc=0, r1=0, r2=0, unk=0;
+  for (let k = 0; k <= t; k++){
+    const p = parts[k]; if (!p) continue;
+    ent++;
+  }
+  for (let k = 0; k <= t; k++){
+    for (const p of [parts[k - OFF.R1], parts[k - OFF.R2], parts[k - OFF.EXIT]]){
+      if (!p || p.exitTick !== k) continue;
+      if (p.exit === 'R1'){ r1++; if (p.cls === 'UNKNOWN') unk++; }
+      else if (p.exit === 'R2') r2++;
+      else acc++;
+    }
+  }
+  set('cEnt',ent); set('cAcc',acc); set('cR1',r1); set('cR2',r2); set('cUnk',unk); set('cFly',live.length);
+  set('rdEnc',(t*CPS).toLocaleString()); set('rdSlot',pad(t%SLOTS));
+  set('rdRev',Math.floor(t/SLOTS)); set('rdFlight',live.length);
+  set('tickTxt',t);
+
+  const ok = ent === acc + r1 + r2 + live.length;
+  const cons = document.getElementById('cons');
+  cons.className = 'conserve' + (ok ? '' : ' bad');
+  cons.innerHTML = ok
+    ? `conservation check &nbsp; ${ent} entered = ${acc} accepted + ${r1} R1 + ${r2} R2 + ${live.length} in flight &nbsp; <b>BALANCED</b>`
+    : `conservation check FAILED — a part appeared or vanished`;
+
+  document.getElementById('hb').classList.toggle('on', t % 3 === 0);
+}
+const set = (id,v) => document.getElementById(id).textContent = v;
+
+/* ============================================================
+   CONTROLS
+   ============================================================ */
+const slider = document.getElementById('slider');
+const playBtn = document.getElementById('play');
+let timer = null;
+
+function goto(t){ tick = Math.max(0, Math.min(TOTAL, t)); slider.value = tick; render(tick); }
+slider.addEventListener('input', e => { stop(); goto(+e.target.value); });
+document.getElementById('stepF').addEventListener('click', () => { stop(); goto(tick+1); });
+document.getElementById('stepB').addEventListener('click', () => { stop(); goto(tick-1); });
+function stop(){ if (timer){ clearInterval(timer); timer=null; playBtn.textContent='Play'; playBtn.classList.add('primary'); } }
+playBtn.addEventListener('click', () => {
+  if (timer) return stop();
+  playBtn.textContent='Pause'; playBtn.classList.remove('primary');
+  timer = setInterval(() => { if (tick >= TOTAL) return stop(); goto(tick+1); }, 420);
+});
+addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight'){ stop(); goto(tick+1); }
+  if (e.key === 'ArrowLeft'){ stop(); goto(tick-1); }
+});
+
+render(0);
+</script>

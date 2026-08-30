@@ -1,0 +1,269 @@
+OSM Aug-30 Slice: Rotating Indexer -> 2-Camera Capture -> Live OK/NOK Display
+==============================================================================
+Written: 2026-08-27, updated: 2026-08-28 (build start day, plan APPROVED)
+
+CONTEXT
+-------
+OSM's full CLAUDE.md scope (9 pages, RBAC, PLC/Modbus, vision pipeline, 900 PPM
+SLA) is not buildable from the current repo state in the 3 days between the
+build start (2026-08-28) and the target date (2026-08-30). Scope has been
+narrowed to a PROTOTYPE DEMO: 2 cameras placed on the rotary indexer plate, a
+batch of parts on the disc (e.g. 20 rubber parts, 2 defective), and each
+rotation, the defective ones get detected and the result is shown live on
+screen -- built end to end with simulators (no real PLC/camera hardware
+required), so a 3rd/4th/Nth camera is a config change later, not a redesign.
+Config editor, Dashboard, Part/Category ingestion UI, and RBAC/auth are
+explicitly deferred -- Login can be built anytime later, Part Selection is
+hardcoded to one demo part (bolt_m8, already fully specified in
+machine_config.yaml) instead of a real picker. machine_config.yaml is
+used/extended as-is for pipeline config, not through a new authoring UI. Dev
+workflow: plain uvicorn + native electron -- Docker is deferred (only
+db+redis infra services run via the existing dev compose file).
+
+A sister project, gcm (/Users/snehalpatange/Documents/snehal/raph/gcm),
+already has a working, production-tested version of the hard parts of this:
+threaded capture/inference/display with drop-old queues, ZMQ PUB -> Electron
+main-process SUB -> IPC -> React live frame delivery, and a camera/PLC
+singleton connected once at FastAPI startup. This plan adapts those patterns
+directly rather than redesigning them. gcm has NO equivalent for OSM's
+indexer/slot-tracking (it's a conveyor counter, not a rotary indexer) and
+its PLC code does single-register reads, which conflicts with OSM's 900 PPM
+batching rule -- those two pieces are genuinely new.
+
+OPEN GAP (surfaced during exploration, not papered over): machine_config.yaml
+today has no n_slots/encoder_cpr/register-map fields, and its trigger model
+(plc: {trigger_reg, part_id_reg}) is PLC-writes/PC-reads -- the opposite of
+CLAUDE.md Rule 1 ("PC self-fires, never waits on a PLC trigger register").
+Real register addresses, actual n_slots/encoder_cpr, and model weight files
+for /models/defect_v1.pt do not exist anywhere in this repo -- per
+CLAUDE.md's own instruction, these come from whoever owns the PLC program,
+not invented here. Instead: extend the YAML additively with clearly-labeled
+placeholder register/indexer fields validated only against a simulator, and
+keep the already-working "source: simulation" trigger path as the guaranteed
+fallback so the demo is achievable even if the real PLC-driven slot math
+isn't fully validated by Aug 30.
+
+BUILD ORDER CONFIRMED: finalize the config schema and build both simulators
+(camera + PLC) first -- nothing else (tracker, dispatcher, pipeline) can be
+meaningfully tested without something to run against. This is Day 1's focus.
+
+RECOMMENDED APPROACH
+---------------------
+
+1. Config schema first -- extend machine_config.yaml + config_loader.py
+   Add, additively, alongside the existing (unchanged) DefectConfig /
+   MeasurementConfig / InspectionPipeline / InspectionTrigger /
+   PartAggregationConfig models:
+   - indexer: block -- n_slots, encoder_cpr (placeholder values, clearly
+     labeled as such until the PLC-program owner confirms real ones).
+   - plc.registers: block -- PULSE_COUNT, HEARTBEAT_PLC (plain periodic
+     alive signal, not tied to slot math -- see 2), plus the entry-sensor
+     ring buffer registers (see 2), plus reject CMD/ACK registers (see 3).
+   - resolve_config_for_part(part_code, db=None) in config_loader.py --
+     currently missing entirely. Reads machine_config.yaml directly
+     (matching "use YAML as-is"), with an optional no-op-today DB-merge
+     branch for Part.defects/Part.dimensions -- the seam for later
+     Part-ingestion work, not built out now.
+
+2. Entry sensor design -- exact pulse capture via a ring buffer (decided,
+   not the earlier heartbeat-quantization idea)
+   The PLC team confirmed they can latch the EXACT pulse count at the entry
+   sensor's trigger instant, delivered as a small ring buffer so no part is
+   ever lost even if two parts arrive close together, faster than one poll
+   cycle:
+   - ENTRY_QUEUE_WRITE_IDX (1 register) -- PLC increments this on every new
+     part trigger.
+   - ENTRY_QUEUE_SLOTS[0..N-1] (N registers, e.g. N=16 -- confirm exact size
+     with the PLC-program owner) -- ring buffer; PLC writes the captured
+     pulse count into slot (write_idx % N), then increments write_idx.
+   - PC side: keeps a local last_read_idx pointer. Each poll, reads
+     write_idx + all N slots in one batched call. For every index from
+     last_read_idx to write_idx, reads slots[i % N] -- the exact pulse for
+     that part, in order. No round-trip needed to "pop" -- just a local
+     pointer advance in PC memory.
+   - Overflow case (write_idx advanced more than N since last poll --
+     genuine data loss): trigger the same FAULT_STATUS escalation with a
+     full register snapshot. With N sized well above normal burst rate,
+     this should be rare.
+   - The earlier "3 heartbeats per slot" idea is DROPPED -- it only existed
+     to guess entry position from a coarse pulse; exact capture makes that
+     unnecessary. The PC still needs a plain fast poll loop (e.g. every
+     10-20ms) to check station flags, but that's just a timer now, not slot
+     math.
+
+3. Reject-station design -- kept GENERIC and config-driven, NOT hardcoded to
+   a specific severity split
+   An earlier reference (indexer_simulation 1.html, a digital-twin mockup)
+   showed two severity-routed reject stations (R1 critical / R2 cosmetic) --
+   THAT SPLIT WAS ILLUSTRATIVE FOR THE MOCKUP, NOT CONFIRMED for the
+   real/prototype machine. The actual build must not hardcode a fixed
+   number of reject stations or fixed severity classes. Instead:
+   - The register map and dispatcher support a LIST of reject stations
+     (starting with just 1 for this 2-camera prototype), each with its own
+     REJECT_CMD_<id>/REJECT_ACK_<id> pair and timeout, per CLAUDE.md Rule 4.
+   - Each defect class in the pipeline config maps to a reject-station id
+     (defaulting to the single station that exists today) -- so adding a
+     second reject station later is a config change.
+   - Still keep the good ideas validated by that reference regardless of
+     station count: (a) fail-safe default -- if a camera's result never
+     arrives by the time the part reaches the reject station, treat it as
+     UNKNOWN and reject anyway, never silently pass; (b) reject deadline for
+     a part = (entry_pulse + reject_station_offset_pulses), the real number
+     CLAUDE.md Rule 7 asks to measure; (c) a conservation invariant for
+     testing tracker.py -- entered == accepted + rejected + still_in_flight.
+
+4. app/indexer/tracker.py + dispatcher.py -- new, no gcm equivalent
+   - tracker.py: IndexerSlotTracker -- pure Python, unit-testable, no
+     hardware I/O. Fixed-size preallocated slot table (slots: dict[int,
+     dict], never created/destroyed at runtime -- matches the reference
+     file's "static array" design), wrap-corrected pulse accumulator,
+     station_slot_id(station_id), tick() (sets flags unconditionally;
+     firing is a separate assign_part_id is not None check per the
+     indexer-ring-math skill), entry-queue draining logic from 2.
+   - dispatcher.py: StationDispatcher -- supports BOTH trigger source types
+     already in the YAML side by side: "simulation" (timer-fired, zero new
+     config, the guaranteed fallback) and "plc" (subscribes to
+     tracker.tick(), self-fires per Rule 1 -- the real path).
+
+5. app/plc/ -- reuse gcm's connect/singleton shape, NOT its per-register
+   calls
+   - modbus_client.py: BatchedModbusClient -- read_holding_registers(start,
+     count) once per poll cycle over a contiguous register block, not N
+     single-register calls (gcm's pattern is explicitly the anti-pattern
+     here per Rule 6).
+   - watchdog.py: PLCWatchdog -- missed REJECT_ACK -> STOP_COMMAND (ERROR +
+     register snapshot); missed OK_ACK -> FAULT_STATUS only; entry-queue
+     overflow -> FAULT_STATUS (2).
+   - plc_manager.py: PLCManager singleton, connected once in FastAPI
+     startup, adapted from gcm's CameraManager/PLCManager +
+     @app.on_event("startup") pattern, guarded by the YAML's existing
+     plc.sim.enabled flag.
+   - services/plc_sim/: adapted from gcm/services/plc_sim/main.py, extended
+     to continuously increment PULSE_COUNT (wrapping at encoder_cpr), push
+     entries into the entry-queue ring buffer on a timer (simulating parts
+     arriving), and simulate reject CMD/ACK handshakes -- this is what
+     makes the whole demo runnable without real hardware.
+
+6. app/camera/station_registry.py -- new, N-camera-ready (gcm hardcodes one
+   device)
+   StationRegistry keyed by camera_id, built from
+   resolved_config.triggers[*].cameras -- adding a 3rd camera later is a
+   YAML edit, not a code change. Each CameraStation gets its own thread, its
+   own small drop-old queue (gcm's InferenceEngine capture/inference/display
+   queue shape), and its own ZMQ topic MessageType.CameraFeed.<camera_id>
+   (gcm's single global topic doesn't scale to multiple simultaneous feeds).
+   set_frame_provider() is the swap seam for sim-vs-real camera, lifted
+   directly from gcm's InferenceEngine.set_frame_provider() -- for the demo,
+   the sim provider cycles through a small set of known-good and
+   known-defective sample images (matching the "20 parts, 2 defective"
+   scenario) rather than one static image per camera.
+
+7. Backend ZMQ + FastAPI startup wiring
+   app/utils/zeromq.py: MessageBroadcaster adapted 1:1 from gcm -- one
+   zmq.PUB singleton bound at tcp://*:{ZMQ_PORT} (5558, matching the YAML),
+   send_multipart([topic, message]). Per-camera topics via
+   camera_feed_topic(camera_id). app/main.py gets sequential
+   @app.on_event("startup") handlers: resolve config -> build station
+   registry (+ frame providers) -> init indexer + PLC manager + poll loop ->
+   init dispatcher -> start batched DB result writer. New
+   app/routers/inspection.py under /api/v1: GET /inspection/config (camera
+   list, so the frontend isn't hardcoded to "cam1,cam2"), GET
+   /inspection/session/current (running totals) -- REST only, no business
+   logic in the router, live data stays on ZMQ per CLAUDE.md Section 9.
+
+8. DB batching shape (structurally present, not load-tested this slice)
+   app/db/results_buffer.py: BatchedResultWriter -- buffered
+   SessionResult/CameraResult writes, background flush via
+   bulk_insert_mappings, never one INSERT per part on the hot path (Rule
+   6.2). app/db/bootstrap.py: idempotent upsert of one Part row for bolt_m8
+   from the YAML -- just enough DB state for session counters, explicitly
+   not a Part-ingestion UI.
+
+9. Electron + minimal Inspection page
+   frontend/public/electron.js + preload.js (don't exist yet) -- adapted
+   from gcm's exact ZMQ SUB/IPC loop (for await (const [topic, msg] of
+   sock)), contextBridge.exposeInMainWorld), but stripped of gcm's
+   Docker-orchestration code since dev here is plain uvicorn. preload.js
+   generalized to per-camera-id handlers (gcm's is single-camera). New
+   frontend/src/pages/InspectionPage.jsx -- replaces a PlaceholderPage,
+   renders N camera feeds (<img src={dataUrl}>, no canvas needed -- frames
+   arrive as base64 data URLs per gcm's pattern) + per-camera OK/NOK chips +
+   running totals. Wired into frontend/src/routes/AppRoutes.jsx (new
+   /inspection route) and Sidebar.jsx (new nav entry) -- bypasses the
+   out-of-scope Create-Session flow since no session-creation UI exists yet.
+   frontend/src/api/axios.js is currently empty -- needs a minimal baseURL
+   export.
+
+DAY-BY-DAY SEQUENCING (build starts Aug 28, target Aug 30 -- 3 days)
+------------------------------------------------------------------------
+Day 1 (today, Aug 28): finalize the config schema extension (1-3) in
+  machine_config.yaml; add pymodbus/pyzmq/opencv-python-headless/pytest to
+  requirements; bring up db+redis via existing dev compose (infra only).
+  Then build both simulators against that schema in parallel: camera
+  simulator (6, cycling good/defective sample images) and PLC simulator (5,
+  rotating pulse count + entry-queue pushes + reject CMD/ACK). Also today:
+  tracker.py (4) + unit tests, since it's pure math with no dependency on
+  either simulator.
+
+Day 2 (Aug 29): dispatcher.py wiring both source paths against Day 1's
+  simulators -- first end-to-end sim-fire -> capture -> placeholder result,
+  then real tracker-driven self-fire against the rotating PLC sim. Then
+  app/pipeline/ (context, thread-safe ModelRegistry with a MockDefectModel
+  fallback since no weight files exist yet, defect/measurement steps --
+  serial/parallel per cmd_cameras()/defect_only_cameras()/
+  measure_only_cameras(), aggregator/result processor), DB batching,
+  FastAPI startup wiring, zeromq.py. Verify the full loop via uvicorn + a
+  throwaway ZMQ SUB script. This is the heaviest day.
+
+Day 3 (Aug 30, demo day): Electron + preload.js + InspectionPage.jsx first
+  thing, verify live feeds render against the Day 2 backend. Watchdog smoke
+  test (stall the PLC sim, confirm escalation logging including entry-queue
+  overflow). Remaining time: buffer/polish, rehearse the demo (compose
+  infra -> uvicorn -> plc_sim -> npm run electron:dev).
+
+DECIDE NOW, NOT ON DAY 3: floor = IndexerSlotTracker/dispatcher merged +
+unit-tested, demo runs on the "simulation" trigger path (guaranteed, zero
+unknowns). Stretch = demo runs on the real PLC-simulator-driven slot
+computation (tracker-driven self-fire off the rotating sim + entry queue).
+Commit to floor as the actual Aug 30 deliverable now; stretch is a bonus
+only if Day 2 finishes early. If Day 2 runs long, cut the Day 3 watchdog
+smoke test first, not the core capture-to-display loop.
+
+EXPLICITLY OUT OF SCOPE
+------------------------
+Config editor page, Dashboard, Part/Category ingestion UI, RBAC/auth (routes
+reachable without a login gate for this slice), Docker containerization of
+the app itself.
+
+CRITICAL FILES
+--------------
+- backend/app/config/machine_config.yaml, config_loader.py -- extend
+  additively
+- backend/app/main.py -- startup wiring
+- backend/app/models/models.py -- reused unchanged
+- frontend/src/routes/AppRoutes.jsx, src/components/Sidebar.jsx,
+  src/api/axios.js
+- Pattern sources in gcm: backend/app/utils/zeromq.py,
+  backend/app/routers/inference/inference.py, frontend/public/electron.js,
+  services/plc_sim/main.py
+- Reference (not literal code, ground truth for the fail-safe/deadline/
+  conservation-invariant ideas only): osm/indexer_simulation 1.html
+
+VERIFICATION
+------------
+- pytest backend/tests/test_tracker.py -- ring-math unit tests, no
+  hardware, including the conservation invariant (entered == accepted +
+  rejected + in_flight).
+- Run plc_sim, confirm PULSE_COUNT increments and entry-queue entries
+  appear via its inspect endpoint.
+- Run backend via uvicorn app.main:app --reload --port 9001; run a
+  throwaway ZMQ SUB script against tcp://localhost:5558 and confirm
+  MessageType.CameraFeed.cam1/cam2 and MessageType.InspectionResult frames
+  arrive.
+- npm run electron:dev; open /inspection, confirm both camera feeds update
+  live with OK/NOK chips and totals increment, first against the
+  "simulation" trigger, then (stretch) against the "plc"-driven trigger
+  with plc_sim running -- should visibly show ~2 of ~20 parts flagged
+  defective per rotation.
+- Stall plc_sim mid-run, confirm STOP_COMMAND/FAULT_STATUS escalation
+  appears in logs with a full register snapshot.
