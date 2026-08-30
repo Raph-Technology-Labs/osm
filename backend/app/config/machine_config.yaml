@@ -1,6 +1,14 @@
 machine:
-  part_code: bolt_m8
-  part_name: "Bolt M8 x 1.25"
+  part_code: rubber_1
+  part_name: "rubber"
+
+# PLACEHOLDER -- real values must come from whoever owns the Integra
+# controller program (per CLAUDE.md's "ask, don't invent" rule). Validated
+# only against the simulator (services/plc_sim), not real hardware.
+indexer:
+  part_size_mm: 20.0   # PLACEHOLDER
+  n_slots: 20           # PLACEHOLDER -- n_slots = perimeter / part_size_mm
+  encoder_cpr: 3600      # PLACEHOLDER -- must be divisible by n_slots (180/slot)
 
 plc:
   ip: "192.168.6.41"
@@ -10,6 +18,16 @@ plc:
     enabled: true
     host: "localhost"
     port: 5502
+  # PLACEHOLDER register addresses -- confirm real layout with the
+  # controller-program owner before wiring against real hardware. Laid out
+  # contiguously (pulse_count..entry_queue block) so the poll loop can read
+  # them in one batched read_holding_registers call per CLAUDE.md Rule 6.
+  registers:
+    pulse_count: 200            # free-running, wraps every encoder_cpr counts
+    heartbeat_plc: 201          # plain periodic alive signal, not slot math
+    entry_queue_write_idx: 202  # PLC increments on every part-entry trigger
+    entry_queue_slots_start: 203  # first of `entry_queue_size` contiguous regs
+    entry_queue_size: 16        # ring buffer depth -- confirm vs. real burst rate
 
 zmq:
   port: 5558
@@ -21,27 +39,26 @@ redis:
     result: "rv_inspection_result"
     trigger: "rv_trigger_event"
 
-part_aggregation:
-  pass_if: all_triggers_pass
-  result_write:
-    part_id_reg: 100
-    result_reg: 101
-    ack_reg: 102
-
+# Every physical station on the ring is a triggers[] entry, discriminated by
+# `type`. No trigger_reg/part_id_reg anywhere: the PC self-fires off its own
+# slot math (Rule 1), it never waits on a controller trigger register.
+#
+# This build has no reject actuator -- nothing physically leaves the ring
+# early. `type: exit` is the aggregation checkpoint: at that many pulses, the
+# software checks whether the part passed every inspection trigger it went
+# through. If OK, result_write.ack_reg is a dummy ACK (confirms the
+# result_aggregator increment). NOK is flagged/displayed only, no physical
+# action, so no ack is expected on that path.
 triggers:
 
   - id: trig1
-    name: "Station 1 - Surface + Dimension"
+    name: "Station 1 - Dimension Measurement"
     type: inspection
-    is_last_trigger: false
+    station_offset_pulses: 540   # PLACEHOLDER -- pulses from Entry to this station
 
     source:
       type: simulation
       sim_interval_ms: 3000
-
-    plc:
-      trigger_reg: 8
-      part_id_reg: 7
 
     cameras:
       cam1:
@@ -50,35 +67,18 @@ triggers:
         fps: 30
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
+        strobe_reg: 18   # fire-and-forget CMD, no ACK -- per-camera light, not global
         sim:
           enabled: true
           image_path: "/data/sim/cam1.jpg"
 
-      cam2:
-        ip: "192.168.5.42"
-        resolution: { x: 1920, y: 1080 }
-        fps: 30
-        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
-        capture_mode: single_shot
-        sim:
-          enabled: true
-          image_path: "/data/sim/cam2.jpg"
-
     pipeline:
-
-      # single model, one inference call — detects locator class(es) + defect class(es) together
-      defect:
-        model_path: "/models/defect_v1.pt"
-        model_type: yolo
-        conf_thresh: 0.50
-        allowed_cameras: [cam1, cam2]
-        detect_classes: [bolt, rust, crack, scratch]   # everything this model outputs
-        allowed_defects: [rust, crack, scratch]        # ok/nok decided ONLY on these
-
-      # no model_path -> reuses defect's raw detections, just filters allowed_classes
+      # own model -- no defect block on this trigger to share detections with.
       measurement:
-        allowed_cameras: [cam1]              # cam1 also in defect -> CMD (serial, same camera)
-        allowed_classes: [bolt]              # pull this class out of defect's detections
+        allowed_cameras: [cam1]
+        allowed_classes: [rubber_part]
+        model_path: "/models/bolt_locate.pt"   # PLACEHOLDER model
+        model_type: yolo
         method: caliper
         parameters:
           diameter_mm:
@@ -92,62 +92,46 @@ triggers:
         draw_result: true
 
   - id: trig2
-    name: "Station 2 - Thread + Diameter Check"
+    name: "Station 2 - Defect Detection"
     type: inspection
-    is_last_trigger: true
+    station_offset_pulses: 1080   # PLACEHOLDER
 
     source:
-      type: plc
-
-    plc:
-      trigger_reg: 20
-      part_id_reg: 19
+      type: simulation
+      sim_interval_ms: 3000
 
     cameras:
-      cam5:
-        ip: "192.168.5.45"
+      cam2:
+        ip: "192.168.5.42"
         resolution: { x: 1920, y: 1080 }
         fps: 30
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
+        strobe_reg: 19
         sim:
           enabled: true
-          image_path: "/data/sim/cam5.jpg"
-
-      cam6:
-        ip: "192.168.5.46"
-        resolution: { x: 1920, y: 1080 }
-        fps: 30
-        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
-        capture_mode: single_shot
-        sim:
-          enabled: true
-          video_path: "/data/sim/cam6.mp4"
+          image_path: "/data/sim/cam2.jpg"
 
     pipeline:
-
       defect:
-        model_path: "/models/defect_v2.pt"
+        model_path: "/models/defect_v1.pt"   # PLACEHOLDER model
         model_type: yolo
-        conf_thresh: 0.55
-        allowed_cameras: [cam6]
-        detect_classes: [bolt, dent, rust]
-        allowed_defects: [dent, rust]
-
-      # different model than defect -> needs its own inference call
-      measurement:
-        allowed_cameras: [cam5]
-        allowed_classes: [bolt]
-        model_path: "/models/bolt_locate.pt"   # explicit -> separate call, cam5 isn't in defect anyway
-        model_type: yolo
-        method: caliper
-        parameters:
-          diameter_mm:
-            calibration_factor: 12.0
-          head_dia_mm:
-            calibration_factor: 11.8
+        conf_thresh: 0.50
+        allowed_cameras: [cam2]
+        detect_classes: [rubber_part, crack, tear, scratch]   # everything this model outputs
+        allowed_defects: [crack, tear, scratch]                # ok/nok decided ONLY on these
 
       result:
         pass_if: all_cameras_pass
         save_result: true
         draw_result: true
+
+  - id: exit1
+    name: "Exit Station - Result Check"
+    type: exit
+    station_offset_pulses: 1800   # PLACEHOLDER -- point where OK/NOK is evaluated
+    pass_if: all_triggers_pass
+    result_write:
+      part_id_reg: 100
+      result_reg: 101
+      ack_reg: 102   # dummy ack -- confirms result_aggregator increment, OK path only

@@ -1,0 +1,195 @@
+machine:
+  part_code: bolt_m8
+  part_name: "rubber"
+
+# PLACEHOLDER -- real values must come from whoever owns the Integra
+# controller program (per CLAUDE.md's "ask, don't invent" rule). Validated
+# only against the simulator (services/plc_sim), not real hardware.
+indexer:
+  part_size_mm: 20.0   # PLACEHOLDER
+  n_slots: 20           # PLACEHOLDER -- n_slots = perimeter / part_size_mm
+  encoder_cpr: 3600      # PLACEHOLDER -- must be divisible by n_slots (180/slot)
+
+plc:
+  ip: "192.168.6.41"
+  port: 502
+  vendor: siemens
+  sim:
+    enabled: true
+    host: "localhost"
+    port: 5502
+  # PLACEHOLDER register addresses -- confirm real layout with the
+  # controller-program owner before wiring against real hardware. Laid out
+  # contiguously (pulse_count..entry_queue block) so the poll loop can read
+  # them in one batched read_holding_registers call per CLAUDE.md Rule 6.
+  registers:
+    pulse_count: 200            # free-running, wraps every encoder_cpr counts
+    heartbeat_plc: 201          # plain periodic alive signal, not slot math
+    entry_queue_write_idx: 202  # PLC increments on every part-entry trigger
+    entry_queue_slots_start: 203  # first of `entry_queue_size` contiguous regs
+    entry_queue_size: 16        # ring buffer depth -- confirm vs. real burst rate
+
+zmq:
+  port: 5558
+
+redis:
+  host: "localhost"
+  port: 9379
+  keys:
+    result: "rv_inspection_result"
+    trigger: "rv_trigger_event"
+
+# OK-path confirmation: the machine has a part-presence sensor at the OK bin
+# too, so ack_reg here is a real physical ACK ("this part landed in the OK
+# bin"), not just a log write. Only fires on the accept path -- the reject
+# path already has its own per-station CMD/ACK below.
+part_aggregation:
+  pass_if: all_triggers_pass
+  result_write:
+    part_id_reg: 100
+    result_reg: 101
+    ack_reg: 102
+
+# Every physical station on the ring -- inspection AND reject alike -- is a
+# triggers[] entry, discriminated by `type`. No trigger_reg/part_id_reg
+# anywhere: the PC self-fires off its own slot math (Rule 1), it never waits
+# on a controller trigger register. Reject stations are their own entries
+# here (not owned by any one inspection trigger) since multiple triggers'
+# defect classes can route to the same reject station via
+# pipeline.defect.reject_station: <id>. "Last inspection trigger" (when to
+# evaluate part_aggregation) is derived from station_offset_pulses at load
+# time -- no manual is_last_trigger flag.
+triggers:
+
+  - id: trig1
+    name: "Station 1 - Surface + Dimension"
+    type: inspection
+    station_offset_pulses: 540   # PLACEHOLDER -- pulses from Entry to this station
+
+    source:
+      type: simulation
+      sim_interval_ms: 3000
+
+    cameras:
+      cam1:
+        ip: "192.168.5.41"
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 18   # fire-and-forget CMD, no ACK -- per-camera light, not global
+        sim:
+          enabled: true
+          image_path: "/data/sim/cam1.jpg"
+
+      cam2:
+        ip: "192.168.5.42"
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 19
+        sim:
+          enabled: true
+          image_path: "/data/sim/cam2.jpg"
+
+    pipeline:
+      # single model, one inference call — detects locator class(es) + defect class(es) together
+      defect:
+        model_path: "/models/defect_v1.pt"
+        model_type: yolo
+        conf_thresh: 0.50
+        allowed_cameras: [cam1, cam2]
+        detect_classes: [bolt, rust, crack, scratch] # everything this model outputs
+        allowed_defects: [rust, crack, scratch] # ok/nok decided ONLY on these
+        reject_station: r1
+
+      # no model_path -> reuses defect's raw detections, just filters allowed_classes.
+      # allowed_cameras ∩ defect.allowed_cameras = {cam1} -> CMD, serial, one inference
+      # pass covers defect+measurement on cam1. cam2 is defect-only -> its own parallel
+      # pass. This intersection IS the serial/parallel wiring between the two blocks.
+      measurement:
+        allowed_cameras: [cam1] # cam1 also in defect -> CMD (serial, same camera)
+        allowed_classes: [bolt] # pull this class out of defect's detections
+        method: caliper
+        parameters:
+          diameter_mm:
+            calibration_factor: 10.5
+          length_mm:
+            calibration_factor: 10.2
+
+      result:
+        pass_if: all_cameras_pass
+        save_result: true
+        draw_result: true
+
+  - id: trig2
+    name: "Station 2 - Thread + Diameter Check"
+    type: inspection
+    station_offset_pulses: 1080   # PLACEHOLDER
+
+    source:
+      type: plc
+
+    cameras:
+      cam5:
+        ip: "192.168.5.45"
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 21
+        sim:
+          enabled: true
+          image_path: "/data/sim/cam5.jpg"
+
+      cam6:
+        ip: "192.168.5.46"
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 22
+        sim:
+          enabled: true
+          video_path: "/data/sim/cam6.mp4"
+
+    pipeline:
+      defect:
+        model_path: "/models/defect_v2.pt"
+        model_type: yolo
+        conf_thresh: 0.55
+        allowed_cameras: [cam6]
+        detect_classes: [bolt, dent, rust]
+        allowed_defects: [dent, rust]
+        reject_station: r1
+
+      # different model than defect -> needs its own inference call. allowed_cameras
+      # {cam5} doesn't intersect defect's {cam6} -> parallel, not CMD -- confirmed by
+      # measurement having its own explicit model_path too.
+      measurement:
+        allowed_cameras: [cam5]
+        allowed_classes: [bolt]
+        model_path: "/models/bolt_locate.pt" # explicit -> separate call, cam5 isn't in defect anyway
+        model_type: yolo
+        method: caliper
+        parameters:
+          diameter_mm:
+            calibration_factor: 12.0
+          head_dia_mm:
+            calibration_factor: 11.8
+
+      result:
+        pass_if: all_cameras_pass
+        save_result: true
+        draw_result: true
+
+  - id: r1
+    name: "Reject Station 1"
+    type: reject
+    station_offset_pulses: 1800   # PLACEHOLDER -- real time-of-flight to this
+                                   # station, needed for reject deadline math
+                                   # (CLAUDE.md Rule 7)
+    cmd_reg: 220
+    ack_reg: 221
+    ack_timeout_ms: 500           # reject DOES need ACK+timeout, unlike strobe
