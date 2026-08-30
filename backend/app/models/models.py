@@ -4,7 +4,7 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean, CheckConstraint, Column, DateTime,
-    Float, ForeignKey, Integer, JSON,
+    Float, ForeignKey, Index, Integer, JSON,
     LargeBinary, String, Text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -226,7 +226,28 @@ class PartSession(Base):
 # SESSION RESULT — one row per trigger fire
 #
 # trigger_fire_no → sequential within session (1, 2, 3 …)
-# overall_passed  → aggregated across all cameras in trigger
+# overall_passed  → aggregated across all cameras in this trigger's own
+#                    stations — EXCEPT on the exit/reject-station row (see
+#                    trigger_id below), where it is the part's final
+#                    aggregated OK/NOK per part_aggregation.pass_if.
+#
+# trigger_id   → which station produced this row ("trig1" / "trig2" / "r1"),
+#                matches machine_config.yaml's triggers[].id. A part with
+#                multiple inspection stations produces multiple rows.
+#
+# ring_part_id → IndexerSlotTracker's per-part identifier
+#                (SlotRecord.assign_part_id). Ties together every row
+#                belonging to the same physical part as it crosses
+#                trig1 -> trig2 -> exit/reject — assigned when the part
+#                enters, lives with it until it exits or is rejected
+#                (IndexerSlotTracker.free_slot()). Query all rows for one
+#                (session_id, ring_part_id) to get a part's full station
+#                history and evaluate the exit/reject aggregation.
+#
+# rejected     → final reject flag, set only on the exit/reject-station row.
+#                True = physically discarded via the blower (CLAUDE.md
+#                Rule 3). Null on trig1/trig2 rows — the decision hasn't
+#                been made there.
 # ─────────────────────────────────────────────────────────────────
 
 class SessionResult(Base):
@@ -234,10 +255,17 @@ class SessionResult(Base):
 
     id              = Column(Integer, primary_key=True, index=True)
     session_id      = Column(Integer, ForeignKey("part_sessions.id"), nullable=False)
+    trigger_id      = Column(String(50), nullable=False)
+    ring_part_id    = Column(Integer, nullable=False, index=True)
     trigger_fire_no = Column(Integer, nullable=False)
     fired_at        = Column(DateTime(timezone=True), server_default=func.now())
     overall_passed  = Column(Boolean, nullable=True)
+    rejected        = Column(Boolean, nullable=True)
     plc_written     = Column(Boolean, default=False, nullable=False)
+
+    __table_args__ = (
+        Index("ix_session_results_session_ring_part", "session_id", "ring_part_id"),
+    )
 
     session        = relationship("PartSession", back_populates="results")
     camera_results = relationship("CameraResult", back_populates="session_result")
