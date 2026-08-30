@@ -8,6 +8,7 @@ CLAUDE.local.md
 
 # Python
 venv/
+.venv/
 __pycache__/
 *.pyc
 
