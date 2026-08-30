@@ -63,6 +63,18 @@ class CameraStation:
         self.zmq_topic = f"MessageType.CameraFeed.{camera_id}"
         self._frame_provider: Optional[FrameProvider] = None
         self.on_result: Optional[Callable[[str, CapturedFrame], None]] = None
+        # Health Check page reads these -- "initialized" = frame provider
+        # set, "connected" = produced a capture recently (see is_connected()).
+        self.last_capture_ts: Optional[float] = None
+        self.last_capture_ok: Optional[bool] = None
+
+    def is_initialized(self) -> bool:
+        return self._frame_provider is not None
+
+    def is_connected(self, staleness_threshold_s: float = 10.0) -> bool:
+        if self.last_capture_ts is None:
+            return False
+        return (time.time() - self.last_capture_ts) < staleness_threshold_s
 
     def set_frame_provider(self, provider: FrameProvider) -> None:
         self._frame_provider = provider
@@ -74,6 +86,8 @@ class CameraStation:
         if self._frame_provider is None:
             raise RuntimeError(f"{self.camera_id} has no frame provider set")
         captured = self._frame_provider()
+        self.last_capture_ts = time.time()
+        self.last_capture_ok = True
         if self.on_result:
             self.on_result(self.camera_id, captured)
         return captured

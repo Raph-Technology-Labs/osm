@@ -38,6 +38,19 @@ class RejectStation:
 
 
 @dataclass
+class ErrorRegister:
+    name: str
+    reg: int
+
+
+@dataclass
+class Actuator:
+    name: str
+    reg: int
+    type: str
+
+
+@dataclass
 class SimConfig:
     n_slots: int
     encoder_cpr: int
@@ -49,6 +62,8 @@ class SimConfig:
     entry_queue_slots_start_reg: int
     entry_queue_size: int
     reject_stations: List[RejectStation]
+    error_registers: List[ErrorRegister]
+    actuators: List[Actuator]
 
 
 def load_sim_config(config_path: str = CONFIG_PATH) -> SimConfig:
@@ -79,4 +94,6 @@ def load_sim_config(config_path: str = CONFIG_PATH) -> SimConfig:
             )
             for rs in plc["reject_stations"]
         ],
+        error_registers=[ErrorRegister(name=e["name"], reg=e["reg"]) for e in plc.get("error_registers", [])],
+        actuators=[Actuator(name=a["name"], reg=a["reg"], type=a["type"]) for a in raw.get("actuators", [])],
     )

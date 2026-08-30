@@ -44,6 +44,9 @@ PULSES_PER_SEC = int(os.getenv("PLC_SIM_PULSES_PER_SEC", "900"))  # ~4s/revoluti
 _stalled_stations: set[str] = set()      # reject stations currently NOT auto-ACKing
 _last_cmd_value: dict[str, int] = {}      # per-station, last-seen cmd_reg value
 
+# error_registers are plain level registers -- no background task, default 0
+# (no error) at server start; only /simulate/error flips them for testing.
+
 
 def make_context() -> ModbusServerContext:
     holding = [0] * DATASTORE_SIZE
@@ -177,7 +180,19 @@ def status():
             }
             for rs in cfg.reject_stations
         ],
+        "error_registers": [{"name": e.name, "reg": e.reg, "value": _read(e.reg)} for e in cfg.error_registers],
+        "actuators": [{"name": a.name, "reg": a.reg, "value": _read(a.reg)} for a in cfg.actuators],
     }
+
+
+@app.post("/simulate/error/{name}/{on}", summary="Toggle a simulated error-register bit")
+def simulate_error(name: str, on: bool):
+    known = {e.name: e.reg for e in cfg.error_registers}
+    if name not in known:
+        return {"error": f"unknown error register {name!r} (known: {sorted(known)})"}
+    _write(known[name], 1 if on else 0)
+    log.info("Error register %s = %s", name, on)
+    return {"name": name, "value": 1 if on else 0}
 
 
 @app.get("/registers/{address}", summary="Single register by address")

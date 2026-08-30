@@ -5,14 +5,14 @@ const theme = createTheme({
     mode: "light",
 
     primary: {
-      main: "#D92D20", // brand red — active nav, primary actions
-      light: "#FCE8E6", // soft peach-pink — active nav / hover background
-      dark: "#A8221A",
+      main: "#b71c1c", // brand red (matches SCM) — active nav, primary actions
+      light: "#d32f2f", // lighter red, matches SCM's primary.light
+      dark: "#8e1414",
       contrastText: "#FFFFFF",
     },
 
     secondary: {
-      main: "#1A1A1A", // near-black — buttons, headings
+      main: "#111111", // black, matches SCM
       light: "#333333",
       dark: "#000000",
       contrastText: "#FFFFFF",
@@ -20,20 +20,20 @@ const theme = createTheme({
 
     // soft peach/pink used for subtle highlights, hover states, info chips
     accent: {
-      main: "#F7C8C2", // light peach-pink
-      light: "#FDF1EF", // barely-there blush, good for card/row hover
-      dark: "#E8A39B",
+      main: "#FEE2E2", // matches SCM's peach/accent.main
+      light: "#FDF1EF", // matches SCM's accent.light
+      dark: "#f7e582", // matches SCM's peach.dark/accent.dark
       contrastText: "#1A1A1A",
     },
 
     background: {
-      default: "#FAF8F7", // warm-neutral page background (hint of peach, not grey)
-      paper: "#FFFFFF", // cards, sidebar, tables
+      default: "#F5F6F8", // matches SCM
+      paper: "#FFFFFF",
     },
 
     text: {
       primary: "#1A1A1A",
-      secondary: "#6B7280",
+      secondary: "#6A7382", // matches SCM
     },
 
     grey: {
@@ -50,7 +50,7 @@ const theme = createTheme({
     },
 
     error: {
-      main: "#D92D20",
+      main: "#D92D20", // matches SCM
     },
 
     success: {
@@ -65,16 +65,16 @@ const theme = createTheme({
 
     // Custom gradient tokens — use via theme.palette.gradients.xxx in sx props
     gradients: {
-      primary: "linear-gradient(135deg, #D92D20 0%, #A8221A 100%)", // red → deep red (CTA buttons)
-      dark: "linear-gradient(135deg, #1A1A1A 0%, #000000 100%)", // black → deeper black (sidebar header / nav buttons)
-      peach: "linear-gradient(135deg, #FCE8E6 0%, #F7C8C2 100%)", // soft peach (active nav bg, highlight cards)
-      hero: "linear-gradient(135deg, #1A1A1A 0%, #D92D20 55%, #FCE8E6 100%)", // bold black→red→peach (login screen, banners)
-      subtle: "linear-gradient(180deg, #FFFFFF 0%, #FAF8F7 100%)", // barely-there page/card gradient
+      primary: "linear-gradient(135deg, #b71c1c 0%, #8e1414 100%)", // matches SCM
+      dark: "linear-gradient(135deg, #1A1A1A 0%, #000000 100%)", // matches SCM
+      peach: "linear-gradient(135deg, #FCE8E6 0%, #F7C8C2 100%)", // soft peach (active nav bg, highlight cards) — kept as-is, not SCM's accent.dark (that rendered as an unwanted yellow stop)
+      hero: "linear-gradient(135deg, #111111 0%, #b71c1c 55%, #FEE2E2 100%)", // bold black→red→peach (login screen, banners)
+      subtle: "linear-gradient(180deg, #FFFFFF 0%, #F5F6F8 100%)", // barely-there page/card gradient
     },
   },
 
   typography: {
-    fontFamily: "'Poppins', 'Roboto', sans-serif",
+    fontFamily: "system-ui, 'Segoe UI', Roboto, sans-serif", // matches SCM
 
     h1: {
       fontSize: "2rem",
@@ -98,7 +98,7 @@ const theme = createTheme({
     },
 
     body2: {
-      color: "#6B7280",
+      color: "#6A7382",
     },
 
     button: {
@@ -108,20 +108,29 @@ const theme = createTheme({
   },
 
   shape: {
-    borderRadius: 8,
+    borderRadius: 6, // matches SCM
   },
 
   components: {
-    // Buttons now use gradients instead of flat fills
+    // matches SCM: hides the text caret app-wide except real text inputs
+    MuiCssBaseline: {
+      styleOverrides: {
+        img: { userSelect: "none", WebkitUserDrag: "none" },
+        "*": { caretColor: "transparent" },
+        "input, textarea": { caretColor: "auto" },
+      },
+    },
+
+    // Buttons use gradients instead of flat fills
     MuiButton: {
       styleOverrides: {
         root: {
           borderRadius: 5,
         },
         containedPrimary: {
-          backgroundImage: "linear-gradient(135deg, #D92D20 0%, #A8221A 100%)",
+          backgroundImage: "linear-gradient(135deg, #b71c1c 0%, #8e1414 100%)",
           "&:hover": {
-            backgroundImage: "linear-gradient(135deg, #A8221A 0%, #7A1812 100%)",
+            backgroundImage: "linear-gradient(135deg, #8e1414 0%, #6b0f0f 100%)",
           },
         },
         containedSecondary: {
@@ -133,10 +142,21 @@ const theme = createTheme({
       },
     },
 
+    // red focus border on every TextField, matches SCM
+    MuiOutlinedInput: {
+      styleOverrides: {
+        root: {
+          "&.Mui-focused .MuiOutlinedInput-notchedOutline": {
+            borderColor: "#b71c1c",
+          },
+        },
+      },
+    },
+
     MuiPaper: {
       styleOverrides: {
         root: {
-          borderRadius: 8,
+          borderRadius: 6,
         },
       },
     },

@@ -16,7 +16,6 @@ import CategoryIcon from "@mui/icons-material/Category";
 import SupportAgentOutlinedIcon from "@mui/icons-material/SupportAgentOutlined";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import DevicesOutlinedIcon from "@mui/icons-material/DevicesOutlined";
-import VideocamOutlinedIcon from "@mui/icons-material/VideocamOutlined";
 
 // ✅ Logo
 import logo from "../assets/assets/logo/raph-logo.png";
@@ -34,7 +33,6 @@ const Sidebar = ({ loginData, onNavigate }) => {
 
   const menuItems = [
     { name: "Dashboard", path: "/", icon: <DashboardIcon /> },
-    { name: "Inspection", path: "/inspection", icon: <VideocamOutlinedIcon /> },
     { name: "Part Details", path: "/part-details", icon: <CategoryIcon /> },
     {
       name: "Health Check",
@@ -98,7 +96,7 @@ const Sidebar = ({ loginData, onNavigate }) => {
         {/* Action Buttons */}
         <Button
           fullWidth
-          onClick={() => goTo("/mode-selection")}
+          onClick={() => goTo("/part-selection")}
           sx={{
             background: theme.palette.gradients.primary,
             color: theme.palette.primary.contrastText,

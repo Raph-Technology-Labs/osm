@@ -1,19 +1,19 @@
 machine:
-  part_code: rubber_1
-  part_name: "rubber"
+  part_code: "RS-001"
+  part_name: "Rubber Big"
 
 # PLACEHOLDER -- real values must come from whoever owns the Integra
 # controller program (per CLAUDE.md's "ask, don't invent" rule). Validated
 # only against the simulator (services/plc_sim), not real hardware.
 indexer:
-  part_size_mm: 20.0   # PLACEHOLDER
-  n_slots: 20           # PLACEHOLDER -- n_slots = perimeter / part_size_mm
-  encoder_cpr: 3600      # PLACEHOLDER -- must be divisible by n_slots (180/slot)
+  part_size_mm: 20.0 # PLACEHOLDER
+  n_slots: 20 # PLACEHOLDER -- n_slots = perimeter / part_size_mm
+  encoder_cpr: 3600 # PLACEHOLDER -- must be divisible by n_slots (180/slot)
 
 plc:
   ip: "192.168.6.41"
   port: 502
-  vendor: siemens
+  vendor: integra
   sim:
     enabled: true
     host: "localhost"
@@ -23,11 +23,33 @@ plc:
   # contiguously (pulse_count..entry_queue block) so the poll loop can read
   # them in one batched read_holding_registers call per CLAUDE.md Rule 6.
   registers:
-    pulse_count: 200            # free-running, wraps every encoder_cpr counts
-    heartbeat_plc: 201          # plain periodic alive signal, not slot math
-    entry_queue_write_idx: 202  # PLC increments on every part-entry trigger
-    entry_queue_slots_start: 203  # first of `entry_queue_size` contiguous regs
-    entry_queue_size: 16        # ring buffer depth -- confirm vs. real burst rate
+    pulse_count: 200 # free-running, wraps every encoder_cpr counts
+    heartbeat_plc: 201 # plain periodic alive signal, not slot math
+    entry_queue_write_idx: 202 # PLC increments on every part-entry trigger
+    entry_queue_slots_start: 203 # first of `entry_queue_size` contiguous regs
+    entry_queue_size: 16 # ring buffer depth -- confirm vs. real burst rate
+
+  # PLACEHOLDER -- names AND register numbers, confirm with the Integra
+  # controller-program owner. Expected to differ per client deployment --
+  # never hardcode these in the frontend (CLAUDE.md Section 6). Health Check
+  # page reads these. Kept clear of the 200-218 pulse/heartbeat/entry-queue
+  # block above (Rule 6's batched-read range) since these are read far less
+  # often, not part of that hot-path block.
+  # error_registers:
+  # - name: "Error"
+  #   reg: 230 # PLACEHOLDER
+  # - name: "air_pressure_low"
+  #   reg: 231 # PLACEHOLDER
+
+# PLACEHOLDER -- names AND register numbers, same caveat as error_registers
+# above. Device Settings page renders one row per entry.
+# actuators:
+#   - name: "rejection_station_1"
+#     reg: 240 # PLACEHOLDER
+#     type: toggle
+#   - name: "rejection_station_2"
+#     reg: 241 # PLACEHOLDER
+#     type: toggle
 
 zmq:
   port: 5558
@@ -50,11 +72,10 @@ redis:
 # result_aggregator increment). NOK is flagged/displayed only, no physical
 # action, so no ack is expected on that path.
 triggers:
-
   - id: trig1
     name: "Station 1 - Dimension Measurement"
     type: inspection
-    station_offset_pulses: 540   # PLACEHOLDER -- pulses from Entry to this station
+    station_offset_pulses: 540 # PLACEHOLDER -- pulses from Entry to this station
 
     source:
       type: simulation
@@ -67,7 +88,7 @@ triggers:
         fps: 30
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
-        strobe_reg: 18   # fire-and-forget CMD, no ACK -- per-camera light, not global
+        strobe_reg: 18 # fire-and-forget CMD, no ACK -- per-camera light, not global
         sim:
           enabled: true
           image_path: "/data/sim/cam1.jpg"
@@ -77,14 +98,12 @@ triggers:
       measurement:
         allowed_cameras: [cam1]
         allowed_classes: [rubber_part]
-        model_path: "/models/bolt_locate.pt"   # PLACEHOLDER model
+        model_path: "/models/yolo11n.pt" # PLACEHOLDER model
         model_type: yolo
         method: caliper
         parameters:
           diameter_mm:
             calibration_factor: 10.5
-          length_mm:
-            calibration_factor: 10.2
 
       result:
         pass_if: all_cameras_pass
@@ -94,7 +113,7 @@ triggers:
   - id: trig2
     name: "Station 2 - Defect Detection"
     type: inspection
-    station_offset_pulses: 1080   # PLACEHOLDER
+    station_offset_pulses: 1080 # PLACEHOLDER
 
     source:
       type: simulation
@@ -114,12 +133,12 @@ triggers:
 
     pipeline:
       defect:
-        model_path: "/models/defect_v1.pt"   # PLACEHOLDER model
+        model_path: "/models/yolo11n.pt" # PLACEHOLDER model
         model_type: yolo
         conf_thresh: 0.50
         allowed_cameras: [cam2]
-        detect_classes: [rubber_part, crack, tear, scratch]   # everything this model outputs
-        allowed_defects: [crack, tear, scratch]                # ok/nok decided ONLY on these
+        detect_classes: [cat] # everything this model outputs
+        allowed_defects: [cat] # ok/nok decided ONLY on these
 
       result:
         pass_if: all_cameras_pass
@@ -129,9 +148,9 @@ triggers:
   - id: exit1
     name: "Exit Station - Result Check"
     type: exit
-    station_offset_pulses: 1800   # PLACEHOLDER -- point where OK/NOK is evaluated
+    station_offset_pulses: 1800 # PLACEHOLDER -- point where OK/NOK is evaluated
     pass_if: all_triggers_pass
     result_write:
       part_id_reg: 100
       result_reg: 101
-      ack_reg: 102   # dummy ack -- confirms result_aggregator increment, OK path only
+      ack_reg: 102 # dummy ack -- confirms result_aggregator increment, OK path only

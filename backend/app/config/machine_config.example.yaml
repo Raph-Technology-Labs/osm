@@ -29,6 +29,26 @@ plc:
     entry_queue_slots_start: 203  # first of `entry_queue_size` contiguous regs
     entry_queue_size: 16        # ring buffer depth -- confirm vs. real burst rate
 
+  # PLACEHOLDER -- names AND register numbers, confirm with the Integra
+  # controller-program owner. Expected to differ per client deployment.
+  # Kept clear of 200-218 (pulse/heartbeat/entry-queue block) and 220-221
+  # (r1's cmd/ack below) since these are read far less often.
+  error_registers:
+    - name: "e_stop"
+      reg: 230 # PLACEHOLDER
+    - name: "air_pressure_low"
+      reg: 231 # PLACEHOLDER
+
+# PLACEHOLDER -- names AND register numbers, same caveat as error_registers
+# above. Device Settings page renders one row per entry.
+actuators:
+  - name: "rejection_station_1"
+    reg: 240 # PLACEHOLDER
+    type: toggle
+  - name: "rejection_station_2"
+    reg: 241 # PLACEHOLDER
+    type: toggle
+
 zmq:
   port: 5558
 

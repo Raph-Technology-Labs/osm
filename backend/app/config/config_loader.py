@@ -212,12 +212,30 @@ class PLCSimConfig(BaseModel):
     port: int = 5502
 
 
+class ErrorRegisterConfig(BaseModel):
+    """Health Check page reads these -- name/reg only, never hardcoded in
+    the frontend (CLAUDE.md Section 6). Values are placeholders until the
+    Integra controller-program owner confirms the real error-bit layout,
+    and are expected to differ per client deployment."""
+    name: str
+    reg: int
+
+
 class PLCConnectionConfig(BaseModel):
     ip: str
     port: int
     vendor: str
     sim: PLCSimConfig = PLCSimConfig()
     registers: RegisterMapConfig
+    error_registers: List[ErrorRegisterConfig] = []
+
+
+class ActuatorConfig(BaseModel):
+    """Device Settings page renders one row per entry. Placeholder
+    name/reg values, same caveat as ErrorRegisterConfig."""
+    name: str
+    reg: int
+    type: Literal["toggle"]
 
 
 class ZmqConfig(BaseModel):
@@ -231,6 +249,7 @@ class ResolvedMachineConfig(BaseModel):
     plc: PLCConnectionConfig
     zmq: ZmqConfig
     triggers: List[Trigger]
+    actuators: List[ActuatorConfig] = []
 
     @model_validator(mode="after")
     def unique_trigger_ids(self):
@@ -302,6 +321,7 @@ def resolve_config_for_part(
         plc=raw["plc"],
         zmq=raw["zmq"],
         triggers=raw["triggers"],
+        actuators=raw.get("actuators", []),
     )
 
     if db is not None:
