@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
-
+from plc import ModbusPLCClient
 import cv2
 import numpy as np
 
@@ -57,7 +57,7 @@ def sim_frame_provider(camera_id: str, defect_rate: float = 0.10) -> FrameProvid
 
 
 class CameraStation:
-    def __init__(self, camera_id: str, trigger_id: str):
+    def __init__(self, camera_id: str, trigger_id: str, strobe_reg: Optional[int]):
         self.camera_id = camera_id
         self.trigger_id = trigger_id
         self.zmq_topic = f"MessageType.CameraFeed.{camera_id}"
@@ -67,7 +67,8 @@ class CameraStation:
         # set, "connected" = produced a capture recently (see is_connected()).
         self.last_capture_ts: Optional[float] = None
         self.last_capture_ok: Optional[bool] = None
-
+        self.strobe_reg = strobe_reg
+        self.plc = ModbusPLCClient  # type: ignore
     def is_initialized(self) -> bool:
         return self._frame_provider is not None
 
@@ -79,12 +80,21 @@ class CameraStation:
     def set_frame_provider(self, provider: FrameProvider) -> None:
         self._frame_provider = provider
 
+    def fire_strobe(self, strobe_reg: Optional[int]) -> None:
+        """Pulse the strobe register"""
+        if strobe_reg is None:
+            print(f"Camera {self.camera_id} has no strobe register configured, skipping strobe pulse.")
+            return
+        self.plc.write_register(strobe_reg, 1)
+        self.plc.write_register(strobe_reg, 0)
+
     def capture_and_infer(self) -> CapturedFrame:
         """Runs on its own thread per firing -- captures one frame and
         returns the (mocked) inference result. A real defect/measurement
         pipeline slots in here later without changing the caller's contract."""
         if self._frame_provider is None:
             raise RuntimeError(f"{self.camera_id} has no frame provider set")
+        self.fire_strobe(self.strobe_reg)
         captured = self._frame_provider()
         self.last_capture_ts = time.time()
         self.last_capture_ok = True
@@ -100,7 +110,7 @@ class StationRegistry:
     def build_from_config(self, resolved_config) -> None:
         for trig in resolved_config.inspection_triggers():
             for camera_id in trig.cameras:
-                self._stations[camera_id] = CameraStation(camera_id, trig.id)
+                self._stations[camera_id] = CameraStation(camera_id, trig.id, trig.strobe_reg)
 
     def stations_for_trigger(self, trigger_id: str) -> list[CameraStation]:
         return [s for s in self._stations.values() if s.trigger_id == trigger_id]
@@ -115,7 +125,7 @@ class StationRegistry:
         """Fires all cameras for a trigger, each on its own thread -- matches
         gcm's threading (not multiprocessing) pattern for the vision pipeline."""
         for station in self.stations_for_trigger(trigger_id):
-            threading.Thread(target=station.capture_and_infer, daemon=True).start()
+            threading.Thread(target=station.capture_and_infer, args=(station.strobe_reg), daemon=True).start()
 
 
 _registry: Optional[StationRegistry] = None

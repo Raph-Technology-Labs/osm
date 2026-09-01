@@ -135,7 +135,11 @@ class InspectionTrigger(BaseModel):
     """A camera station on the ring. No trigger_reg/part_id_reg -- the PC
     self-fires off its own slot math (Rule 1), it never waits on a
     controller trigger register. station_offset_pulses is what makes that
-    self-fire possible."""
+    self-fire possible.
+    The own slot math rule will gradully get delayed if the osm runs for long duration.
+    even a delay of 0.00001 seconds per trigger will accumulate to a significant delay over time.
+    The delay can be corrected by using the plc as a source of truth for the trigger.
+    """
     id: str
     name: str
     type: Literal["inspection"] = "inspection"
