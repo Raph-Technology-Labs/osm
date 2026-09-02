@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.config_loader import DEFAULT_CONFIG_PATH
 from app.routers import actuators, health, inspection, parts
-from app.routers.routers import router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -22,7 +21,6 @@ app.add_middleware(
 )
 
 
-app.include_router(router)
 app.include_router(inspection.router, prefix="/api/v1")
 app.include_router(parts.router, prefix="/api/v1")
 app.include_router(actuators.router, prefix="/api/v1")
