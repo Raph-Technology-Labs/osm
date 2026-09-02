@@ -1,10 +1,10 @@
 machine:
-  part_code: "RS-001"
+  part_code: "RB-001"
   part_name: "Rubber Big"
 
 # PLACEHOLDER -- real values must come from whoever owns the Integra
 # controller program (per CLAUDE.md's "ask, don't invent" rule). Validated
-# only against the simulator (services/plc_sim), not real hardware.
+# only against the simulator (backend/services/plc_sim), not real hardware.
 indexer:
   part_size_mm: 20.0 # PLACEHOLDER
   n_slots: 20 # PLACEHOLDER -- n_slots = perimeter / part_size_mm
@@ -91,15 +91,19 @@ triggers:
         strobe_reg: 18 # fire-and-forget CMD, no ACK -- per-camera light, not global
         sim:
           enabled: true
-          image_path: "/data/sim/cam1.jpg"
+          image_path: "/data/sim/circles/" # black circle on white bg -- contour-measured, not detected by the stock model
 
     pipeline:
-      # own model -- no defect block on this trigger to share detections with.
+      # No model for now -- measurement.run_measurement_inference() only
+      # runs the model when model_path/model_type are set (uses_own_model())
+      # and falls back to whole-frame contour measurement otherwise, which
+      # is what we want against the plain circle sim images. Set model_path
+      # (a real part-trained detector, not stock yolo11n.pt -- it doesn't
+      # know "rubber_part") + model_type + allowed_classes once one exists,
+      # to crop to the part's ROI before measuring instead of the whole frame.
       measurement:
         allowed_cameras: [cam1]
         allowed_classes: [rubber_part]
-        model_path: "/models/yolo11n.pt" # PLACEHOLDER model
-        model_type: yolo
         method: caliper
         parameters:
           diameter_mm:
@@ -129,13 +133,16 @@ triggers:
         strobe_reg: 19
         sim:
           enabled: true
-          image_path: "/data/sim/cam2.jpg"
+          image_path: "/data/sim/cats/"
 
     pipeline:
       defect:
-        model_path: "/models/yolo11n.pt" # PLACEHOLDER model
+        model_path: "/models/pt/yolo11n.pt" # stock COCO-pretrained yolo11n -- stand-in until a
+        # real defect-trained model exists; "cat" is a real COCO class so this
+        # is a working detector, not a stub. Swap for the trained defect
+        # model when available.
         model_type: yolo
-        conf_thresh: 0.50
+        conf_thresh: 0.3
         allowed_cameras: [cam2]
         detect_classes: [cat] # everything this model outputs
         allowed_defects: [cat] # ok/nok decided ONLY on these

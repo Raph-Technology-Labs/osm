@@ -82,11 +82,33 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     registry.build_from_config(resolved)
 
     for trig in resolved.inspection_triggers():
+        defect_config = trig.pipeline.defect
+        measurement_config = trig.pipeline.measurement
+        draw_result = trig.pipeline.result.draw_result
         for camera_id, camera_config in trig.cameras.items():
             if not camera_config.sim.enabled:
                 continue
             station = registry.get(camera_id)
-            station.set_frame_provider(sim_frame_provider(camera_id))
+            # Only pass a pipeline block through for cameras it actually
+            # covers -- defect/measurement can each be scoped to a subset of
+            # a trigger's cameras via allowed_cameras.
+            camera_defect_config = (
+                defect_config if defect_config and camera_id in defect_config.allowed_cameras else None
+            )
+            camera_measurement_config = (
+                measurement_config
+                if measurement_config and camera_id in measurement_config.allowed_cameras
+                else None
+            )
+            station.set_frame_provider(
+                sim_frame_provider(
+                    camera_id,
+                    image_path=camera_config.sim.image_path,
+                    defect_config=camera_defect_config,
+                    measurement_config=camera_measurement_config,
+                    draw_result=draw_result,
+                )
+            )
 
             def make_on_result(cam_id=camera_id, trig_id=trig.id):
                 def on_result(_cam_id, captured):
