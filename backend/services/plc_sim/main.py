@@ -1,4 +1,4 @@
-# services/plc_sim/main.py
+# backend/services/plc_sim/main.py
 # TCP controller simulator for OSM (stand-in transport: Modbus TCP via
 # pymodbus -- see config.py's TRANSPORT NOTE. Swap only this file's
 # server/register wiring once Integra's real protocol spec is available).
