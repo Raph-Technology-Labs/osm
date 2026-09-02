@@ -13,7 +13,7 @@ when watchdog.py's continuous poll loop is built.
 
 "PLC" here means the Integra controller (in-house, plain TCP) -- Modbus TCP
 is an explicitly-labeled dev-time transport stand-in until Integra's real
-wire protocol is documented (see services/plc_sim/config.py's docstring).
+wire protocol is documented (see backend/services/plc_sim/config.py's docstring).
 Tested only against that simulator, never real hardware, per CLAUDE.md
 Section 10.
 """
