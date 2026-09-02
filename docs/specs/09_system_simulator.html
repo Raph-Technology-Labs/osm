@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>raph-vision — System Simulator</title>
+<style>
+  :root{
+    --red:#D92D20; --red-dark:#A8221A; --dark:#1A1A1A; --peach:#FCE8E6;
+    --peach-dark:#F7C8C2; --bg:#FAF8F7; --paper:#FFFFFF; --border:#E5E7EB;
+    --text:#1A1A1A; --text2:#6B7280; --green:#16A34A; --amber:#D97706;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);}
+  header{background:linear-gradient(135deg,var(--dark) 0%,#000 100%);color:#fff;padding:14px 20px;
+    display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
+  header h1{font-size:16px;margin:0;font-weight:700;}
+  header h1 span{color:var(--peach-dark);font-weight:400;font-size:12px;display:block;}
+  .controls{display:flex;gap:8px;align-items:center;margin-left:auto;flex-wrap:wrap;}
+  button{background:var(--red);color:#fff;border:none;border-radius:5px;padding:7px 14px;
+    font-size:13px;cursor:pointer;font-weight:600;}
+  button:hover{background:var(--red-dark);}
+  button.secondary{background:#333;}
+  select{padding:6px 10px;border-radius:5px;border:1px solid #444;background:#222;color:#fff;font-size:13px;}
+  .counters{display:flex;gap:14px;font-size:12px;}
+  .counters b{font-size:16px;display:block;}
+  .cOk b{color:#4ade80;} .cNok b{color:#f87171;} .cTotal b{color:#fff;}
+
+  main{display:grid;grid-template-columns:340px 1fr;gap:16px;padding:16px;}
+  @media(max-width:900px){main{grid-template-columns:1fr;}}
+
+  .panel{background:var(--paper);border:1px solid var(--border);border-radius:8px;padding:14px;}
+  .panel h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--text2);
+    margin:0 0 10px;}
+
+  #twinSvg{width:100%;height:auto;}
+  .twin-legend{display:flex;gap:10px;font-size:11px;color:var(--text2);margin-top:8px;flex-wrap:wrap;}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle;}
+
+  .registry-row{display:flex;justify-content:space-between;font-size:12px;padding:6px 0;
+    border-bottom:1px solid var(--border);}
+  .registry-row:last-child{border-bottom:none;}
+  .registry-row .name{font-weight:600;}
+  .registry-row .meta{color:var(--text2);font-size:11px;}
+  .sev-crit{color:var(--red);font-weight:600;}
+  .sev-cosm{color:var(--amber);font-weight:600;}
+
+  .grid-container{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;}
+  .station-card{border:1px solid var(--border);border-radius:8px;padding:10px;background:#FDFCFC;}
+  .station-card h3{font-size:12px;margin:0 0 8px;display:flex;justify-content:space-between;}
+  .station-card h3 .tally{font-weight:400;color:var(--text2);}
+  .cam-cell{background:var(--dark);border-radius:6px;height:70px;margin-bottom:6px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    color:#fff;font-size:11px;position:relative;overflow:hidden;transition:background .15s;}
+  .cam-cell.pass{background:linear-gradient(135deg,#14532d,#166534);}
+  .cam-cell.fail{background:linear-gradient(135deg,#7f1d1d,#991b1b);}
+  .cam-cell .cid{position:absolute;top:3px;left:5px;font-size:9px;opacity:.6;}
+  .cam-cell .part{font-weight:700;font-size:13px;}
+  .cam-cell .defect{font-size:10px;opacity:.85;}
+
+  .page-tabs{display:flex;gap:6px;margin-top:12px;}
+  .page-tabs button{background:#eee;color:#333;padding:5px 12px;font-weight:400;font-size:12px;}
+  .page-tabs button.active{background:var(--red);color:#fff;font-weight:600;}
+  .page-counters{font-size:11px;color:var(--text2);margin-top:8px;display:flex;gap:12px;}
+  .grid-note{font-size:10.5px;color:var(--text2);margin-top:6px;font-style:italic;}
+
+  #log{height:150px;overflow-y:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;
+    background:#111;color:#c9f7c9;padding:8px;border-radius:6px;}
+  #log div{padding:1px 0;opacity:0;animation:fadein .2s forwards;}
+  @keyframes fadein{to{opacity:1;}}
+  #log .fail{color:#fca5a5;}
+  #log .accept{color:#86efac;}
+  #log .reject{color:#fdba74;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>raph-vision <span>architecture simulator — config-driven inspection line</span></h1>
+  <select id="configSelect">
+    <option value="A">Recipe: Simple Part (P001) — 2 stations</option>
+    <option value="B">Recipe: Complex Part (P002) — 4 stations</option>
+  </select>
+  <div class="controls">
+    <button id="btnStart">▶ Start</button>
+    <button id="btnPause" class="secondary">⏸ Pause</button>
+    <button id="btnReset" class="secondary">↺ Reset</button>
+    <select id="speedSelect">
+      <option value="600">Slow</option>
+      <option value="300" selected>Normal</option>
+      <option value="120">Fast</option>
+    </select>
+  </div>
+  <div class="counters">
+    <div class="cOk">OK<b id="cOk">0</b></div>
+    <div class="cNok">NOK<b id="cNok">0</b></div>
+    <div class="cTotal">TOTAL<b id="cTotal">0</b></div>
+    <div>PASS %<b id="cRate">—</b></div>
+  </div>
+</header>
+
+<main>
+  <div style="display:flex;flex-direction:column;gap:16px;">
+    <div class="panel">
+      <h2>Digital Twin — active recipe: <span id="activeRecipeName">P001</span></h2>
+      <svg id="twinSvg" viewBox="0 0 300 300"></svg>
+      <div class="twin-legend">
+        <span><span class="dot" style="background:#9CA3AF"></span>empty slot</span>
+        <span><span class="dot" style="background:#3B82F6"></span>in process</span>
+        <span><span class="dot" style="background:#16A34A"></span>ok / exiting</span>
+        <span><span class="dot" style="background:#D92D20"></span>failed / rejecting</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Pipeline Registry (loaded once, dispatched by name from the recipe)</h2>
+      <div id="registryList"></div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:16px;">
+    <div class="panel">
+      <h2>Inspection Grid — generated from active recipe, paginated by computed screen capacity</h2>
+      <div id="gridContainer" class="grid-container"></div>
+      <div id="pageTabs" class="page-tabs"></div>
+      <div id="pageCounters" class="page-counters"></div>
+      <div class="grid-note" id="gridNote"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Live Event Log</h2>
+      <div id="log"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+/* ============================================================
+   CONFIG — mirrors default_config.yaml (machine topology) merged
+   with config.yaml (active part recipe). Two demo recipes below
+   show how the SAME app adapts to a different station/camera count.
+   ============================================================ */
+const PIPELINE_REGISTRY = {
+  dimension_check_v2:  { defect_code:"DIM",      severity:"critical", fail_rate:0.06 },
+  surface_scratch_v1:  { defect_code:"SCRATCH",  severity:"cosmetic", fail_rate:0.10 },
+  contamination_v1:    { defect_code:"CONTAM",   severity:"cosmetic", fail_rate:0.05 },
+  burr_check_v1:        { defect_code:"BURR",     severity:"critical", fail_rate:0.04 },
+  thread_check_v1:      { defect_code:"THREAD_MISSING", severity:"critical", fail_rate:0.03 },
+};
+
+const RECIPES = {
+  A: {
+    part_number:"P001", slot_count:20, entry_interval_ticks:3,
+    stations:[
+      {id:"ENTRY",offset:0, kind:"load", label:"Load"},
+      {id:"S1",offset:5, kind:"inspection", label:"Dimension", cameras:[
+        {id:"cam1", pipeline:"dimension_check_v2"} ]},
+      {id:"S2",offset:10, kind:"inspection", label:"Surface", cameras:[
+        {id:"cam2", pipeline:"surface_scratch_v1"} ]},
+      {id:"R1",offset:14, kind:"reject", label:"Reject: Critical", accepts_severity:["critical"]},
+      {id:"R2",offset:16, kind:"reject", label:"Reject: Cosmetic", accepts_severity:["cosmetic"]},
+      {id:"EXIT",offset:18, kind:"exit", label:"Accept"},
+    ]
+  },
+  B: {
+    part_number:"P002", slot_count:28, entry_interval_ticks:3,
+    stations:[
+      {id:"ENTRY",offset:0, kind:"load", label:"Load"},
+      {id:"S1",offset:4, kind:"inspection", label:"Dimension", cameras:[
+        {id:"cam1", pipeline:"dimension_check_v2"} ]},
+      {id:"S2",offset:8, kind:"inspection", label:"Surface", cameras:[
+        {id:"cam2", pipeline:"surface_scratch_v1"},
+        {id:"cam3", pipeline:"contamination_v1"} ]},
+      {id:"S3",offset:13, kind:"inspection", label:"Burr", cameras:[
+        {id:"cam4", pipeline:"burr_check_v1"} ]},
+      {id:"S4",offset:17, kind:"inspection", label:"Threading", cameras:[
+        {id:"cam5", pipeline:"thread_check_v1"},
+        {id:"cam6", pipeline:"burr_check_v1"} ]},
+      {id:"R1",offset:21, kind:"reject", label:"Reject: Critical", accepts_severity:["critical"]},
+      {id:"R2",offset:23, kind:"reject", label:"Reject: Cosmetic", accepts_severity:["cosmetic"]},
+      {id:"EXIT",offset:25, kind:"exit", label:"Accept"},
+    ]
+  }
+};
+
+/* ============================================================
+   SIMULATION STATE
+   ============================================================ */
+let CONFIG, tick, slots, nextPartId, overall, stationTally, cameraState, pipelineStats;
+let running=false, timer=null, speedMs=300, currentPage=0;
+
+function loadRecipe(key){
+  CONFIG = RECIPES[key];
+  tick=0; nextPartId=1; currentPage=0;
+  slots = new Array(CONFIG.slot_count).fill(null);
+  overall = {ok:0, nok:0, total:0};
+  stationTally = {}; cameraState = {}; pipelineStats = {};
+  Object.keys(PIPELINE_REGISTRY).forEach(k=>pipelineStats[k]={calls:0,fails:0});
+  document.getElementById('activeRecipeName').textContent = CONFIG.part_number;
+  document.getElementById('log').innerHTML='';
+  renderAll();
+}
+
+function slotIndexForStation(station){
+  return ((tick - station.offset) % CONFIG.slot_count + CONFIG.slot_count) % CONFIG.slot_count;
+}
+
+function runPipeline(name, part){
+  const p = PIPELINE_REGISTRY[name];
+  pipelineStats[name].calls++;
+  const fail = Math.random() < p.fail_rate;
+  if(fail) pipelineStats[name].fails++;
+  return { pass_fail:!fail, defect_code: fail?p.defect_code:null, severity: fail?p.severity:null };
+}
+
+function log(msg, cls){
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  if(cls) line.className=cls;
+  line.textContent = `[t${tick}] ${msg}`;
+  el.prepend(line);
+  while(el.children.length>60) el.removeChild(el.lastChild);
+}
+
+function step(){
+  tick++;
+
+  const entryStation = CONFIG.stations.find(s=>s.id==='ENTRY');
+  const entrySlot = slotIndexForStation(entryStation);
+  if(!slots[entrySlot] && tick % CONFIG.entry_interval_ticks === 0){
+    slots[entrySlot] = { id: nextPartId++, results:[], maxSeverity:null };
+    log(`Part #${slots[entrySlot].id} loaded at ENTRY`);
+  }
+
+  CONFIG.stations.forEach(station=>{
+    if(station.kind==='load') return;
+    const slotIdx = slotIndexForStation(station);
+    const part = slots[slotIdx];
+    if(!part) return;
+
+    if(station.kind==='inspection'){
+      let stationOk = true;
+      station.cameras.forEach(cam=>{
+        const verdict = runPipeline(cam.pipeline, part);
+        cameraState[cam.id] = { partId: part.id, verdict, stationId: station.id };
+        if(!verdict.pass_fail){
+          stationOk = false;
+          part.results.push(verdict);
+          if(verdict.severity==='critical') part.maxSeverity='critical';
+          else if(!part.maxSeverity) part.maxSeverity='cosmetic';
+          log(`Part #${part.id} @ ${station.id}/${cam.id} → FAIL (${verdict.defect_code})`,'fail');
+        }
+      });
+      if(!stationTally[station.id]) stationTally[station.id]={ok:0,nok:0,total:0};
+      stationTally[station.id].total++;
+      if(stationOk) stationTally[station.id].ok++; else stationTally[station.id].nok++;
+    }
+
+    if(station.kind==='reject'){
+      if(part.maxSeverity && station.accepts_severity.includes(part.maxSeverity)){
+        slots[slotIdx]=null;
+        overall.nok++; overall.total++;
+        log(`Part #${part.id} REJECTED at ${station.id} (${part.maxSeverity})`,'reject');
+      }
+    }
+
+    if(station.kind==='exit'){
+      slots[slotIdx]=null;
+      overall.ok++; overall.total++;
+      log(`Part #${part.id} ACCEPTED`,'accept');
+    }
+  });
+
+  renderAll();
+}
+
+/* ============================================================
+   RENDERING
+   ============================================================ */
+function renderAll(){
+  renderCounters();
+  renderTwin();
+  renderRegistry();
+  renderGrid();
+}
+
+function renderCounters(){
+  document.getElementById('cOk').textContent = overall.ok;
+  document.getElementById('cNok').textContent = overall.nok;
+  document.getElementById('cTotal').textContent = overall.total;
+  document.getElementById('cRate').textContent = overall.total
+    ? Math.round(overall.ok/overall.total*100)+'%' : '—';
+}
+
+function renderTwin(){
+  const svg = document.getElementById('twinSvg');
+  const cx=150, cy=150, rStation=125, rSlot=95;
+  let html='';
+
+  // fixed station markers
+  CONFIG.stations.forEach(s=>{
+    const angle = (s.offset / CONFIG.slot_count) * 2*Math.PI - Math.PI/2;
+    const x = cx + rStation*Math.cos(angle), y = cy + rStation*Math.sin(angle);
+    const color = s.kind==='reject' ? '#D92D20' : s.kind==='exit' ? '#16A34A'
+                  : s.kind==='load' ? '#6B7280' : '#1A1A1A';
+    html += `<circle cx="${x}" cy="${y}" r="4" fill="${color}"/>`;
+    html += `<text x="${x}" y="${y-8}" font-size="8" text-anchor="middle" fill="${color}">${s.id}</text>`;
+  });
+
+  // rotating slot ring
+  const rotate = -(tick % CONFIG.slot_count) / CONFIG.slot_count * 360;
+  html += `<g style="transition:transform .25s linear" transform="rotate(${rotate} ${cx} ${cy})">`;
+  slots.forEach((part,i)=>{
+    const angle = (i / CONFIG.slot_count) * 2*Math.PI - Math.PI/2;
+    const x = cx + rSlot*Math.cos(angle), y = cy + rSlot*Math.sin(angle);
+    let color = '#9CA3AF';
+    if(part){
+      color = part.results.length ? '#D92D20' : '#3B82F6';
+    }
+    html += `<circle cx="${x}" cy="${y}" r="5" fill="${color}"/>`;
+    if(part) html += `<text x="${x}" y="${y+3}" font-size="5" text-anchor="middle" fill="#fff">${part.id}</text>`;
+  });
+  html += `</g>`;
+  html += `<circle cx="${cx}" cy="${cy}" r="${rStation}" fill="none" stroke="#E5E7EB" stroke-dasharray="2,3"/>`;
+
+  svg.innerHTML = html;
+}
+
+function renderRegistry(){
+  const el = document.getElementById('registryList');
+  el.innerHTML = Object.entries(PIPELINE_REGISTRY).map(([name,p])=>{
+    const stats = pipelineStats[name] || {calls:0,fails:0};
+    return `<div class="registry-row">
+      <div>
+        <div class="name">${name}</div>
+        <div class="meta">${p.defect_code} · <span class="${p.severity==='critical'?'sev-crit':'sev-cosm'}">${p.severity}</span></div>
+      </div>
+      <div class="meta" style="text-align:right">
+        calls: ${stats.calls}<br>fails: ${stats.fails}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function computeCapacity(){
+  const container = document.getElementById('gridContainer');
+  const width = container.clientWidth || 600;
+  const cellMinWidth = 190, gap = 10, cellHeight = 170;
+  const columns = Math.max(1, Math.floor((width+gap) / (cellMinWidth+gap)));
+  const rows = 2; // fixed rows for this demo viewport; real app derives from container height too
+  return { columns, rows, capacity: columns*rows, width };
+}
+
+function renderGrid(){
+  const inspectionStations = CONFIG.stations.filter(s=>s.kind==='inspection');
+  const { columns, rows, capacity, width } = computeCapacity();
+
+  // paginate stations (not individual cameras) into pages of `capacity` stations
+  const pages = [];
+  for(let i=0;i<inspectionStations.length;i+=capacity){
+    pages.push(inspectionStations.slice(i,i+capacity));
+  }
+  if(currentPage >= pages.length) currentPage = 0;
+
+  document.getElementById('gridNote').textContent =
+    `Container ${Math.round(width)}px → ${columns} columns × ${rows} rows = ${capacity} station cards/page`+
+    ` (recomputed live on resize)`;
+
+  const pageStations = pages[currentPage] || [];
+  document.getElementById('gridContainer').innerHTML = pageStations.map(station=>{
+    const t = stationTally[station.id] || {ok:0,nok:0,total:0};
+    const camsHtml = station.cameras.map(cam=>{
+      const cs = cameraState[cam.id];
+      let cls='', inner=`<div class="cid">${cam.id}</div><div class="part">—</div>`;
+      if(cs){
+        cls = cs.verdict.pass_fail ? 'pass':'fail';
+        inner = `<div class="cid">${cam.id}</div>
+                  <div class="part">#${cs.partId}</div>
+                  <div class="defect">${cs.verdict.pass_fail?'OK':cs.verdict.defect_code}</div>`;
+      }
+      return `<div class="cam-cell ${cls}">${inner}</div>`;
+    }).join('');
+    return `<div class="station-card">
+      <h3>${station.id} · ${station.label}<span class="tally">${t.ok}/${t.total}</span></h3>
+      ${camsHtml}
+    </div>`;
+  }).join('');
+
+  // tabs
+  const tabsEl = document.getElementById('pageTabs');
+  if(pages.length>1){
+    tabsEl.innerHTML = pages.map((_,i)=>
+      `<button class="${i===currentPage?'active':''}" data-page="${i}">Page ${i+1}</button>`
+    ).join('');
+  } else tabsEl.innerHTML='';
+
+  // per-page + overall counters
+  let pageOk=0,pageNok=0,pageTotal=0;
+  pageStations.forEach(s=>{
+    const t = stationTally[s.id]||{ok:0,nok:0,total:0};
+    pageOk+=t.ok; pageNok+=t.nok; pageTotal+=t.total;
+  });
+  document.getElementById('pageCounters').innerHTML =
+    `<span>This page — OK: ${pageOk} · NOK: ${pageNok} · Total: ${pageTotal}</span>
+     <span>Overall — OK: ${overall.ok} · NOK: ${overall.nok} · Total: ${overall.total}</span>`;
+}
+
+document.getElementById('pageTabs').addEventListener('click', e=>{
+  if(e.target.dataset.page !== undefined){
+    currentPage = parseInt(e.target.dataset.page);
+    renderGrid();
+  }
+});
+
+/* ============================================================
+   CONTROLS
+   ============================================================ */
+document.getElementById('btnStart').onclick = ()=>{
+  if(running) return;
+  running = true;
+  timer = setInterval(step, speedMs);
+};
+document.getElementById('btnPause').onclick = ()=>{
+  running = false;
+  clearInterval(timer);
+};
+document.getElementById('btnReset').onclick = ()=>{
+  running = false; clearInterval(timer);
+  loadRecipe(document.getElementById('configSelect').value);
+};
+document.getElementById('speedSelect').onchange = (e)=>{
+  speedMs = parseInt(e.target.value);
+  if(running){ clearInterval(timer); timer=setInterval(step, speedMs); }
+};
+document.getElementById('configSelect').onchange = (e)=>{
+  running=false; clearInterval(timer);
+  loadRecipe(e.target.value);
+};
+window.addEventListener('resize', ()=>renderGrid());
+
+/* init */
+loadRecipe('A');
+</script>
+</body>
+</html>

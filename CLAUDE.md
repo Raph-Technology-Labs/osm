@@ -70,21 +70,50 @@ tagline (content pending).
 
 ## 4. Architecture
 
-- `app/models/models.py` — SQLAlchemy schema (7 tables — see raph-vision
-  platform notes)
-- `app/indexer/tracker.py` — `IndexerSlotTracker`: pulse handling, slot math
-- `app/indexer/dispatcher.py` — routes by station type (camera / reject / exit)
-- `app/plc/modbus_client.py` — register R/W
-- `app/plc/watchdog.py` — heartbeat + ACK timeout monitoring, owns `STOP_COMMAND`
-- `app/pipeline/` — `PipelineContext`, `ModelRegistry`, defect/measurement steps
-- `app/auth/` — role-based access control (NEW — not yet built)
-- `recipes/*.yaml` — human-authored category recipes, imported via
-  `recipe_import.py`, never read live by the engine
-- `config.yaml` — debug snapshot only, written after `resolve_config_for_part()`,
-  never read back
-- `frontend/` — React, pages per Section 3
+Actual layout as of 2026-08-31 (Stage 1 in progress — see Section 8):
 
-_(Adjust paths above to match the actual repo once code lands.)_
+- `app/models/models.py` — SQLAlchemy schema, 7 tables: `users`,
+  `categories`, `parts`, `part_configs`, `part_sessions`, `session_results`,
+  `camera_results`
+- `app/indexer/tracker.py` — `IndexerSlotTracker`: pulse handling, slot math
+- `app/indexer/dispatcher.py` — `StationDispatcher`: fires triggers by
+  simulation timer today (`source.type: simulation`); PLC-driven
+  `source.type: plc` firing is not wired yet
+- `app/plc/registers.py`, `app/plc/simulator.py`, `app/plc/poller.py` —
+  `PlcSimulator` + wrap-corrected `SlotTracker`/`PlcPoller`, per
+  `docs/specs/plc_simulator.md` (implemented, 7 tests passing)
+- `app/plc/modbus_client.py` — register R/W against the sim PLC
+- `app/plc/watchdog.py` — **not built yet.** Heartbeat/ACK-timeout →
+  `STOP_COMMAND` escalation (Critical Rule 4) is still a gap
+- `app/camera/station_registry.py` — `StationRegistry`/`CameraStation`,
+  N-camera-ready, sim frame provider (folder-glob, all OpenCV-readable
+  formats) wired to real inference
+- `app/pipeline/model_registry.py` — shared-model cache keyed by
+  `model_path`, one `threading.Lock` for first-load, one per-model-path lock
+  serializing concurrent `.predict()` calls
+- `app/pipeline/defect.py` — real YOLO inference (`ultralytics`) against
+  `detect_classes`/`allowed_defects`
+- `app/pipeline/measurement.py` — contour + `cv2.fitEllipse` diameter/ovality
+  measurement, optional model-cropped ROI (`uses_own_model()`), whole-frame
+  fallback when no model is configured
+- `app/pipeline/draw.py` — overlay drawing (boxes / ellipse), gated by
+  `pipeline.result.draw_result`
+- `app/config/config_loader.py` — Pydantic schema for `machine_config.yaml`
+  + `resolve_config_for_part()`. No `recipes/*.yaml` / `recipe_import.py` —
+  machine topology lives in one `machine_config.yaml`, per-part DB rows
+  (`app/seed.py`) override it at session start
+- `app/inspection_session.py` — `load_machine()` / `start_session()`, wires
+  config → station registry → dispatcher per session
+- `app/routers/{inspection,parts,actuators,health}.py` — thin FastAPI
+  routers, one per resource, mounted under `/api/v1` in `app/main.py`
+- `app/auth/` — role-based access control. **Not built yet** — no role
+  checks exist anywhere in the routers today (Critical Rule 6 gap).
+  `LoginPage.jsx` on the frontend is a UI shell only, not wired to a real
+  auth flow
+- `frontend/src/pages/` — `LoginPage`, `PartSelectionPage`,
+  `DashboardPage`, `HealthCheckPage`, `DeviceSettingsPage`,
+  `InspectionPage`, `TechinicalSupport`, `ModeSelectionPage`,
+  `PlaceholderPage`. Config/recipe editor and Digital Twin pages not started
 
 ## 5. Code Style
 
