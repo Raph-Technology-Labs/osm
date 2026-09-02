@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "main": "public/electron.js",
+  "homepage": "./",
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
@@ -22,18 +23,13 @@
     "web-vitals": "^2.1.4",
     "zeromq": "^6.6.0"
   },
-  "devDependencies": {
-    "concurrently": "^9.2.1",
-    "cross-env": "^10.1.0",
-    "electron": "^33.4.11",
-    "wait-on": "^8.0.5"
-  },
   "scripts": {
-    "start": "react-scripts start",
+    "start": "cross-env PORT=5500 react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "electron:dev": "concurrently \"cross-env BROWSER=none PORT=4001 npm start\" \"wait-on http://localhost:4001 && cross-env BACKEND_PORT=9001 ZMQ_PORT=5558 PORT=4001 electron .\""
+    "electron": "electron .",
+    "electron-dev": "concurrently -k \"cross-env BROWSER=none npm start\" \"wait-on http://localhost:5500 && electron .\""
   },
   "eslintConfig": {
     "extends": [
@@ -52,5 +48,11 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^44.1.1",
+    "wait-on": "^9.1.0"
   }
 }
