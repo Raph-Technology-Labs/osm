@@ -4,7 +4,7 @@ machine:
 
 # PLACEHOLDER -- real values must come from whoever owns the Integra
 # controller program (per CLAUDE.md's "ask, don't invent" rule). Validated
-# only against the simulator (services/plc_sim), not real hardware.
+# only against the simulator (backend/services/plc_sim), not real hardware.
 indexer:
   part_size_mm: 20.0   # PLACEHOLDER
   n_slots: 20           # PLACEHOLDER -- n_slots = perimeter / part_size_mm

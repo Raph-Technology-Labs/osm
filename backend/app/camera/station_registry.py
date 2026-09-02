@@ -17,31 +17,127 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Optional
 
 import cv2
 import numpy as np
 
+if TYPE_CHECKING:
+    from app.config.config_loader import DefectConfig, MeasurementConfig
+
 log = logging.getLogger("station_registry")
 
 SIM_IMAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "sim")
+# backend/data -- machine_config.yaml's sim.image_path uses container-style
+# absolute paths (e.g. /data/sim/cats/cat1.jpg), same convention as
+# pipeline.model_registry.MODELS_ROOT for /models/... paths.
+SIM_DATA_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 
 FrameProvider = Callable[[], "CapturedFrame"]
+
+
+def resolve_sim_image_path(image_path: str) -> str:
+    if image_path.startswith("/data/"):
+        return os.path.join(SIM_DATA_ROOT, image_path[len("/data/"):])
+    return image_path
+
+
+# Every extension OpenCV's imread() can decode (see the OpenCV imgcodecs
+# docs) -- used when sim.image_path is a directory, so "drop any image
+# format in this folder" actually holds.
+IMAGE_EXTENSIONS = (
+    "bmp", "dib",
+    "jpg", "jpeg", "jpe", "jp2",
+    "png",
+    "webp",
+    "pbm", "pgm", "ppm", "pxm", "pnm",
+    "sr", "ras",
+    "tiff", "tif",
+    "exr",
+    "hdr", "pic",
+)
 
 
 @dataclass
 class CapturedFrame:
     frame: np.ndarray
-    # Ground truth from the simulator, standing in for a real defect model's
-    # verdict since no trained weights exist in this repo yet (MockDefectModel).
+    # True = NOK. Real defect/measurement verdict when image_path + a
+    # pipeline block are configured (see sim_frame_provider); otherwise the
+    # random good/defect glob-cycling mock's ground truth.
     is_defect: bool
+    # Defect class name (defect stations) or "⌀X.XXmm" (measurement
+    # stations) -- just a display string, not defect-specific despite the
+    # field name (kept to avoid a wire-schema change in zeromq.publish_inspection_result).
     defect_label: Optional[str] = None
 
 
-def sim_frame_provider(camera_id: str, defect_rate: float = 0.10) -> FrameProvider:
-    """Cycles the generated sample images for this camera. ~defect_rate of
-    captures return the defective sample -- approximates the demo's "2 of 20
-    defective" scenario without needing real inference."""
+def sim_frame_provider(
+    camera_id: str,
+    image_path: Optional[str] = None,
+    defect_config: Optional["DefectConfig"] = None,
+    measurement_config: Optional["MeasurementConfig"] = None,
+    draw_result: bool = True,
+    defect_rate: float = 0.10,
+) -> FrameProvider:
+    """If image_path is set (cameras.<id>.sim.image_path in
+    machine_config.yaml), every capture loads a configured image, then runs
+    real inference against a real loaded model (never a mock):
+      - defect_config set (camera_id in its allowed_cameras) ->
+        app.pipeline.defect.run_defect_inference
+      - measurement_config set (camera_id in its allowed_cameras) ->
+        app.pipeline.measurement.run_measurement_inference
+      - neither -> plain pass-through, always OK, no label
+    draw_result controls whether the returned frame has boxes/contour/
+    diameter overlays drawn on it (mirrors pipeline.result.draw_result).
+
+    image_path may point at a single file (always that one image) or a
+    directory (every capture globs every OpenCV-readable image extension --
+    IMAGE_EXTENSIONS below -- in it and picks one at random, so a session
+    cycles through the whole folder instead of one fixed frame).
+
+    Falls back to the earlier random good/defect glob-cycling mock when no
+    image_path is configured, so cameras without an explicit sim image keep
+    the "~defect_rate of captures defective" demo behavior.
+    """
+    if image_path:
+        resolved_path = resolve_sim_image_path(image_path)
+        if os.path.isdir(resolved_path):
+            image_paths = sorted(
+                {
+                    p
+                    for ext in IMAGE_EXTENSIONS
+                    for p in glob.glob(os.path.join(resolved_path, f"*.{ext}"))
+                    + glob.glob(os.path.join(resolved_path, f"*.{ext.upper()}"))
+                }
+            )
+            if not image_paths:
+                raise FileNotFoundError(
+                    f"sim.image_path for {camera_id} has no readable images "
+                    f"({', '.join(IMAGE_EXTENSIONS)}) under: {resolved_path}"
+                )
+        elif os.path.isfile(resolved_path):
+            image_paths = [resolved_path]
+        else:
+            raise FileNotFoundError(f"sim.image_path for {camera_id} not found: {resolved_path}")
+
+        def provide() -> CapturedFrame:
+            frame = cv2.imread(random.choice(image_paths))
+            if defect_config is not None:
+                from app.pipeline.defect import run_defect_inference  # deferred: avoids importing
+                # ultralytics for stations that never run inference
+
+                is_defect, label, frame_out = run_defect_inference(frame, defect_config, draw_result)
+                return CapturedFrame(frame=frame_out, is_defect=is_defect, defect_label=label)
+            if measurement_config is not None:
+                from app.pipeline.measurement import run_measurement_inference  # deferred, same reason
+
+                result = run_measurement_inference(frame, measurement_config, draw_result)
+                label = f"⌀{result.diameter_mm:.2f}mm oval {result.ovality_mm:.2f}mm"
+                return CapturedFrame(frame=result.frame_out, is_defect=not result.passed, defect_label=label)
+            return CapturedFrame(frame=frame, is_defect=False, defect_label=None)
+
+        return provide
+
     good_paths = sorted(glob.glob(os.path.join(SIM_IMAGE_DIR, f"{camera_id}_good_*.jpg")))
     defect_paths = sorted(glob.glob(os.path.join(SIM_IMAGE_DIR, f"{camera_id}_defect_*.jpg")))
     if not good_paths:
