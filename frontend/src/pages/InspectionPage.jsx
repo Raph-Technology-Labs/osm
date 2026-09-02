@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Box, Card, Chip, Grid, Typography, useTheme } from "@mui/material";
 import api from "../api/axios";
+import MainLayout from "../layouts/MainLayout";
 
 const InspectionPage = () => {
   const theme = useTheme();
@@ -34,11 +35,7 @@ const InspectionPage = () => {
   }, [cameraIds]);
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Typography variant="h5" sx={{ fontWeight: 600, mb: 2 }}>
-        Live Inspection
-      </Typography>
-
+    <MainLayout title="Live Inspection">
       {!window.ipc && (
         <Typography sx={{ mb: 2, color: theme.palette.warning.main }}>
           Live feed unavailable — this page needs the Electron app (ZMQ bridge), not a plain browser tab.
@@ -88,7 +85,7 @@ const InspectionPage = () => {
         <Typography sx={{ color: theme.palette.success.main }}>Passed: <b>{totals.total_passed}</b></Typography>
         <Typography sx={{ color: theme.palette.error.main }}>Failed: <b>{totals.total_failed}</b></Typography>
       </Box>
-    </Box>
+    </MainLayout>
   );
 };
 
