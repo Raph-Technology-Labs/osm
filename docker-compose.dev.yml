@@ -19,6 +19,7 @@ services:
       - REDIS_URL=redis://localhost:${REDIS_PORT:-9379}
       - REDIS_HOST=localhost
       - REDIS_PORT=${REDIS_PORT:-9379}
+      - ZMQ_PORT=${ZMQ_PORT:-5558}
       - PYTHONPATH=/app
       - ENV=development
     depends_on:
