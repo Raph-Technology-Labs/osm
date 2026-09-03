@@ -19,9 +19,7 @@ plc:                         # machine_configs.plc_infra (JSONB)
     host: string
     port: integer
 
-redis:                       # machine_configs.redis_config (JSONB)
-  host: string
-  port: integer
+redis:                       # machine_configs.redis_config (JSONB) -- host/port come from REDIS_HOST/REDIS_PORT env, not this file
   keys:
     result: string
     trigger: string

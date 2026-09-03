@@ -50,8 +50,6 @@ actuators:
     type: toggle
 
 redis:
-  host: "localhost"
-  port: 9379
   keys:
     result: "rv_inspection_result"
     trigger: "rv_trigger_event"
