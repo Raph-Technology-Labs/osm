@@ -6,6 +6,11 @@ const path = require("path");
 const net = require("net");
 const zmq = require("zeromq");
 
+// Loads PORT/BACKEND_PORT/ZMQ_PORT from frontend/.env -- doesn't override
+// vars already set in the shell/docker environment (e.g. multiple devs
+// running concurrently on the same host, each with their own ZMQ_PORT).
+require("dotenv").config();
+
 const isDev = !app.isPackaged;
 const BACKEND_PORT = parseInt(process.env.BACKEND_PORT || "9001", 10);
 const ZMQ_PORT = process.env.ZMQ_PORT || "5558";

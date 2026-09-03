@@ -21,6 +21,7 @@ services:
       - DATABASE_URL=postgresql://raph:raph123@localhost:${POSTGRES_PORT:-9432}/raph_vision
       - REDIS_URL=redis://localhost:${REDIS_PORT:-9379}
       - REDIS_HOST=localhost
+      - ZMQ_PORT=${ZMQ_PORT:-5558}
       - PYTHONPATH=/app
       - ENV=production
       - LD_LIBRARY_PATH=/opt/arena_sdk/ArenaSDK_Linux_x64/lib64:/opt/arena_sdk/ArenaSDK_Linux_x64/GenICam/library/lib/Linux64_x64:/opt/arena_sdk/ArenaSDK_Linux_x64/ffmpeg:/opt/arena_sdk/ArenaSDK_Linux_x64/Metavision/lib
