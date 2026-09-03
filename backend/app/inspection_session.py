@@ -40,7 +40,7 @@ def load_machine(app: FastAPI) -> None:
     # part is picked, since today's single-YAML setup only has one part.
     app.state.resolved_config = resolved
 
-    zeromq.bind(resolved.zmq.port)
+    zeromq.bind()
 
     registry = get_station_registry()
     registry.build_from_config(resolved)

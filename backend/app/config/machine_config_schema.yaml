@@ -19,9 +19,6 @@ plc:                         # machine_configs.plc_infra (JSONB)
     host: string
     port: integer
 
-zmq:                         # machine_configs.zmq_port
-  port: integer
-
 redis:                       # machine_configs.redis_config (JSONB)
   host: string
   port: integer
