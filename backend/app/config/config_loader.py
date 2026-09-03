@@ -242,16 +242,11 @@ class ActuatorConfig(BaseModel):
     type: Literal["toggle"]
 
 
-class ZmqConfig(BaseModel):
-    port: int
-
-
 class ResolvedMachineConfig(BaseModel):
     part_code: str
     part_name: str
     indexer: IndexerConfig
     plc: PLCConnectionConfig
-    zmq: ZmqConfig
     triggers: List[Trigger]
     actuators: List[ActuatorConfig] = []
 
@@ -323,7 +318,6 @@ def resolve_config_for_part(
         part_name=raw["machine"]["part_name"],
         indexer=raw["indexer"],
         plc=raw["plc"],
-        zmq=raw["zmq"],
         triggers=raw["triggers"],
         actuators=raw.get("actuators", []),
     )

@@ -51,9 +51,6 @@ plc:
 #     reg: 241 # PLACEHOLDER
 #     type: toggle
 
-zmq:
-  port: 5558
-
 redis:
   host: "localhost"
   port: 9379
