@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Dict, List, Literal, Optional, Union
 
@@ -118,7 +119,7 @@ class CameraConfig(BaseModel):
     strobe_reg: Optional[int] = None
 
 
-class TriggerSourceConfig(BaseModel):
+class StationSourceConfig(BaseModel):
     # "simulation" = timer-fired, no PLC needed (the guaranteed fallback).
     # "plc" = IndexerSlotTracker-driven self-fire per CLAUDE.md Rule 1.
     type: Literal["simulation", "plc"]
@@ -131,7 +132,7 @@ class TriggerSourceConfig(BaseModel):
         return self
 
 
-class InspectionTrigger(BaseModel):
+class InspectionStation(BaseModel):
     """A camera station on the ring. No trigger_reg/part_id_reg -- the PC
     self-fires off its own slot math (Rule 1), it never waits on a
     controller trigger register. station_offset_pulses is what makes that
@@ -140,7 +141,7 @@ class InspectionTrigger(BaseModel):
     name: str
     type: Literal["inspection"] = "inspection"
     station_offset_pulses: int
-    source: TriggerSourceConfig
+    source: StationSourceConfig
     cameras: Dict[str, CameraConfig]
     pipeline: InspectionPipeline
 
@@ -160,36 +161,50 @@ class PartAggregationResultWrite(BaseModel):
     ack_reg: int   # dummy ack on the OK path only -- confirms the result_aggregator increment
 
 
-class ExitTrigger(BaseModel):
+class ExitStation(BaseModel):
     """Where OK/NOK is evaluated -- not a physical actuator. This build has
     no reject station; nothing is ever dropped from the ring early. At this
     station's offset, the software checks whether the part passed every
-    inspection trigger it went through. OK -> result_write.ack_reg fires
+    inspection station it went through. OK -> result_write.ack_reg fires
     (dummy ack, result_aggregator increments). NOK -> flagged/displayed
     only, no physical action, so no ack is expected on that path."""
     id: str
     name: str
     type: Literal["exit"] = "exit"
     station_offset_pulses: int
-    pass_if: Literal["all_triggers_pass", "any_trigger_pass"] = "all_triggers_pass"
+    pass_if: Literal["all_stations_pass", "any_station_pass"] = "all_stations_pass"
     result_write: PartAggregationResultWrite
 
 
-Trigger = Annotated[Union[InspectionTrigger, ExitTrigger], Field(discriminator="type")]
+Station = Annotated[Union[InspectionStation, ExitStation], Field(discriminator="type")]
 
 
 class IndexerConfig(BaseModel):
     # PLACEHOLDER values live in machine_config.yaml until the PLC-program
     # owner confirms the real disc's slot count / encoder resolution.
-    n_slots: int
+    diameter_mm: float
+    part_size_mm: float
+    tolerance_pct: float
     encoder_cpr: int
+
+    @property
+    def n_slots(self) -> int:
+        """Derived from the disc's physical size, not configured directly
+        (indexer-ring-math skill: "n_slots is part-size dependent, computed
+        per recipe, not fixed"). tolerance_pct pads part_size_mm so slots
+        aren't packed tighter than the part needs; floored (never rounded up)
+        so every slot keeps at least tolerance_pct clearance."""
+        circumference_mm = math.pi * self.diameter_mm
+        effective_spacing_mm = self.part_size_mm * (1 + self.tolerance_pct / 100)
+        return math.floor(circumference_mm / effective_spacing_mm)
 
     @model_validator(mode="after")
     def cpr_divisible_by_slots(self):
         if self.encoder_cpr % self.n_slots != 0:
             raise ValueError(
-                f"encoder_cpr ({self.encoder_cpr}) must be evenly divisible by "
-                f"n_slots ({self.n_slots})"
+                f"encoder_cpr ({self.encoder_cpr}) must be evenly divisible by the "
+                f"derived n_slots ({self.n_slots}) -- adjust encoder_cpr, diameter_mm, "
+                f"part_size_mm, or tolerance_pct"
             )
         return self
 
@@ -199,11 +214,22 @@ class IndexerConfig(BaseModel):
 
 
 class RegisterMapConfig(BaseModel):
+    """Register numbers are literal Modicon 4xxxx addresses, exactly as
+    given by the instrumentation team's sheet -- not 0-based pymodbus
+    protocol addresses. Whatever code actually issues a pymodbus read/write
+    must subtract 40001 at the point of use."""
     pulse_count: int
-    heartbeat_plc: int
-    entry_queue_write_idx: int
-    entry_queue_slots_start: int
-    entry_queue_size: int
+    encoder_indexer_ppr: int
+    encoder_count: int
+    part_sensor: int
+    heartbeat: int
+    indexing_pulse: int
+    heartbeat_per_slot: int
+    indexing_pulse_per_slot: int
+    reject_cmd: int
+    stop_cmd: int
+    speed_setpoint: int
+    fault: int
 
 
 class PLCSimConfig(BaseModel):
@@ -226,6 +252,9 @@ class PLCConnectionConfig(BaseModel):
     port: int
     vendor: str
     sim: PLCSimConfig = PLCSimConfig()
+    # Written to the speed_setpoint register once at session start
+    # (CLAUDE.md Rule 5: config-driven, never hardcoded).
+    speed_setpoint_rpm: float
     registers: RegisterMapConfig
     error_registers: List[ErrorRegisterConfig] = []
 
@@ -243,38 +272,38 @@ class ResolvedMachineConfig(BaseModel):
     part_name: str
     indexer: IndexerConfig
     plc: PLCConnectionConfig
-    triggers: List[Trigger]
+    stations: List[Station]
     actuators: List[ActuatorConfig] = []
 
     @model_validator(mode="after")
-    def unique_trigger_ids(self):
-        ids = [t.id for t in self.triggers]
+    def unique_station_ids(self):
+        ids = [s.id for s in self.stations]
         if len(ids) != len(set(ids)):
-            raise ValueError(f"duplicate triggers[].id: {ids}")
+            raise ValueError(f"duplicate stations[].id: {ids}")
         return self
 
     @model_validator(mode="after")
-    def exactly_one_exit_trigger(self):
-        exits = [t for t in self.triggers if t.type == "exit"]
+    def exactly_one_exit_station(self):
+        exits = [s for s in self.stations if s.type == "exit"]
         if len(exits) != 1:
-            raise ValueError(f"triggers[] must contain exactly one type: exit entry, found {len(exits)}")
+            raise ValueError(f"stations[] must contain exactly one type: exit entry, found {len(exits)}")
         return self
 
-    def inspection_triggers(self) -> List[InspectionTrigger]:
-        return [t for t in self.triggers if t.type == "inspection"]
+    def inspection_stations(self) -> List[InspectionStation]:
+        return [s for s in self.stations if s.type == "inspection"]
 
-    def exit_trigger(self) -> ExitTrigger:
-        for t in self.triggers:
-            if t.type == "exit":
-                return t
-        raise ValueError("no type: exit trigger found")  # unreachable, exactly_one_exit_trigger enforces this
+    def exit_station(self) -> ExitStation:
+        for s in self.stations:
+            if s.type == "exit":
+                return s
+        raise ValueError("no type: exit station found")  # unreachable, exactly_one_exit_station enforces this
 
     def cameras(self) -> Dict[str, CameraConfig]:
-        """All cameras across all inspection triggers, keyed by camera_id --
+        """All cameras across all inspection stations, keyed by camera_id --
         what the N-camera-ready station registry is built from."""
         out: Dict[str, CameraConfig] = {}
-        for trig in self.inspection_triggers():
-            out.update(trig.cameras)
+        for station in self.inspection_stations():
+            out.update(station.cameras)
         return out
 
 
@@ -314,7 +343,7 @@ def resolve_config_for_part(
         part_name=raw["machine"]["part_name"],
         indexer=raw["indexer"],
         plc=raw["plc"],
-        triggers=raw["triggers"],
+        stations=raw["stations"],
         actuators=raw.get("actuators", []),
     )
 

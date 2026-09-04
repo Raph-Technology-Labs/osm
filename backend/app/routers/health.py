@@ -12,7 +12,7 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 class CameraHealth(BaseModel):
     camera_id: str
-    trigger_id: str
+    station_id: str
     initialized: bool
     connected: bool
     last_capture_ts: float | None
@@ -36,7 +36,7 @@ def get_camera_health():
     return [
         CameraHealth(
             camera_id=s.camera_id,
-            trigger_id=s.trigger_id,
+            station_id=s.station_id,
             initialized=s.is_initialized(),
             connected=s.is_connected(),
             last_capture_ts=s.last_capture_ts,

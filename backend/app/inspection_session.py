@@ -46,7 +46,7 @@ def load_machine(app: FastAPI) -> None:
     registry.build_from_config(resolved)
     app.state.station_registry = registry
 
-    station_pulse_offsets = {t.id: t.station_offset_pulses for t in resolved.triggers}
+    station_pulse_offsets = {s.id: s.station_offset_pulses for s in resolved.stations}
     app.state.indexer_tracker = IndexerSlotTracker(
         n_slots=resolved.indexer.n_slots,
         encoder_cpr=resolved.indexer.encoder_cpr,
@@ -81,17 +81,17 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     registry = app.state.station_registry
     registry.build_from_config(resolved)
 
-    for trig in resolved.inspection_triggers():
-        defect_config = trig.pipeline.defect
-        measurement_config = trig.pipeline.measurement
-        draw_result = trig.pipeline.result.draw_result
-        for camera_id, camera_config in trig.cameras.items():
+    for station_cfg in resolved.inspection_stations():
+        defect_config = station_cfg.pipeline.defect
+        measurement_config = station_cfg.pipeline.measurement
+        draw_result = station_cfg.pipeline.result.draw_result
+        for camera_id, camera_config in station_cfg.cameras.items():
             if not camera_config.sim.enabled:
                 continue
             station = registry.get(camera_id)
             # Only pass a pipeline block through for cameras it actually
             # covers -- defect/measurement can each be scoped to a subset of
-            # a trigger's cameras via allowed_cameras.
+            # a station's cameras via allowed_cameras.
             camera_defect_config = (
                 defect_config if defect_config and camera_id in defect_config.allowed_cameras else None
             )
@@ -110,11 +110,11 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                 )
             )
 
-            def make_on_result(cam_id=camera_id, trig_id=trig.id):
+            def make_on_result(cam_id=camera_id, station_id=station_cfg.id):
                 def on_result(_cam_id, captured):
                     zeromq.publish_camera_frame(cam_id, captured.frame)
                     passed = not captured.is_defect
-                    zeromq.publish_inspection_result(cam_id, trig_id, passed, captured.defect_label)
+                    zeromq.publish_inspection_result(cam_id, station_id, passed, captured.defect_label)
                     inspection.bump_totals(passed)
                 return on_result
 

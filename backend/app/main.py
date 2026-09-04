@@ -29,6 +29,8 @@ app.include_router(health.router, prefix="/api/v1")
 
 @app.on_event("startup")
 def bootstrap_machine():
+    # import pdb;
+    # pdb.set_trace()
     """Config-driven boot: if machine_config.yaml exists, load cameras + PLC
     connection + indexer tracker immediately (no pipeline wiring, no
     dispatcher yet -- those are per-part, session-start concerns, see

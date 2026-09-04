@@ -1,6 +1,6 @@
-"""Runs a trigger's configured defect model against one captured frame.
+"""Runs a station's configured defect model against one captured frame.
 
-Scope: defect classification only (station 2's "Defect Detection" trigger).
+Scope: defect classification only (station s2's "Defect Detection" pipeline).
 Measurement (station 1's caliper diameter read) is separate work -- see
 app/pipeline/measurement.py.
 """
@@ -27,7 +27,7 @@ def run_defect_inference(
     today resolved_classes is always empty, so conf_thresh applies to
     everything). detect_classes not in allowed_defects are detected but
     never flip the verdict -- e.g. a model that also reports "bed" alongside
-    "cat" only cares about "cat" per this trigger's allowed_defects.
+    "cat" only cares about "cat" per this station's allowed_defects.
 
     frame_out has bounding boxes for every detect_classes detection drawn on
     it (red = triggered allowed_defect, green = detected but not flagged)

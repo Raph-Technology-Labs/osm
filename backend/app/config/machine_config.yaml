@@ -6,43 +6,62 @@ machine:
 # controller program (per CLAUDE.md's "ask, don't invent" rule). Validated
 # only against the simulator (backend/services/plc_sim), not real hardware.
 indexer:
+  diameter_mm: 150.0 # PLACEHOLDER -- real indexer disc diameter
   part_size_mm: 20.0 # PLACEHOLDER
-  n_slots: 20 # PLACEHOLDER -- n_slots = perimeter / part_size_mm
-  encoder_cpr: 3600 # PLACEHOLDER -- must be divisible by n_slots (180/slot)
+  tolerance_pct: 15.0 # PLACEHOLDER -- extra clearance added to part_size_mm per slot
+  # n_slots is DERIVED, not set here: floor(pi * diameter_mm / (part_size_mm * (1 + tolerance_pct/100)))
+  encoder_cpr: 3600 # PLACEHOLDER -- must be divisible by the derived n_slots (180/slot at n_slots=20)
 
 plc:
-  ip: "192.168.6.41"
+  ip: "192.168.6.40" # was .41 -- per instrumentation team's sheet
   port: 502
   vendor: integra
   sim:
     enabled: true
     host: "localhost"
     port: 5502
-  # PLACEHOLDER register addresses -- confirm real layout with the
-  # controller-program owner before wiring against real hardware. Laid out
-  # contiguously (pulse_count..entry_queue block) so the poll loop can read
-  # them in one batched read_holding_registers call per CLAUDE.md Rule 6.
-  registers:
-    pulse_count: 200 # free-running, wraps every encoder_cpr counts
-    heartbeat_plc: 201 # plain periodic alive signal, not slot math
-    entry_queue_write_idx: 202 # PLC increments on every part-entry trigger
-    entry_queue_slots_start: 203 # first of `entry_queue_size` contiguous regs
-    entry_queue_size: 16 # ring buffer depth -- confirm vs. real burst rate
+  # Config-driven motor speed, written to the speed_setpoint register once
+  # at session start (CLAUDE.md Rule 5: config-driven, never hardcoded).
+  speed_setpoint_rpm: 45.0 # PLACEHOLDER
 
-  # PLACEHOLDER -- names AND register numbers, confirm with the Integra
-  # controller-program owner. Expected to differ per client deployment --
-  # never hardcode these in the frontend (CLAUDE.md Section 6). Health Check
-  # page reads these. Kept clear of the 200-218 pulse/heartbeat/entry-queue
-  # block above (Rule 6's batched-read range) since these are read far less
-  # often, not part of that hot-path block.
+  # Register map per the instrumentation team's sheet. Register numbers used
+  # EXACTLY as given -- literal 40001-40012, no 0-based conversion. pymodbus
+  # itself wants a 0-based protocol address, so wherever this is actually
+  # used in a read/write call, the 40001 offset must be subtracted at the
+  # point of use -- not done here, config stores the literal number.
+  registers:
+    pulse_count: 40001              # PLC->PC, int -- "Encoder actual pulse"
+    encoder_indexer_ppr: 40002      # PLC->PC, int -- "Reset to 0 at Indexer Revolution"
+    # UNCONFIRMED: both pulse_count and encoder_indexer_ppr are described as
+    # resetting per revolution -- which one actually feeds the wrap-corrected
+    # slot-math accumulator (indexer-ring-math skill) is not yet determined.
+    # Not wired into poller.py's control flow yet.
+    encoder_count: 40003             # PLC->PC, long -- "Total pulses from machine start to stop"
+    part_sensor: 40004                # PLC->PC, bool -- "part detection at entry"
+    heartbeat: 40005                   # PLC->PC -- per-slot heartbeat tick count (1,2,3...)
+    indexing_pulse: 40006               # PLC->PC, bool -- "0,1 after sending reset bit"
+    heartbeat_per_slot: 40007            # PC->PLC, int -- PC-configured heartbeat cadence, in pulses
+    indexing_pulse_per_slot: 40008        # PC->PLC, int -- PC-configured pulses-per-slot
+    reject_cmd: 40009                      # PC->PLC, bool -- rejected-part command
+    stop_cmd: 40010                         # PC->PLC, bool -- halt execution
+    speed_setpoint: 40011                    # PC->PLC, int, 0-1000 scale -- see speed_setpoint_rpm
+                                              # above; rpm-to-0-1000 conversion formula is UNCONFIRMED
+    fault: 40012                              # BOTH sides R/W per the sheet -- violates the
+                                               # project's register-ownership rule (modbus-register-design
+                                               # skill: one writer only). Modeled as given, not redesigned
+                                               # into FAULT_STATUS/FAULT_ACK, since that would add a
+                                               # register the instrumentation team didn't give us. Flag
+                                               # with them before this is used for anything safety-critical.
+    # REJECT_CMD and STOP_CMD have no paired _ACK register in the sheet --
+    # a real gap against CLAUDE.md Rule 4 (every _CMD needs an _ACK). Not
+    # invented here; flagged for the instrumentation team.
+
   # error_registers:
   # - name: "Error"
   #   reg: 230 # PLACEHOLDER
   # - name: "air_pressure_low"
   #   reg: 231 # PLACEHOLDER
 
-# PLACEHOLDER -- names AND register numbers, same caveat as error_registers
-# above. Device Settings page renders one row per entry.
 # actuators:
 #   - name: "rejection_station_1"
 #     reg: 240 # PLACEHOLDER
@@ -56,18 +75,18 @@ redis:
     result: "rv_inspection_result"
     trigger: "rv_trigger_event"
 
-# Every physical station on the ring is a triggers[] entry, discriminated by
+# Every physical station on the ring is a stations[] entry, discriminated by
 # `type`. No trigger_reg/part_id_reg anywhere: the PC self-fires off its own
 # slot math (Rule 1), it never waits on a controller trigger register.
 #
 # This build has no reject actuator -- nothing physically leaves the ring
 # early. `type: exit` is the aggregation checkpoint: at that many pulses, the
-# software checks whether the part passed every inspection trigger it went
+# software checks whether the part passed every inspection station it went
 # through. If OK, result_write.ack_reg is a dummy ACK (confirms the
 # result_aggregator increment). NOK is flagged/displayed only, no physical
 # action, so no ack is expected on that path.
-triggers:
-  - id: trig1
+stations:
+  - id: s1
     name: "Station 1 - Dimension Measurement"
     type: inspection
     station_offset_pulses: 540 # PLACEHOLDER -- pulses from Entry to this station
@@ -89,14 +108,16 @@ triggers:
           image_path: "/data/sim/circles/" # black circle on white bg -- contour-measured, not detected by the stock model
 
     pipeline:
-      # No model for now -- measurement.run_measurement_inference() only
-      # runs the model when model_path/model_type are set (uses_own_model())
-      # and falls back to whole-frame contour measurement otherwise, which
-      # is what we want against the plain circle sim images. Set model_path
-      # (a real part-trained detector, not stock yolo11n.pt -- it doesn't
-      # know "rubber_part") + model_type + allowed_classes once one exists,
-      # to crop to the part's ROI before measuring instead of the whole frame.
+      # No real part-trained locator model exists yet. Stock yolo11n.pt is
+      # COCO-pretrained and has no "rubber_part" class, so against these
+      # plain-circle sim images it will detect nothing and measurement.py
+      # falls back to whole-frame contour measurement -- same runtime
+      # behavior as leaving model_path unset, until a real part-trained
+      # model exists (same caveat as s2's defect model below). Own
+      # model_path (not shared from a defect block -- s1 has none).
       measurement:
+        model_path: "/models/pt/yolo11n.pt"
+        model_type: yolo
         allowed_cameras: [cam1]
         allowed_classes: [rubber_part]
         method: caliper
@@ -109,7 +130,7 @@ triggers:
         save_result: true
         draw_result: true
 
-  - id: trig2
+  - id: s2
     name: "Station 2 - Defect Detection"
     type: inspection
     station_offset_pulses: 1080 # PLACEHOLDER
@@ -151,7 +172,7 @@ triggers:
     name: "Exit Station - Result Check"
     type: exit
     station_offset_pulses: 1800 # PLACEHOLDER -- point where OK/NOK is evaluated
-    pass_if: all_triggers_pass
+    pass_if: all_stations_pass
     result_write:
       part_id_reg: 100
       result_reg: 101

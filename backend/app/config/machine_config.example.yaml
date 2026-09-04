@@ -6,9 +6,11 @@ machine:
 # controller program (per CLAUDE.md's "ask, don't invent" rule). Validated
 # only against the simulator (backend/services/plc_sim), not real hardware.
 indexer:
-  part_size_mm: 20.0   # PLACEHOLDER
-  n_slots: 20           # PLACEHOLDER -- n_slots = perimeter / part_size_mm
-  encoder_cpr: 3600      # PLACEHOLDER -- must be divisible by n_slots (180/slot)
+  diameter_mm: 150.0     # PLACEHOLDER -- real indexer disc diameter
+  part_size_mm: 20.0     # PLACEHOLDER
+  tolerance_pct: 15.0    # PLACEHOLDER -- extra clearance added to part_size_mm per slot
+  # n_slots is DERIVED, not set here: floor(pi * diameter_mm / (part_size_mm * (1 + tolerance_pct/100)))
+  encoder_cpr: 3600      # PLACEHOLDER -- must be divisible by the derived n_slots (180/slot at n_slots=20)
 
 plc:
   ip: "192.168.6.41"
@@ -59,24 +61,24 @@ redis:
 # bin"), not just a log write. Only fires on the accept path -- the reject
 # path already has its own per-station CMD/ACK below.
 part_aggregation:
-  pass_if: all_triggers_pass
+  pass_if: all_stations_pass
   result_write:
     part_id_reg: 100
     result_reg: 101
     ack_reg: 102
 
 # Every physical station on the ring -- inspection AND reject alike -- is a
-# triggers[] entry, discriminated by `type`. No trigger_reg/part_id_reg
+# stations[] entry, discriminated by `type`. No trigger_reg/part_id_reg
 # anywhere: the PC self-fires off its own slot math (Rule 1), it never waits
 # on a controller trigger register. Reject stations are their own entries
-# here (not owned by any one inspection trigger) since multiple triggers'
+# here (not owned by any one inspection station) since multiple stations'
 # defect classes can route to the same reject station via
-# pipeline.defect.reject_station: <id>. "Last inspection trigger" (when to
+# pipeline.defect.reject_station: <id>. "Last inspection station" (when to
 # evaluate part_aggregation) is derived from station_offset_pulses at load
-# time -- no manual is_last_trigger flag.
-triggers:
+# time -- no manual is_last_station flag.
+stations:
 
-  - id: trig1
+  - id: s1
     name: "Station 1 - Surface + Dimension"
     type: inspection
     station_offset_pulses: 540   # PLACEHOLDER -- pulses from Entry to this station
@@ -138,7 +140,7 @@ triggers:
         save_result: true
         draw_result: true
 
-  - id: trig2
+  - id: s2
     name: "Station 2 - Thread + Diameter Check"
     type: inspection
     station_offset_pulses: 1080   # PLACEHOLDER
