@@ -1,4 +1,4 @@
-"""Routes triggers to their cameras. Today's demo wires the "simulation"
+"""Routes stations to their cameras. Today's demo wires the "simulation"
 source path only (timer-fired, zero PLC dependency -- the guaranteed floor
 committed to in plan.txt given the compressed timeline). The "plc"
 source path (IndexerSlotTracker-driven self-fire per CLAUDE.md Rule 1) is
@@ -23,24 +23,24 @@ class StationDispatcher:
         self._stopped = False
 
     def start(self) -> None:
-        for trig in self.resolved_config.inspection_triggers():
-            if trig.source.type == "simulation":
-                self._start_simulation_source(trig)
+        for station in self.resolved_config.inspection_stations():
+            if station.source.type == "simulation":
+                self._start_simulation_source(station)
             else:
                 log.info(
-                    "Trigger %s uses source.type=%r -- not wired for live dispatch in "
+                    "Station %s uses source.type=%r -- not wired for live dispatch in "
                     "this demo build (floor scope is simulation-only, see plan.txt)",
-                    trig.id, trig.source.type,
+                    station.id, station.source.type,
                 )
 
-    def _start_simulation_source(self, trig) -> None:
-        interval_s = trig.source.sim_interval_ms / 1000
+    def _start_simulation_source(self, station) -> None:
+        interval_s = station.source.sim_interval_ms / 1000
 
         def fire():
             if self._stopped:
                 return
-            log.info("Trigger %s fired (simulation, interval=%dms)", trig.id, trig.source.sim_interval_ms)
-            self.station_registry.fire_trigger(trig.id)
+            log.info("Station %s fired (simulation, interval=%dms)", station.id, station.source.sim_interval_ms)
+            self.station_registry.fire_station(station.id)
             t = threading.Timer(interval_s, fire)
             t.daemon = True
             self._timers.append(t)
@@ -50,7 +50,7 @@ class StationDispatcher:
         t.daemon = True
         self._timers.append(t)
         t.start()
-        log.info("Simulation source started for trigger %s (every %dms)", trig.id, trig.source.sim_interval_ms)
+        log.info("Simulation source started for station %s (every %dms)", station.id, station.source.sim_interval_ms)
 
     def stop(self) -> None:
         self._stopped = True

@@ -1,4 +1,4 @@
-"""Runs a trigger's configured measurement (caliper method only, per
+"""Runs a station's configured measurement (caliper method only, per
 config_loader.MeasurementConfig.method) against one captured frame.
 
 Two stages:

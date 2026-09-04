@@ -13,9 +13,17 @@ import time
 
 from pymodbus.client import AsyncModbusTcpClient
 
-from app.plc.registers import POLL_BATCH_WIDTH, PULSE_COUNT, SPEED_SETPOINT
+from app.plc.registers import HEARTBEAT, PULSE_COUNT, SPEED_SETPOINT
 
 HEARTBEAT_STALE_TIMEOUT_S = 0.5
+
+# registers.py stores literal Modicon 4xxxx numbers (per the instrumentation
+# team's sheet); pymodbus's read/write calls want a 0-based protocol address.
+MODBUS_ADDRESS_OFFSET = 40001
+
+
+def _protocol_address(register: int) -> int:
+    return register - MODBUS_ADDRESS_OFFSET
 
 
 class SlotTracker:
@@ -57,9 +65,15 @@ class SlotTracker:
 
 
 class PlcPoller:
-    """AsyncModbusTcpClient wrapper: batches PULSE_COUNT + HEARTBEAT into one
-    read per poll (Throughput Design Requirement 1), feeds SlotTracker, and
-    raises TimeoutError if HEARTBEAT goes stale for >500ms."""
+    """AsyncModbusTcpClient wrapper: polls PULSE_COUNT and HEARTBEAT, feeds
+    SlotTracker, and raises TimeoutError if HEARTBEAT goes stale for >500ms.
+
+    PULSE_COUNT and HEARTBEAT are no longer contiguous addresses in the
+    instrumentation team's register map (40001 vs 40005), so this is two
+    separate reads -- the previous single-batched-read optimization
+    (Throughput Design Requirement 1) no longer applies as written and isn't
+    reinstated here; that's poll-loop design work, not a config/naming
+    change."""
 
     def __init__(
         self,
@@ -86,19 +100,24 @@ class PlcPoller:
         self._client.close()
 
     async def write_speed_setpoint(self, rpm: float) -> None:
+        # 0-1000 scale per the instrumentation sheet; rpm*10 encoding is the
+        # prior best guess and is UNCONFIRMED against that scale -- see
+        # machine_config.yaml's speed_setpoint_rpm comment.
         rpm_x10 = round(rpm * 10)
-        rr = await self._client.write_register(SPEED_SETPOINT, rpm_x10)
+        rr = await self._client.write_register(_protocol_address(SPEED_SETPOINT), rpm_x10)
         if rr.isError():
             raise RuntimeError(f"SPEED_SETPOINT write failed: {rr}")
 
     async def poll_once(self) -> int:
-        # PULSE_COUNT + HEARTBEAT are contiguous specifically so this is a
-        # single batched read (Throughput Design Requirement 1).
-        rr = await self._client.read_holding_registers(PULSE_COUNT, count=POLL_BATCH_WIDTH)
-        if rr.isError():
-            raise RuntimeError(f"poll read failed: {rr}")
-        high, low, heartbeat = rr.registers
-        raw_count = (high << 16) | low
+        pulse_rr = await self._client.read_holding_registers(_protocol_address(PULSE_COUNT), count=1)
+        if pulse_rr.isError():
+            raise RuntimeError(f"PULSE_COUNT read failed: {pulse_rr}")
+        raw_count = pulse_rr.registers[0]
+
+        heartbeat_rr = await self._client.read_holding_registers(_protocol_address(HEARTBEAT), count=1)
+        if heartbeat_rr.isError():
+            raise RuntimeError(f"HEARTBEAT read failed: {heartbeat_rr}")
+        heartbeat = heartbeat_rr.registers[0]
 
         now = time.monotonic()
         if self._last_heartbeat is None or heartbeat != self._last_heartbeat:

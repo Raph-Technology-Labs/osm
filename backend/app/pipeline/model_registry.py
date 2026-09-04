@@ -33,7 +33,7 @@ def resolve_model_path(model_path: str) -> str:
 
 _models: dict = {}
 _model_locks: dict[str, threading.Lock] = {}
-# Camera stations each fire on their own thread (station_registry.fire_trigger)
+# Camera stations each fire on their own thread (station_registry.fire_station)
 # -- guards _models/_model_locks themselves (dict writes), not inference.
 _registry_lock = threading.Lock()
 

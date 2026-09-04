@@ -17,7 +17,7 @@ _publisher = _ctx.socket(zmq.PUB)
 _ZMQ_PORT = int(os.getenv("ZMQ_PORT", "5558"))
 _bound = False
 # libzmq sockets aren't safe for concurrent send from multiple threads --
-# every station now fires on its own thread (see StationRegistry.fire_trigger),
+# every station now fires on its own thread (see StationRegistry.fire_station),
 # so publish calls need to be serialized here.
 _send_lock = threading.Lock()
 
@@ -51,12 +51,12 @@ def publish_camera_frame(camera_id: str, frame) -> None:
     broadcast(camera_feed_topic(camera_id), data_url)
 
 
-def publish_inspection_result(camera_id: str, trigger_id: str, passed: bool, defect_label: str | None) -> None:
+def publish_inspection_result(camera_id: str, station_id: str, passed: bool, defect_label: str | None) -> None:
     import json
 
     payload = json.dumps({
         "camera_id": camera_id,
-        "trigger_id": trigger_id,
+        "station_id": station_id,
         "passed": passed,
         "defect_label": defect_label,
     })

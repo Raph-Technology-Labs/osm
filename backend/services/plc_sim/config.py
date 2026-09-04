@@ -12,6 +12,7 @@ swap only main.py's server/registers wiring once the real protocol spec is
 available -- nothing above the transport boundary should need to change.
 """
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,8 +75,16 @@ def load_sim_config(config_path: str = CONFIG_PATH) -> SimConfig:
     plc = raw["plc"]
     regs = plc["registers"]
 
+    # Mirrors app.config.config_loader.IndexerConfig.n_slots -- n_slots is
+    # derived from disc size, not a literal YAML field. Duplicated (not
+    # imported) rather than depending on the FastAPI app package here, same
+    # rationale as this simulator's own SlotTracker being a separate copy.
+    circumference_mm = math.pi * indexer["diameter_mm"]
+    effective_spacing_mm = indexer["part_size_mm"] * (1 + indexer["tolerance_pct"] / 100)
+    n_slots = math.floor(circumference_mm / effective_spacing_mm)
+
     return SimConfig(
-        n_slots=indexer["n_slots"],
+        n_slots=n_slots,
         encoder_cpr=indexer["encoder_cpr"],
         modbus_host=plc["sim"]["host"],
         modbus_port=plc["sim"]["port"],

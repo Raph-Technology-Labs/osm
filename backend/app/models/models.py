@@ -174,7 +174,7 @@ class PartConfig(Base):
 #
 # Links to exact PartConfig version active at session start.
 # Counters (total_fired, total_passed, total_failed) updated
-# incrementally after each trigger fire — avoids COUNT() queries.
+# incrementally after each station fire — avoids COUNT() queries.
 # ─────────────────────────────────────────────────────────────────
 
 class PartSession(Base):
@@ -188,17 +188,17 @@ class PartSession(Base):
     part_code      = Column(String(50), nullable=False)
     part_name      = Column(Text, nullable=False)
 
-    trigger_id     = Column(String(50), nullable=False, default="trig1")
-    trigger_type   = Column(Text, nullable=False, default="inspection")
+    station_id     = Column(String(50), nullable=False, default="s1")
+    station_type   = Column(Text, nullable=False, default="inspection")
     # inspection | counting
-    trigger_source = Column(Text, nullable=False, default="simulation")
+    station_source = Column(Text, nullable=False, default="simulation")
     # simulation | plc | ui_button
 
     order_no       = Column(String(50), nullable=True)
     target_count   = Column(Integer, nullable=True)
     notes          = Column(Text, nullable=True)
 
-    # Live counters — incremented after each trigger fire
+    # Live counters — incremented after each station fire
     total_fired    = Column(Integer, default=0, nullable=False)
     total_passed   = Column(Integer, default=0, nullable=False)
     total_failed   = Column(Integer, default=0, nullable=False)
@@ -208,12 +208,12 @@ class PartSession(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "trigger_type IN ('inspection','counting')",
-            name="ck_session_trigger_type",
+            "station_type IN ('inspection','counting')",
+            name="ck_session_station_type",
         ),
         CheckConstraint(
-            "trigger_source IN ('simulation','plc','ui_button')",
-            name="ck_session_trigger_source",
+            "station_source IN ('simulation','plc','ui_button')",
+            name="ck_session_station_source",
         ),
     )
 
@@ -223,22 +223,22 @@ class PartSession(Base):
 
 
 # ─────────────────────────────────────────────────────────────────
-# SESSION RESULT — one row per trigger fire
+# SESSION RESULT — one row per station fire
 #
-# trigger_fire_no → sequential within session (1, 2, 3 …)
-# overall_passed  → aggregated across all cameras in this trigger's own
+# station_fire_no → sequential within session (1, 2, 3 …)
+# overall_passed  → aggregated across all cameras in this station's own
 #                    stations — EXCEPT on the exit/reject-station row (see
-#                    trigger_id below), where it is the part's final
+#                    station_id below), where it is the part's final
 #                    aggregated OK/NOK per part_aggregation.pass_if.
 #
-# trigger_id   → which station produced this row ("trig1" / "trig2" / "r1"),
-#                matches machine_config.yaml's triggers[].id. A part with
+# station_id   → which station produced this row ("s1" / "s2" / "exit1"),
+#                matches machine_config.yaml's stations[].id. A part with
 #                multiple inspection stations produces multiple rows.
 #
 # ring_part_id → IndexerSlotTracker's per-part identifier
 #                (SlotRecord.assign_part_id). Ties together every row
 #                belonging to the same physical part as it crosses
-#                trig1 -> trig2 -> exit/reject — assigned when the part
+#                s1 -> s2 -> exit/reject — assigned when the part
 #                enters, lives with it until it exits or is rejected
 #                (IndexerSlotTracker.free_slot()). Query all rows for one
 #                (session_id, ring_part_id) to get a part's full station
@@ -246,7 +246,7 @@ class PartSession(Base):
 #
 # rejected     → final reject flag, set only on the exit/reject-station row.
 #                True = physically discarded via the blower (CLAUDE.md
-#                Rule 3). Null on trig1/trig2 rows — the decision hasn't
+#                Rule 3). Null on s1/s2 rows — the decision hasn't
 #                been made there.
 # ─────────────────────────────────────────────────────────────────
 
@@ -255,9 +255,9 @@ class SessionResult(Base):
 
     id              = Column(Integer, primary_key=True, index=True)
     session_id      = Column(Integer, ForeignKey("part_sessions.id"), nullable=False)
-    trigger_id      = Column(String(50), nullable=False)
+    station_id      = Column(String(50), nullable=False)
     ring_part_id    = Column(Integer, nullable=False, index=True)
-    trigger_fire_no = Column(Integer, nullable=False)
+    station_fire_no = Column(Integer, nullable=False)
     fired_at        = Column(DateTime(timezone=True), server_default=func.now())
     overall_passed  = Column(Boolean, nullable=True)
     rejected        = Column(Boolean, nullable=True)
@@ -272,7 +272,7 @@ class SessionResult(Base):
 
 
 # ─────────────────────────────────────────────────────────────────
-# CAMERA RESULT — one row per camera per trigger fire
+# CAMERA RESULT — one row per camera per station fire
 #
 # detection_bbox (JSON):
 #   { x1, y1, x2, y2, confidence, class_name }

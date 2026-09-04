@@ -1,5 +1,5 @@
 """Draws inference results onto a frame copy for the live preview -- gated
-by each trigger's pipeline.result.draw_result in machine_config.yaml.
+by each station's pipeline.result.draw_result in machine_config.yaml.
 """
 
 from __future__ import annotations

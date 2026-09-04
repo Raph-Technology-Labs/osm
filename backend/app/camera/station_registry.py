@@ -1,5 +1,5 @@
 """N-camera-ready station registry. Keyed by camera_id, built from the
-resolved config's triggers -- adding a 3rd/4th camera later is a config
+resolved config's stations -- adding a 3rd/4th camera later is a config
 change, not a code change (gcm's CameraManager hardcodes a single device;
 this doesn't).
 
@@ -153,9 +153,9 @@ def sim_frame_provider(
 
 
 class CameraStation:
-    def __init__(self, camera_id: str, trigger_id: str, strobe_reg: Optional[int]):
+    def __init__(self, camera_id: str, station_id: str, strobe_reg: Optional[int]):
         self.camera_id = camera_id
-        self.trigger_id = trigger_id
+        self.station_id = station_id
         self.zmq_topic = f"MessageType.CameraFeed.{camera_id}"
         self._frame_provider: Optional[FrameProvider] = None
         self.on_result: Optional[Callable[[str, CapturedFrame], None]] = None
@@ -204,12 +204,12 @@ class StationRegistry:
         self._stations: Dict[str, CameraStation] = {}
 
     def build_from_config(self, resolved_config) -> None:
-        for trig in resolved_config.inspection_triggers():
-            for camera_id in trig.cameras:
-                self._stations[camera_id] = CameraStation(camera_id, trig.id, trig.strobe_reg)
+        for station in resolved_config.inspection_stations():
+            for camera_id in station.cameras:
+                self._stations[camera_id] = CameraStation(camera_id, station.id)
 
-    def stations_for_trigger(self, trigger_id: str) -> list[CameraStation]:
-        return [s for s in self._stations.values() if s.trigger_id == trigger_id]
+    def stations_for_station(self, station_id: str) -> list[CameraStation]:
+        return [s for s in self._stations.values() if s.station_id == station_id]
 
     def all_stations(self) -> list[CameraStation]:
         return list(self._stations.values())
@@ -217,8 +217,8 @@ class StationRegistry:
     def get(self, camera_id: str) -> CameraStation:
         return self._stations[camera_id]
 
-    def fire_trigger(self, trigger_id: str) -> None:
-        """Fires all cameras for a trigger, each on its own thread -- matches
+    def fire_station(self, station_id: str) -> None:
+        """Fires all cameras for a station, each on its own thread -- matches
         gcm's threading (not multiprocessing) pattern for the vision pipeline."""
         for station in self.stations_for_trigger(trigger_id):
             threading.Thread(target=station.capture_and_infer, args=(station.strobe_reg), daemon=True).start()
