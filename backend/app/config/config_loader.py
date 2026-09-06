@@ -110,6 +110,10 @@ class CameraSimConfig(BaseModel):
 
 class CameraConfig(BaseModel):
     ip: str
+    # Selects the driver class from app.camera.driver_registry.CAMERA_DRIVERS
+    # -- adding a new camera make is a registry entry + a CameraDriver
+    # implementation, never a change here or in station_registry.py.
+    vendor: str = "lucid"
     resolution: ResolutionConfig
     fps: int = 30
     roi: ROIConfig

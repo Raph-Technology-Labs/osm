@@ -1,3 +1,8 @@
+# arena_api (Lucid Vision Labs' Arena SDK Python bindings, app/camera/lucid_camera.py)
+# is NOT pip-installable -- Lucid distributes it + the ArenaSDK runtime directly
+# (https://thinklucid.com/downloads-hub/), not via PyPI. Install it separately on
+# any host that needs real (non-sim) Lucid cameras; every other camera stays
+# sim-only without it, since the import is deferred inside LucidCamera.connect().
 alembic==1.18.4
 annotated-doc==0.0.4
 annotated-types==0.7.0

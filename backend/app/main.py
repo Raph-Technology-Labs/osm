@@ -62,6 +62,9 @@ def stop_inspection_demo():
     plc_client = getattr(app.state, "plc_client", None)
     if plc_client:
         plc_client.close()
+    station_registry = getattr(app.state, "station_registry", None)
+    if station_registry:
+        station_registry.close_all()
 
 
 @app.get("/")

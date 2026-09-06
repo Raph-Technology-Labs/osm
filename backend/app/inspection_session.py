@@ -12,7 +12,8 @@ import logging
 
 from fastapi import FastAPI
 
-from app.camera.station_registry import get_station_registry, sim_frame_provider
+from app.camera.camera_driver import CameraConnectionError
+from app.camera.station_registry import get_station_registry, real_frame_provider, sim_frame_provider
 from app.config.config_loader import (
     ResolvedMachineConfig,
     load_machine_config,
@@ -32,36 +33,47 @@ def load_machine(app: FastAPI) -> None:
     session-start concerns. Safe to call once, either at boot (config
     already present) or lazily from start_session() (config only appeared
     once a part was picked)."""
+    # Read the part code from the raw machine YAML.
     machine_part_code = load_machine_config()["machine"]["part_code"]
+    # Validate and convert the raw YAML into a typed runtime configuration.
     resolved = resolve_config_for_part(machine_part_code)
     # actuators/error_registers are machine-level (not per-part), so this
     # makes them available to Device Settings/Health Check immediately at
     # boot -- start_session() overwrites this with the same fields once a
     # part is picked, since today's single-YAML setup only has one part.
+    # Make the resolved configuration available to the rest of the app.
     app.state.resolved_config = resolved
 
+    # Bind the ZeroMQ publisher used for camera and inspection messages.
     zeromq.bind()
 
+    # Create camera station objects from the resolved station configuration.
     registry = get_station_registry()
     registry.build_from_config(resolved)
     app.state.station_registry = registry
 
+    # Convert each station's configured pulse distance into a lookup dictionary.
     station_pulse_offsets = {s.id: s.station_offset_pulses for s in resolved.stations}
+    # Create the ring tracker using the derived slot count and encoder resolution.
     app.state.indexer_tracker = IndexerSlotTracker(
         n_slots=resolved.indexer.n_slots,
         encoder_cpr=resolved.indexer.encoder_cpr,
         station_pulse_offsets=station_pulse_offsets,
     )
 
+    # Create the PLC client from the PLC settings in the resolved configuration.
     plc_client = ModbusPLCClient(resolved.plc)
     try:
+        # Connect to the PLC and verify communication with a heartbeat read.
         plc_client.connect()
         plc_client.read_heartbeat()
         app.state.plc_client = plc_client
     except PLCConnectionError:
+        # Keep the app running without PLC access so the health state can report the failure.
         log.warning("PLC connect failed during machine load -- continuing without it.", exc_info=True)
         app.state.plc_client = None
 
+    # Mark machine setup as complete for later session-start checks.
     app.state.machine_loaded = True
 
 
@@ -86,8 +98,6 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
         measurement_config = station_cfg.pipeline.measurement
         draw_result = station_cfg.pipeline.result.draw_result
         for camera_id, camera_config in station_cfg.cameras.items():
-            if not camera_config.sim.enabled:
-                continue
             station = registry.get(camera_id)
             # Only pass a pipeline block through for cameras it actually
             # covers -- defect/measurement can each be scoped to a subset of
@@ -100,15 +110,31 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                 if measurement_config and camera_id in measurement_config.allowed_cameras
                 else None
             )
-            station.set_frame_provider(
-                sim_frame_provider(
-                    camera_id,
-                    image_path=camera_config.sim.image_path,
-                    defect_config=camera_defect_config,
-                    measurement_config=camera_measurement_config,
-                    draw_result=draw_result,
+
+            if camera_config.sim.enabled:
+                station.set_frame_provider(
+                    sim_frame_provider(
+                        camera_id,
+                        image_path=camera_config.sim.image_path,
+                        defect_config=camera_defect_config,
+                        measurement_config=camera_measurement_config,
+                        draw_result=draw_result,
+                    )
                 )
-            )
+            else:
+                try:
+                    provide, driver = real_frame_provider(
+                        camera_id,
+                        camera_config,
+                        defect_config=camera_defect_config,
+                        measurement_config=camera_measurement_config,
+                        draw_result=draw_result,
+                    )
+                except CameraConnectionError:
+                    log.warning(f"{camera_id}: real camera connect failed -- leaving station unavailable", exc_info=True)
+                    continue
+                station.set_frame_provider(provide)
+                station.set_driver(driver)
 
             def make_on_result(cam_id=camera_id, station_id=station_cfg.id):
                 def on_result(_cam_id, captured):

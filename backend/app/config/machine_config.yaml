@@ -98,6 +98,7 @@ stations:
     cameras:
       cam1:
         ip: "192.168.5.41"
+        vendor: lucid # Lucid Arena SDK -- see app/camera/driver_registry.py for supported vendors
         resolution: { x: 1920, y: 1080 }
         fps: 30
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
@@ -142,6 +143,7 @@ stations:
     cameras:
       cam2:
         ip: "192.168.5.42"
+        vendor: lucid
         resolution: { x: 1920, y: 1080 }
         fps: 30
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
