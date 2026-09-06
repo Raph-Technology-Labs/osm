@@ -32,6 +32,14 @@ DATASTORE_SIZE = 16
 
 HOLDING_FN_CODE = 3
 
+# app.plc.registers' constants are literal Modicon 4xxxx addresses (e.g.
+# SPEED_SETPOINT = 40011), not 0-based pymodbus protocol addresses -- same
+# offset poller.py's _protocol_address() already subtracts on the client
+# side. _read()/_write() below must subtract it too before indexing this
+# simulator's own local datastore, or a real (post-finalization) register
+# number indexes straight past DATASTORE_SIZE and raises IndexError.
+MODBUS_ADDRESS_OFFSET = 40001
+
 
 class PlcSimulator:
     """Async Modbus TCP server + background tick loop.
@@ -71,10 +79,10 @@ class PlcSimulator:
         return ModbusServerContext(slaves=store, single=True)
 
     def _read(self, addr: int, count: int = 1) -> list[int]:
-        return self._context[0x00].getValues(HOLDING_FN_CODE, addr, count=count)
+        return self._context[0x00].getValues(HOLDING_FN_CODE, addr - MODBUS_ADDRESS_OFFSET, count=count)
 
     def _write(self, addr: int, values: list[int]) -> None:
-        self._context[0x00].setValues(HOLDING_FN_CODE, addr, values)
+        self._context[0x00].setValues(HOLDING_FN_CODE, addr - MODBUS_ADDRESS_OFFSET, values)
 
     async def start(self) -> None:
         self._context = self._make_context()
@@ -121,8 +129,13 @@ class PlcSimulator:
             self._pulse_count = (self._pulse_count + pulses_this_tick) % self.encoder_cpr
             self._heartbeat = (self._heartbeat + 1) % 65536
 
-            raw = int(self._pulse_count)
-            self._write(PULSE_COUNT, [(raw >> 16) & 0xFFFF, raw & 0xFFFF])
+            # PULSE_COUNT is a single 16-bit register per machine_config.yaml
+            # ("int", not "long" -- that's ENCODER_COUNT/40003, unused here)
+            # and poller.py.poll_once() reads exactly one register for it --
+            # writing two words here previously clobbered the adjacent
+            # register too and left poll_once() reading a stale high word.
+            raw = int(self._pulse_count) & 0xFFFF
+            self._write(PULSE_COUNT, [raw])
             self._write(HEARTBEAT, [self._heartbeat])
 
 
