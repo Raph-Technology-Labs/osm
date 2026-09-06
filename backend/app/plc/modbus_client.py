@@ -28,6 +28,16 @@ from app.config.config_loader import PLCConnectionConfig
 
 log = logging.getLogger("plc.modbus_client")
 
+# registers.py/RegisterMapConfig values are literal Modicon 4xxxx addresses,
+# not 0-based pymodbus protocol addresses (same offset app/plc/poller.py's
+# _protocol_address() and app/plc/simulator.py's _read()/_write() already
+# subtract) -- every read/write below must convert before calling pymodbus.
+MODBUS_ADDRESS_OFFSET = 40001
+
+
+def _protocol_address(register: int) -> int:
+    return register - MODBUS_ADDRESS_OFFSET
+
 
 def resolve_plc_target(plc_cfg: PLCConnectionConfig) -> tuple[str, int]:
     if plc_cfg.sim.enabled:
@@ -62,27 +72,30 @@ class ModbusPLCClient:
         return self._connected and self._client.connected
 
     def read_heartbeat(self) -> int:
-        """Minimal liveness check -- one read of registers.heartbeat_plc.
+        """Minimal liveness check -- one read of registers.heartbeat.
         Not a watchdog: no periodic polling, no staleness detection, no
-        escalation. Just proves the connection round-trips a real read."""
-        rr = self._client.read_holding_registers(self.config.registers.heartbeat_plc, count=1)
+        escalation (see app/plc/watchdog.py for that). Just proves the
+        connection round-trips a real read."""
+        rr = self._client.read_holding_registers(_protocol_address(self.config.registers.heartbeat), count=1)
         if rr.isError():
-            raise PLCConnectionError(f"heartbeat_plc read failed: {rr}")
+            raise PLCConnectionError(f"heartbeat read failed: {rr}")
         return rr.registers[0]
 
     def read_register(self, reg: int) -> int:
         """Single-register read, for actuator/error-register lookups
-        (Device Settings / Health Check). Not the batched
-        read_holding_registers(start, count) call CLAUDE.md Throughput
-        Design Requirement 1 wants for the hot inspection path -- these
-        reads are low-frequency, user-triggered or slow-polled."""
-        rr = self._client.read_holding_registers(reg, count=1)
+        (Device Settings / Health Check). `reg` is a literal Modicon
+        register number (e.g. 40011), not a protocol address -- converted
+        here. Not the batched read_holding_registers(start, count) call
+        CLAUDE.md Throughput Design Requirement 1 wants for the hot
+        inspection path -- these reads are low-frequency, user-triggered or
+        slow-polled."""
+        rr = self._client.read_holding_registers(_protocol_address(reg), count=1)
         if rr.isError():
             raise PLCConnectionError(f"register {reg} read failed: {rr}")
         return rr.registers[0]
 
     def write_register(self, reg: int, value: int) -> None:
-        rr = self._client.write_register(reg, value)
+        rr = self._client.write_register(_protocol_address(reg), value)
         if rr.isError():
             raise PLCConnectionError(f"register {reg} write failed: {rr}")
 

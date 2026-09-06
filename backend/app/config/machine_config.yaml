@@ -23,6 +23,10 @@ plc:
   # Config-driven motor speed, written to the speed_setpoint register once
   # at session start (CLAUDE.md Rule 5: config-driven, never hardcoded).
   speed_setpoint_rpm: 45.0 # PLACEHOLDER
+  # PLACEHOLDER -- app/plc/watchdog.py's heartbeat-staleness timeout before
+  # escalating to STOP_CMD. Not tuned yet; real value once indexer/PLC
+  # hardware is actually connected.
+  watchdog_timeout_ms: 5000.0 # PLACEHOLDER
 
   # Register map per the instrumentation team's sheet. Register numbers used
   # EXACTLY as given -- literal 40001-40012, no 0-based conversion. pymodbus
