@@ -59,6 +59,7 @@ def publish_inspection_result(
     defect_confidence: float | None = None,
     defect_count: int = 0,
     measurement_data: dict | None = None,
+    part_id: int | None = None,
 ) -> None:
     import json
 
@@ -70,5 +71,6 @@ def publish_inspection_result(
         "defect_confidence": defect_confidence,
         "defect_count": defect_count,
         "measurement_data": measurement_data,
+        "part_id": part_id,
     })
     broadcast("MessageType.InspectionResult", payload)

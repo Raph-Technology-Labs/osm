@@ -15,8 +15,10 @@ router = APIRouter(prefix="/inspection", tags=["inspection"], dependencies=[Depe
 _state = {"cameras": [], "totals": {"total_fired": 0, "total_passed": 0, "total_failed": 0}}
 
 
-def set_cameras(camera_ids: list[str]) -> None:
-    _state["cameras"] = camera_ids
+def set_cameras(cameras: list[dict]) -> None:
+    """cameras: [{"camera_id": ..., "station_id": ...}, ...] -- station_id
+    is what the Inspection page groups/paginates camera tiles by."""
+    _state["cameras"] = cameras
 
 
 def bump_totals(passed: bool) -> None:
@@ -28,8 +30,23 @@ def bump_totals(passed: bool) -> None:
 
 
 @router.get("/config")
-def get_config():
-    return {"cameras": [{"camera_id": c} for c in _state["cameras"]]}
+def get_config(request: Request):
+    resolved = getattr(request.app.state, "resolved_config", None)
+    stations = []
+    if resolved:
+        # Same formula as app.indexer.tracker.IndexerSlotTracker's own
+        # station_offsets -- real ring position in slot units, not an
+        # evenly-spaced approximation.
+        pulses_per_slot = resolved.indexer.pulses_per_slot
+        stations = [
+            {"station_id": s.id, "name": s.name, "slot_offset": round(s.station_offset_pulses / pulses_per_slot)}
+            for s in resolved.stations
+        ]
+    return {
+        "cameras": _state["cameras"],
+        "n_slots": resolved.indexer.n_slots if resolved else None,
+        "stations": stations,
+    }
 
 
 @router.get("/session/current")
@@ -66,7 +83,11 @@ def start_session_endpoint(body: SessionStartRequest, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     _state["totals"] = {"total_fired": 0, "total_passed": 0, "total_failed": 0}
-    return SessionStartResponse(status="started", part_code=resolved.part_code, cameras=_state["cameras"])
+    return SessionStartResponse(
+        status="started",
+        part_code=resolved.part_code,
+        cameras=[c["camera_id"] for c in _state["cameras"]],
+    )
 
 
 class SessionStopResponse(BaseModel):
