@@ -3,9 +3,11 @@ resolved config's stations -- adding a 3rd/4th camera later is a config
 change, not a code change (gcm's CameraManager hardcodes a single device;
 this doesn't).
 
-Today's demo scope wires the sim frame provider only (no real Arena-SDK-style
-camera integration exists in this repo yet) -- but set_frame_provider() is
-the swap seam for that later, lifted from gcm's InferenceEngine pattern.
+Two frame providers: sim_frame_provider() (folder-glob mock/sample images)
+and real_frame_provider() (real hardware via app.camera.driver_registry --
+Lucid today, any future vendor via the same CameraDriver contract).
+Both return the same FrameProvider shape so set_frame_provider() never needs
+to know which one it got.
 """
 
 from __future__ import annotations
@@ -17,13 +19,16 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
 
+from app.camera.camera_driver import CameraConnectionError
+
 if TYPE_CHECKING:
-    from app.config.config_loader import DefectConfig, MeasurementConfig
+    from app.camera.camera_driver import CameraDriver
+    from app.config.config_loader import CameraConfig, DefectConfig, MeasurementConfig
 
 log = logging.getLogger("station_registry")
 
@@ -152,12 +157,55 @@ def sim_frame_provider(
     return provide
 
 
+def real_frame_provider(
+    camera_id: str,
+    camera_config: "CameraConfig",
+    defect_config: Optional["DefectConfig"] = None,
+    measurement_config: Optional["MeasurementConfig"] = None,
+    draw_result: bool = True,
+) -> Tuple[FrameProvider, "CameraDriver"]:
+    """Real-hardware sibling of sim_frame_provider(). Looks up the right
+    CameraDriver by camera_config.vendor (driver_registry.py), connects
+    once, and returns a zero-arg provide() that pulls one frame per call and
+    runs the exact same real defect/measurement inference sim_frame_provider
+    runs above -- only the frame source differs.
+
+    Raises CameraConnectionError if the device can't be reached -- callers
+    (start_session) must catch this and leave the station uninitialized
+    rather than crash session start over one bad camera (CLAUDE.md's
+    camera-disconnect-mid-session rule)."""
+    from app.camera.driver_registry import get_driver_class
+
+    driver = get_driver_class(camera_config.vendor)(camera_id, camera_config)
+    driver.connect()  # raises CameraConnectionError -- caller's problem
+
+    def provide() -> CapturedFrame:
+        frame = driver.read_frame()
+        if defect_config is not None:
+            from app.pipeline.defect import run_defect_inference  # deferred, same reason as above
+
+            is_defect, label, frame_out = run_defect_inference(frame, defect_config, draw_result)
+            return CapturedFrame(frame=frame_out, is_defect=is_defect, defect_label=label)
+        if measurement_config is not None:
+            from app.pipeline.measurement import run_measurement_inference  # deferred, same reason
+
+            result = run_measurement_inference(frame, measurement_config, draw_result)
+            label = f"⌀{result.diameter_mm:.2f}mm oval {result.ovality_mm:.2f}mm"
+            return CapturedFrame(frame=result.frame_out, is_defect=not result.passed, defect_label=label)
+        return CapturedFrame(frame=frame, is_defect=False, defect_label=None)
+
+    return provide, driver
+
+
 class CameraStation:
     def __init__(self, camera_id: str, station_id: str):
         self.camera_id = camera_id
         self.station_id = station_id
         self.zmq_topic = f"MessageType.CameraFeed.{camera_id}"
         self._frame_provider: Optional[FrameProvider] = None
+        # Only set for real (non-sim) cameras -- tracked so close() can
+        # release the physical device on session teardown/app shutdown.
+        self.driver: Optional["CameraDriver"] = None
         self.on_result: Optional[Callable[[str, CapturedFrame], None]] = None
         # Health Check page reads these -- "initialized" = frame provider
         # set, "connected" = produced a capture recently (see is_connected()).
@@ -175,13 +223,29 @@ class CameraStation:
     def set_frame_provider(self, provider: FrameProvider) -> None:
         self._frame_provider = provider
 
-    def capture_and_infer(self) -> CapturedFrame:
+    def set_driver(self, driver: "CameraDriver") -> None:
+        self.driver = driver
+
+    def close(self) -> None:
+        if self.driver is not None:
+            self.driver.close()
+            self.driver = None
+
+    def capture_and_infer(self) -> Optional[CapturedFrame]:
         """Runs on its own thread per firing -- captures one frame and
-        returns the (mocked) inference result. A real defect/measurement
-        pipeline slots in here later without changing the caller's contract."""
+        returns the inference result. A real camera that never connected, or
+        that disconnects mid-session, is logged and marks the station
+        unavailable rather than crashing this thread (CLAUDE.md's
+        camera-disconnect-mid-session rule)."""
         if self._frame_provider is None:
-            raise RuntimeError(f"{self.camera_id} has no frame provider set")
-        captured = self._frame_provider()
+            log.warning(f"{self.camera_id}: fired with no frame provider set (not connected) -- skipping")
+            return None
+        try:
+            captured = self._frame_provider()
+        except CameraConnectionError:
+            log.warning(f"{self.camera_id}: capture failed, marking disconnected", exc_info=True)
+            self.last_capture_ok = False
+            return None
         self.last_capture_ts = time.time()
         self.last_capture_ok = True
         if self.on_result:
@@ -191,20 +255,25 @@ class CameraStation:
 
 class StationRegistry:
     def __init__(self):
+        """Create an empty registry keyed by camera ID."""
         self._stations: Dict[str, CameraStation] = {}
 
     def build_from_config(self, resolved_config) -> None:
+        """Create and register one CameraStation for each configured camera."""
         for station in resolved_config.inspection_stations():
             for camera_id in station.cameras:
                 self._stations[camera_id] = CameraStation(camera_id, station.id)
 
     def stations_for_station(self, station_id: str) -> list[CameraStation]:
+        """Return all camera stations belonging to the given station ID."""
         return [s for s in self._stations.values() if s.station_id == station_id]
 
     def all_stations(self) -> list[CameraStation]:
+        """Return every registered camera station."""
         return list(self._stations.values())
 
     def get(self, camera_id: str) -> CameraStation:
+        """Return the camera station registered under the given camera ID."""
         return self._stations[camera_id]
 
     def fire_station(self, station_id: str) -> None:
@@ -212,6 +281,11 @@ class StationRegistry:
         gcm's threading (not multiprocessing) pattern for the vision pipeline."""
         for station in self.stations_for_station(station_id):
             threading.Thread(target=station.capture_and_infer, daemon=True).start()
+
+    def close_all(self) -> None:
+        """Release every real camera's device -- app shutdown / session teardown."""
+        for station in self._stations.values():
+            station.close()
 
 
 _registry: Optional[StationRegistry] = None
