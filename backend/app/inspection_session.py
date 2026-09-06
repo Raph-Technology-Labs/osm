@@ -9,6 +9,7 @@ rule (Section 7 Rule 5).
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from fastapi import FastAPI
 
@@ -19,9 +20,18 @@ from app.config.config_loader import (
     load_machine_config,
     resolve_config_for_part,
 )
+from app.db.db import SessionLocal
 from app.indexer.dispatcher import StationDispatcher
 from app.indexer.tracker import IndexerSlotTracker
+from app.models.models import Part, PartSession
 from app.plc.modbus_client import ModbusPLCClient, PLCConnectionError
+from app.services.results_writer import (
+    CameraResultItem,
+    ResultItem,
+    get_results_writer,
+    next_fire_no,
+    next_ring_part_id,
+)
 from app.utils import zeromq
 
 log = logging.getLogger("inspection_session")
@@ -77,6 +87,37 @@ def load_machine(app: FastAPI) -> None:
     app.state.machine_loaded = True
 
 
+def _create_part_session(part_code: str) -> Optional[int]:
+    """Creates the PartSession DB row for a new session -- looks up the
+    seeded Part (app/seed.py) + its active_config to satisfy the FKs.
+    Returns None (not an error) if the part_code isn't seeded yet, since
+    machine_config.yaml's part_code is the source of truth for what
+    actually runs, not the DB -- a session should still run and inspect,
+    just without result persistence, rather than fail to start entirely."""
+    db = SessionLocal()
+    try:
+        part = db.query(Part).filter(Part.part_code == part_code).first()
+        if part is None or part.active_config_id is None:
+            log.warning(
+                "%s: no seeded Part/active PartConfig found -- session will run "
+                "without DB result persistence",
+                part_code,
+            )
+            return None
+        session = PartSession(
+            part_id=part.part_id,
+            part_config_id=part.active_config_id,
+            part_code=part.part_code,
+            part_name=part.part_name,
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        return session.id
+    finally:
+        db.close()
+
+
 def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     """Resolve part config, wire the pipeline stand-in, (re)start the
     dispatcher. Lazily runs load_machine() first if boot found no config
@@ -89,6 +130,10 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
 
     resolved = resolve_config_for_part(part_code)
     app.state.resolved_config = resolved
+
+    app.state.current_session_id = _create_part_session(part_code)
+    session_id = app.state.current_session_id
+    get_results_writer().start()
 
     registry = app.state.station_registry
     registry.build_from_config(resolved)
@@ -140,8 +185,45 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                 def on_result(_cam_id, captured):
                     zeromq.publish_camera_frame(cam_id, captured.frame)
                     passed = not captured.is_defect
-                    zeromq.publish_inspection_result(cam_id, station_id, passed, captured.defect_label)
+                    zeromq.publish_inspection_result(
+                        cam_id,
+                        station_id,
+                        passed,
+                        captured.defect_label,
+                        defect_confidence=captured.defect_confidence,
+                        defect_count=captured.defect_count,
+                        measurement_data=captured.measurement_data,
+                    )
                     inspection.bump_totals(passed)
+
+                    if session_id is not None:
+                        fire_no = next_fire_no(session_id, station_id)
+                        get_results_writer().enqueue(
+                            ResultItem(
+                                session_id=session_id,
+                                station_id=station_id,
+                                ring_part_id=next_ring_part_id(session_id),
+                                station_fire_no=fire_no,
+                                overall_passed=passed,
+                                rejected=None,  # no reject actuator in this build -- see machine_config.yaml
+                                camera_results=[
+                                    CameraResultItem(
+                                        camera_id=cam_id,
+                                        pipeline_name="pipeline1",
+                                        is_defective=captured.is_defect,
+                                        defect_label=captured.defect_label,
+                                        defect_confidence=captured.defect_confidence,
+                                        measurement_data=captured.measurement_data,
+                                        measurement_passed=(
+                                            captured.measurement_data["diameter_mm"]["passed"]
+                                            if captured.measurement_data
+                                            else None
+                                        ),
+                                        camera_passed=passed,
+                                    )
+                                ],
+                            )
+                        )
                 return on_result
 
             station.on_result = make_on_result()

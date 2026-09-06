@@ -74,6 +74,67 @@ class CapturedFrame:
     # stations) -- just a display string, not defect-specific despite the
     # field name (kept to avoid a wire-schema change in zeromq.publish_inspection_result).
     defect_label: Optional[str] = None
+    # Structured detail for the Inspection page's live per-camera cards and
+    # for CameraResult persistence (app/services/results_writer.py) -- None
+    # on a plain pass-through capture (no pipeline configured).
+    defect_confidence: Optional[float] = None
+    defect_count: int = 0
+    # {"diameter_mm": {"nominal": .., "upper_limit": .., "lower_limit": ..,
+    #  "measured": .., "unit": "mm", "passed": bool}} -- shape matches
+    # CameraResult.measurement_data's own documented shape (models.py).
+    measurement_data: Optional[dict] = None
+
+
+def _run_pipeline(
+    frame: np.ndarray,
+    defect_config: Optional["DefectConfig"],
+    measurement_config: Optional["MeasurementConfig"],
+    draw_result: bool,
+) -> CapturedFrame:
+    """Shared by sim_frame_provider's image_path branch and
+    real_frame_provider -- runs whichever pipeline block is configured and
+    builds a CapturedFrame with both the display label (defect_label, kept
+    for the existing ZMQ wire shape) and the structured detail
+    (defect_confidence/defect_count/measurement_data) the Inspection page's
+    live per-camera cards and results_writer.py need."""
+    if defect_config is not None:
+        from app.pipeline.defect import run_defect_inference  # deferred: avoids importing
+        # ultralytics for stations that never run inference
+
+        is_defect, label, confidence, count, frame_out = run_defect_inference(frame, defect_config, draw_result)
+        return CapturedFrame(
+            frame=frame_out,
+            is_defect=is_defect,
+            defect_label=label,
+            defect_confidence=confidence,
+            defect_count=count,
+        )
+    if measurement_config is not None:
+        from app.pipeline.measurement import run_measurement_inference  # deferred, same reason
+
+        result = run_measurement_inference(frame, measurement_config, draw_result)
+        label = f"⌀{result.diameter_mm:.2f}mm oval {result.ovality_mm:.2f}mm"
+        # Matches run_measurement_inference's own hardcoded "diameter_mm"
+        # param lookup -- not generalizing to other param names here since
+        # the pipeline itself doesn't calibrate/check any others yet.
+        param = measurement_config.parameters.get("diameter_mm")
+        measurement_data = {
+            "diameter_mm": {
+                "nominal": param.nominal_value if param else None,
+                "upper_limit": param.upper_limit if param else None,
+                "lower_limit": param.lower_limit if param else None,
+                "measured": result.diameter_mm,
+                "unit": param.unit if param else "mm",
+                "passed": result.passed,
+            }
+        }
+        return CapturedFrame(
+            frame=result.frame_out,
+            is_defect=not result.passed,
+            defect_label=label,
+            measurement_data=measurement_data,
+        )
+    return CapturedFrame(frame=frame, is_defect=False, defect_label=None)
 
 
 def sim_frame_provider(
@@ -127,19 +188,7 @@ def sim_frame_provider(
 
         def provide() -> CapturedFrame:
             frame = cv2.imread(random.choice(image_paths))
-            if defect_config is not None:
-                from app.pipeline.defect import run_defect_inference  # deferred: avoids importing
-                # ultralytics for stations that never run inference
-
-                is_defect, label, frame_out = run_defect_inference(frame, defect_config, draw_result)
-                return CapturedFrame(frame=frame_out, is_defect=is_defect, defect_label=label)
-            if measurement_config is not None:
-                from app.pipeline.measurement import run_measurement_inference  # deferred, same reason
-
-                result = run_measurement_inference(frame, measurement_config, draw_result)
-                label = f"⌀{result.diameter_mm:.2f}mm oval {result.ovality_mm:.2f}mm"
-                return CapturedFrame(frame=result.frame_out, is_defect=not result.passed, defect_label=label)
-            return CapturedFrame(frame=frame, is_defect=False, defect_label=None)
+            return _run_pipeline(frame, defect_config, measurement_config, draw_result)
 
         return provide
 
@@ -181,18 +230,7 @@ def real_frame_provider(
 
     def provide() -> CapturedFrame:
         frame = driver.read_frame()
-        if defect_config is not None:
-            from app.pipeline.defect import run_defect_inference  # deferred, same reason as above
-
-            is_defect, label, frame_out = run_defect_inference(frame, defect_config, draw_result)
-            return CapturedFrame(frame=frame_out, is_defect=is_defect, defect_label=label)
-        if measurement_config is not None:
-            from app.pipeline.measurement import run_measurement_inference  # deferred, same reason
-
-            result = run_measurement_inference(frame, measurement_config, draw_result)
-            label = f"⌀{result.diameter_mm:.2f}mm oval {result.ovality_mm:.2f}mm"
-            return CapturedFrame(frame=result.frame_out, is_defect=not result.passed, defect_label=label)
-        return CapturedFrame(frame=frame, is_defect=False, defect_label=None)
+        return _run_pipeline(frame, defect_config, measurement_config, draw_result)
 
     return provide, driver
 
@@ -260,9 +298,30 @@ class StationRegistry:
         self._stations: Dict[str, CameraStation] = {}
 
     def build_from_config(self, resolved_config) -> None:
-        """Create and register one CameraStation for each configured camera."""
+        """Create and register one CameraStation for each configured camera.
+        Reconciles against whatever was already registered -- closing a real
+        camera's device handle before replacing or dropping it is mandatory
+        here, since this runs again on every session start / part reselect,
+        not just once at boot. Without this, each reload replaces
+        CameraStation objects with fresh ones while the old ones' still-open
+        LucidCamera driver handles become unreferenced and never released --
+        one leaked Arena SDK device handle per reload."""
+        new_camera_ids = {
+            camera_id
+            for station in resolved_config.inspection_stations()
+            for camera_id in station.cameras
+        }
+        # Camera no longer present in the new config (topology changed on
+        # part reselect) -- close it now, nothing below will touch it again.
+        for camera_id in list(self._stations):
+            if camera_id not in new_camera_ids:
+                self._stations.pop(camera_id).close()
+
         for station in resolved_config.inspection_stations():
             for camera_id in station.cameras:
+                existing = self._stations.get(camera_id)
+                if existing is not None:
+                    existing.close()
                 self._stations[camera_id] = CameraStation(camera_id, station.id)
 
     def stations_for_station(self, station_id: str) -> list[CameraStation]:
