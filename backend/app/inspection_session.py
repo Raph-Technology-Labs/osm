@@ -191,6 +191,12 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                 def on_result(_cam_id, captured):
                     zeromq.publish_camera_frame(cam_id, captured.frame)
                     passed = not captured.is_defect
+                    # Same placeholder-part-identity counter results_writer.py
+                    # uses for ring_part_id (see its module docstring) -- keyed
+                    # by 0 when there's no DB-backed session, so the live
+                    # Inspection page still has *a* part_id to show even
+                    # without persistence on.
+                    part_id = next_ring_part_id(session_id if session_id is not None else 0)
                     zeromq.publish_inspection_result(
                         cam_id,
                         station_id,
@@ -199,6 +205,7 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                         defect_confidence=captured.defect_confidence,
                         defect_count=captured.defect_count,
                         measurement_data=captured.measurement_data,
+                        part_id=part_id,
                     )
                     inspection.bump_totals(passed)
 
@@ -208,7 +215,7 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                             ResultItem(
                                 session_id=session_id,
                                 station_id=station_id,
-                                ring_part_id=next_ring_part_id(session_id),
+                                ring_part_id=part_id,
                                 station_fire_no=fire_no,
                                 overall_passed=passed,
                                 rejected=None,  # no reject actuator in this build -- see machine_config.yaml
@@ -234,7 +241,9 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
 
             station.on_result = make_on_result()
 
-    inspection.set_cameras([s.camera_id for s in registry.all_stations()])
+    inspection.set_cameras(
+        [{"camera_id": s.camera_id, "station_id": s.station_id} for s in registry.all_stations()]
+    )
 
     old_dispatcher = getattr(app.state, "dispatcher", None)
     if old_dispatcher:
