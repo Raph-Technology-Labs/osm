@@ -4,10 +4,12 @@ so the frontend isn't hardcoded to "cam1,cam2"."""
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/inspection", tags=["inspection"])
+from app.auth.dependencies import require_role
+
+router = APIRouter(prefix="/inspection", tags=["inspection"], dependencies=[Depends(require_role("operator"))])
 
 # Populated by app.main's startup handler once config is resolved.
 _state = {"cameras": [], "totals": {"total_fired": 0, "total_passed": 0, "total_failed": 0}}

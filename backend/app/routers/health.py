@@ -2,12 +2,13 @@
 heartbeat, and error-register status. All driven by config (CLAUDE.md
 Section 6), nothing hardcoded."""
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
+from app.auth.dependencies import require_role
 from app.camera.station_registry import get_station_registry
 
-router = APIRouter(prefix="/health", tags=["health"])
+router = APIRouter(prefix="/health", tags=["health"], dependencies=[Depends(require_role("operator"))])
 
 
 class CameraHealth(BaseModel):

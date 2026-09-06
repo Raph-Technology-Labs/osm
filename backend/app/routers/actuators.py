@@ -2,8 +2,10 @@
 (CLAUDE.md Section 6/Rule 5, never hardcoded). Reads/writes go through the
 ModbusPLCClient set up by app.inspection_session.load_machine()."""
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+
+from app.auth.dependencies import require_role
 
 router = APIRouter(prefix="/actuators", tags=["actuators"])
 
@@ -33,7 +35,7 @@ def _plc_client(request: Request):
     return client
 
 
-@router.get("", response_model=list[ActuatorState])
+@router.get("", response_model=list[ActuatorState], dependencies=[Depends(require_role("operator"))])
 def list_actuators(request: Request):
     resolved = getattr(request.app.state, "resolved_config", None)
     actuators = resolved.actuators if resolved else []
@@ -43,7 +45,7 @@ def list_actuators(request: Request):
     return [ActuatorState(name=a.name, state=bool(client.read_register(a.reg))) for a in actuators]
 
 
-@router.post("/{name}/toggle", response_model=ActuatorState)
+@router.post("/{name}/toggle", response_model=ActuatorState, dependencies=[Depends(require_role("administrator"))])
 def toggle_actuator(name: str, body: ToggleRequest, request: Request):
     actuator = _get_actuator(request, name)
     client = _plc_client(request)

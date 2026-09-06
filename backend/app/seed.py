@@ -6,9 +6,18 @@ Safe to re-run — matches on part_code, updates in place instead of duplicating
 import yaml
 
 from app.db.db import SessionLocal
-from app.models.models import Category, Part, PartConfig
+from app.models.models import Category, Part, PartConfig, User
 
 CATEGORY_NAME = "Rubber"
+
+# Demo credentials -- clearly demo-only (obvious username/password pairs),
+# one per role so the login flow / role gating has something to test
+# against before real user provisioning exists.
+DEMO_USERS: list[dict] = [
+    {"username": "operator", "password": "operator123", "name": "Demo Operator", "role": "operator"},
+    {"username": "admin", "password": "admin123", "name": "Demo Admin", "role": "administrator"},
+    {"username": "superadmin", "password": "super123", "name": "Demo Super Admin", "role": "superadministrator"},
+]
 
 DEMO_PARTS: list[dict] = [
     {
@@ -121,9 +130,24 @@ def upsert_part_config(db, part: Part, config_yaml: str, config_path: str) -> Pa
     return config
 
 
+def upsert_user(db, spec: dict) -> User:
+    user = db.query(User).filter_by(username=spec["username"]).first()
+    if user is None:
+        user = User(username=spec["username"], name=spec["name"], role=spec["role"])
+        db.add(user)
+    user.name = spec["name"]
+    user.role = spec["role"]
+    user.password_hash = User._hash(spec["password"])
+    db.flush()
+    return user
+
+
 def seed() -> None:
     db = SessionLocal()
     try:
+        for spec in DEMO_USERS:
+            upsert_user(db, spec)
+
         category = upsert_category(db, CATEGORY_NAME)
 
         for spec in DEMO_PARTS:

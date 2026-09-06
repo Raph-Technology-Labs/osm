@@ -9,11 +9,12 @@ convention -- decode and return inline, no separate image endpoint.
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.auth.dependencies import require_role
 from app.db.db import get_db
 from app.models.models import Category, Part
 from app.schemas import CategoryOut, PartOut
 
-router = APIRouter(prefix="/parts", tags=["parts"])
+router = APIRouter(prefix="/parts", tags=["parts"], dependencies=[Depends(require_role("operator"))])
 
 
 @router.get("/categories", response_model=list[CategoryOut])
