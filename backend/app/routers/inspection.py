@@ -33,8 +33,17 @@ def get_config():
 
 
 @router.get("/session/current")
-def get_current_session():
-    return _state["totals"]
+def get_current_session(request: Request):
+    resolved = getattr(request.app.state, "resolved_config", None)
+    # Placeholder proxy, not a real pulse-driven count: today's
+    # StationDispatcher fires stations on a simulation timer and never
+    # feeds IndexerSlotTracker.on_pulse_update() (dispatcher.py's own
+    # docstring flags PLC-driven dispatch as not wired yet) -- so there's
+    # no real encoder-pulse revolution count to read. n_slots parts firing
+    # is what one revolution means physically, so total_fired // n_slots is
+    # the closest honest estimate until real pulse tracking is wired.
+    revolutions = _state["totals"]["total_fired"] // resolved.indexer.n_slots if resolved else 0
+    return {**_state["totals"], "revolutions": revolutions}
 
 
 class SessionStartRequest(BaseModel):
@@ -97,3 +106,30 @@ def stop_session_endpoint(request: Request):
         app.state.current_session_id = None
 
     return SessionStopResponse(status="stopped", session_id=session_id, totals=_state["totals"])
+
+
+class SpeedSetpointRequest(BaseModel):
+    rpm: float
+
+
+@router.post("/speed")
+def set_speed(body: SpeedSetpointRequest, request: Request):
+    """Writes the PLC's speed_setpoint register. Placed on the Inspection
+    page (not gated to administrator like the Device Settings actuator
+    toggle) since adjusting motor speed live during a run is an operator
+    task on the floor, not an admin-only device setting -- judgment call,
+    flag if that's wrong.
+
+    rpm*10 -> 0-1000 scale matches app/plc/poller.py's write_speed_setpoint()
+    -- same UNCONFIRMED-against-the-instrumentation-sheet caveat as that
+    function, not inventing a second, different conversion here."""
+    client = getattr(request.app.state, "plc_client", None)
+    if client is None or not client.is_connected():
+        raise HTTPException(status_code=503, detail="PLC not connected")
+    resolved = getattr(request.app.state, "resolved_config", None)
+    if resolved is None:
+        raise HTTPException(status_code=400, detail="No machine loaded")
+
+    rpm_x10 = round(body.rpm * 10)
+    client.write_register(resolved.plc.registers.speed_setpoint, rpm_x10)
+    return {"status": "ok", "rpm": body.rpm}
