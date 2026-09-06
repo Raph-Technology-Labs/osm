@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.config_loader import DEFAULT_CONFIG_PATH
-from app.routers import actuators, auth, health, inspection, parts
+from app.routers import actuators, auth, dashboard, health, inspection, parts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -26,6 +26,7 @@ app.include_router(inspection.router, prefix="/api/v1")
 app.include_router(parts.router, prefix="/api/v1")
 app.include_router(actuators.router, prefix="/api/v1")
 app.include_router(health.router, prefix="/api/v1")
+app.include_router(dashboard.router, prefix="/api/v1")
 
 
 @app.on_event("startup")
