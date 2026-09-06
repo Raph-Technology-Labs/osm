@@ -321,6 +321,9 @@ def load_machine_config(config_path: Path = DEFAULT_CONFIG_PATH) -> dict:
         return yaml.safe_load(f)
 
 
+_resolved_config_cache: Dict[str, ResolvedMachineConfig] = {}
+
+
 def resolve_config_for_part(
     part_code: str,
     db: Optional["Session"] = None,
@@ -332,7 +335,20 @@ def resolve_config_for_part(
     that fuller design needs Part-ingestion machinery that's out of scope for
     this slice (see plan.txt). The optional `db` merge below is the seam for
     that later work; it's a no-op today.
+
+    Cached by (config_path, part_code) when db is None -- this is called
+    again on every session start / part reselect, and re-parsing the same
+    YAML into an identical ResolvedMachineConfig each time is wasted work
+    the caller (inspection_session.start_session) then uses to rebuild the
+    whole camera registry. Not cached when db is given: a future real
+    per-part DB override (_merge_part_overrides) could vary the result
+    between calls even for the same part_code, so that path always resolves
+    fresh.
     """
+    cache_key = f"{config_path}:{part_code}"
+    if db is None and cache_key in _resolved_config_cache:
+        return _resolved_config_cache[cache_key]
+
     raw = load_machine_config(config_path)
 
     actual_part_code = raw["machine"]["part_code"]
@@ -353,6 +369,8 @@ def resolve_config_for_part(
 
     if db is not None:
         _merge_part_overrides(resolved, db)
+    else:
+        _resolved_config_cache[cache_key] = resolved
 
     return resolved
 

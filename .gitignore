@@ -9,6 +9,7 @@ CLAUDE.local.md
 # Python
 venv/
 .venv/
+.venv_*/
 __pycache__/
 *.pyc
 

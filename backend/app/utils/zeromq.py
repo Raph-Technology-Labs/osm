@@ -51,7 +51,15 @@ def publish_camera_frame(camera_id: str, frame) -> None:
     broadcast(camera_feed_topic(camera_id), data_url)
 
 
-def publish_inspection_result(camera_id: str, station_id: str, passed: bool, defect_label: str | None) -> None:
+def publish_inspection_result(
+    camera_id: str,
+    station_id: str,
+    passed: bool,
+    defect_label: str | None,
+    defect_confidence: float | None = None,
+    defect_count: int = 0,
+    measurement_data: dict | None = None,
+) -> None:
     import json
 
     payload = json.dumps({
@@ -59,5 +67,8 @@ def publish_inspection_result(camera_id: str, station_id: str, passed: bool, def
         "station_id": station_id,
         "passed": passed,
         "defect_label": defect_label,
+        "defect_confidence": defect_confidence,
+        "defect_count": defect_count,
+        "measurement_data": measurement_data,
     })
     broadcast("MessageType.InspectionResult", payload)

@@ -42,6 +42,7 @@ def bootstrap_machine():
     app.state.plc_client = None
     app.state.indexer_tracker = None
     app.state.dispatcher = None
+    app.state.current_session_id = None
 
     if not DEFAULT_CONFIG_PATH.exists():
         logging.getLogger("main").info(
@@ -65,6 +66,9 @@ def stop_inspection_demo():
     station_registry = getattr(app.state, "station_registry", None)
     if station_registry:
         station_registry.close_all()
+    from app.services.results_writer import get_results_writer
+
+    get_results_writer().stop()  # flush anything still queued, never drop silently
 
 
 @app.get("/")

@@ -19,15 +19,20 @@ if TYPE_CHECKING:
 
 def run_defect_inference(
     frame: np.ndarray, defect_config: "DefectConfig", draw_result: bool = True
-) -> Tuple[bool, Optional[str], np.ndarray]:
-    """Returns (is_defect, defect_label, frame_out). is_defect is True iff at
-    least one detection lands in allowed_defects at or above its confidence
-    threshold (resolved_classes overrides conf_thresh per-class once
-    Part.defects merge is wired -- see config_loader._merge_part_overrides;
-    today resolved_classes is always empty, so conf_thresh applies to
-    everything). detect_classes not in allowed_defects are detected but
-    never flip the verdict -- e.g. a model that also reports "bed" alongside
-    "cat" only cares about "cat" per this station's allowed_defects.
+) -> Tuple[bool, Optional[str], Optional[float], int, np.ndarray]:
+    """Returns (is_defect, defect_label, confidence, defect_count, frame_out).
+    is_defect is True iff at least one detection lands in allowed_defects at
+    or above its confidence threshold (resolved_classes overrides
+    conf_thresh per-class once Part.defects merge is wired -- see
+    config_loader._merge_part_overrides; today resolved_classes is always
+    empty, so conf_thresh applies to everything). detect_classes not in
+    allowed_defects are detected but never flip the verdict -- e.g. a model
+    that also reports "bed" alongside "cat" only cares about "cat" per this
+    station's allowed_defects.
+
+    defect_label/confidence describe the single highest-confidence triggered
+    detection (for display); defect_count is how many triggered detections
+    there were in total (for the Inspection page's "no. of defects").
 
     frame_out has bounding boxes for every detect_classes detection drawn on
     it (red = triggered allowed_defect, green = detected but not flagged)
@@ -45,12 +50,14 @@ def run_defect_inference(
 
     best_label: Optional[str] = None
     best_conf = -1.0
+    triggered_count = 0
     for box in detected_boxes:
         cls_name = names[int(box.cls[0])]
         conf = float(box.conf[0])
         thresh = defect_config.resolved_classes.get(cls_name, defect_config.conf_thresh)
         if conf < thresh or cls_name not in allowed_set:
             continue
+        triggered_count += 1
         if conf > best_conf:
             best_conf = conf
             best_label = cls_name
@@ -59,4 +66,10 @@ def run_defect_inference(
     if draw_result and detected_boxes:
         frame_out = draw.draw_defect_boxes(frame, detected_boxes, names, allowed_set)
 
-    return best_label is not None, best_label, frame_out
+    return (
+        best_label is not None,
+        best_label,
+        best_conf if best_label is not None else None,
+        triggered_count,
+        frame_out,
+    )
