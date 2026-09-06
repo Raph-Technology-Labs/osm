@@ -44,6 +44,7 @@ def bootstrap_machine():
     app.state.indexer_tracker = None
     app.state.dispatcher = None
     app.state.current_session_id = None
+    app.state.plc_watchdog = None
 
     if not DEFAULT_CONFIG_PATH.exists():
         logging.getLogger("main").info(
@@ -61,6 +62,9 @@ def stop_inspection_demo():
     dispatcher = getattr(app.state, "dispatcher", None)
     if dispatcher:
         dispatcher.stop()
+    plc_watchdog = getattr(app.state, "plc_watchdog", None)
+    if plc_watchdog:
+        plc_watchdog.stop()
     plc_client = getattr(app.state, "plc_client", None)
     if plc_client:
         plc_client.close()

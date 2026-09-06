@@ -25,6 +25,7 @@ from app.indexer.dispatcher import StationDispatcher
 from app.indexer.tracker import IndexerSlotTracker
 from app.models.models import Part, PartSession
 from app.plc.modbus_client import ModbusPLCClient, PLCConnectionError
+from app.plc.watchdog import PLCWatchdog
 from app.services.results_writer import (
     CameraResultItem,
     ResultItem,
@@ -73,11 +74,16 @@ def load_machine(app: FastAPI) -> None:
 
     # Create the PLC client from the PLC settings in the resolved configuration.
     plc_client = ModbusPLCClient(resolved.plc)
+    app.state.plc_watchdog = None
     try:
         # Connect to the PLC and verify communication with a heartbeat read.
         plc_client.connect()
         plc_client.read_heartbeat()
         app.state.plc_client = plc_client
+
+        watchdog = PLCWatchdog(plc_client, timeout_ms=resolved.plc.watchdog_timeout_ms)
+        watchdog.start()
+        app.state.plc_watchdog = watchdog
     except PLCConnectionError:
         # Keep the app running without PLC access so the health state can report the failure.
         log.warning("PLC connect failed during machine load -- continuing without it.", exc_info=True)

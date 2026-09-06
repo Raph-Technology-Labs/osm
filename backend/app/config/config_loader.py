@@ -259,6 +259,10 @@ class PLCConnectionConfig(BaseModel):
     # Written to the speed_setpoint register once at session start
     # (CLAUDE.md Rule 5: config-driven, never hardcoded).
     speed_setpoint_rpm: float
+    # PLACEHOLDER -- app/plc/watchdog.py's heartbeat-staleness timeout.
+    # Deliberately not tuned yet; real value comes once the indexer/PLC
+    # hardware is actually connected (explicit instruction, not guessed).
+    watchdog_timeout_ms: float = 5000.0
     registers: RegisterMapConfig
     error_registers: List[ErrorRegisterConfig] = []
 
