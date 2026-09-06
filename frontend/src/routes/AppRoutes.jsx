@@ -6,21 +6,27 @@ import PartSelectionPage from "../pages/PartSelectionPage";
 import DeviceSettingsPage from "../pages/DeviceSettingsPage";
 import HealthCheckPage from "../pages/HealthCheckPage";
 import TechnicalSupport from "../pages/TechinicalSupport";
+import LoginPage from "../pages/LoginPage";
+import SignOutPage from "../pages/SignOutPage";
+import RequireAuth from "../components/RequireAuth";
 
 const AppRoutes = () => {
   return (
     <Routes>
-      <Route path="/" element={<DashboardPage />} />
-      <Route path="/inspection" element={<InspectionPage />} />
-      <Route path="/add-part" element={<PlaceholderPage title="Add New Part" />} />
-      <Route path="/part-details" element={<PlaceholderPage title="Part Details" />} />
-      <Route path="/part-selection" element={<PartSelectionPage />} />
-      <Route path="/counting/:sessionId" element={<PlaceholderPage title="Counting" />} />
-      <Route path="/health-check" element={<HealthCheckPage />} />
-      <Route path="/batching" element={<PlaceholderPage title="Batching Mode" />} />
-      <Route path="/batching/:sessionId" element={<PlaceholderPage title="Batching Mode" />} />
-      <Route path="/device-settings" element={<DeviceSettingsPage />} />
-      <Route path="/technical-support" element={<TechnicalSupport />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/signout" element={<SignOutPage />} />
+
+      <Route path="/" element={<RequireAuth><DashboardPage /></RequireAuth>} />
+      <Route path="/inspection" element={<RequireAuth><InspectionPage /></RequireAuth>} />
+      <Route path="/add-part" element={<RequireAuth><PlaceholderPage title="Add New Part" /></RequireAuth>} />
+      <Route path="/part-details" element={<RequireAuth><PlaceholderPage title="Part Details" /></RequireAuth>} />
+      <Route path="/part-selection" element={<RequireAuth><PartSelectionPage /></RequireAuth>} />
+      <Route path="/counting/:sessionId" element={<RequireAuth><PlaceholderPage title="Counting" /></RequireAuth>} />
+      <Route path="/health-check" element={<RequireAuth><HealthCheckPage /></RequireAuth>} />
+      <Route path="/batching" element={<RequireAuth><PlaceholderPage title="Batching Mode" /></RequireAuth>} />
+      <Route path="/batching/:sessionId" element={<RequireAuth><PlaceholderPage title="Batching Mode" /></RequireAuth>} />
+      <Route path="/device-settings" element={<RequireAuth><DeviceSettingsPage /></RequireAuth>} />
+      <Route path="/technical-support" element={<RequireAuth><TechnicalSupport /></RequireAuth>} />
 
       <Route path="*" element={<PlaceholderPage title="404 — Not Found" />} />
     </Routes>
