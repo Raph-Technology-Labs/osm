@@ -77,8 +77,8 @@ Actual layout as of 2026-08-31 (Stage 1 in progress — see Section 8):
   `camera_results`
 - `app/indexer/tracker.py` — `IndexerSlotTracker`: pulse handling, slot math
 - `app/indexer/dispatcher.py` — `StationDispatcher`: fires triggers by
-  simulation timer today (`source.type: simulation`); PLC-driven
-  `source.type: plc` firing is not wired yet
+  simulation timer today (gated by `plc.sim.enabled`, paced by
+  `plc.sim.tick_interval_ms`); real PLC-pulse-driven firing is not wired yet
 - `app/plc/registers.py`, `app/plc/simulator.py`, `app/plc/poller.py` —
   `PlcSimulator` + wrap-corrected `SlotTracker`/`PlcPoller`, per
   `docs/specs/plc_simulator.md` (implemented, 7 tests passing)

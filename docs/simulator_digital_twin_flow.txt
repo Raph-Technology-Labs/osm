@@ -1,0 +1,205 @@
+OSM — SIMULATOR START-UP & DIGITAL TWIN SYNC — END-TO-END PIPELINE
+=====================================================================
+Generated from actual source in this repo (not from spec docs alone):
+  backend/app/main.py
+  backend/app/inspection_session.py
+  backend/app/indexer/tracker.py
+  backend/app/indexer/dispatcher.py
+  backend/app/plc/simulator.py
+  backend/app/utils/zeromq.py
+  backend/app/routers/inspection.py
+  frontend/src/pages/InspectionPage.jsx
+  frontend/src/hooks/useLiveEvents.js
+  frontend/src/components/inspection/DigitalTwin.jsx
+
+Two different "simulator" concepts exist in this codebase — keep them
+separate:
+  (A) PLC / hardware-source simulation (app/plc/simulator.py,
+      app/camera/camera_sim.py) — stands in for real Modbus/camera hardware.
+  (B) The dispatcher's own simulated tick source (plc.sim.enabled: true
+      in machine_config.yaml, driven by StationDispatcher) — advances the
+      ring itself on a timer instead of from real PLC pulses. This is what
+      is running TODAY (PLC-driven firing is "not wired yet" per CLAUDE.md).
+      Everything below describes (B), the one currently live.
+
+---------------------------------------------------------------------
+1. PROCESS BOOT (no session yet)
+---------------------------------------------------------------------
+FastAPI startup event `bootstrap_machine()` (app/main.py):
+  - Resets app.state (machine_loaded=False, tracker/dispatcher/plc=None).
+  - If machine_config.yaml exists, calls `load_machine(app)`
+    (app/inspection_session.py) immediately. Otherwise stays idle until a
+    part is picked (session start lazily calls load_machine() then).
+
+`load_machine(app)` does the one-time, config-driven machine bootstrap:
+  1. Loads machine_config.yaml -> resolve_config_for_part() -> a typed
+     ResolvedMachineConfig (stations, cameras, indexer geometry, PLC regs).
+  2. `zeromq.bind()` — binds the single ZMQ PUB socket (tcp://*:5558) used
+     for every live message the frontend consumes (camera frames,
+     inspection results, ring-state / digital-twin snapshots).
+  3. Builds the StationRegistry (camera objects, per station) from config.
+  4. Creates `IndexerSlotTracker` — the pure ring-math state machine that
+     IS the digital twin's backend model (n_slots, encoder_cpr, per-station
+     pulse offsets -> slot offsets). One long-lived instance, never
+     recreated per session.
+  5. `_seed_sim_if_enabled()` — if machine_config.yaml's `sim:` block is on,
+     deterministically marks some slots BLANK (feeder never loads them) and
+     some forced NOK, rest OK, via `tracker.seed_sim()`.
+  6. Connects the PLC client (real or mock depending on sim.enabled),
+     starts the PLC watchdog (heartbeat timeout -> STOP_COMMAND escalation).
+  7. Sets `app.state.machine_loaded = True`.
+
+No dispatcher exists yet — nothing is turning.
+
+---------------------------------------------------------------------
+2. SESSION START (operator picks a part, Create Session page)
+---------------------------------------------------------------------
+Frontend: InspectionPage.jsx, on mount, calls
+    POST /api/v1/inspection/session/start  { part_code }
+Backend router (routers/inspection.py) calls
+    `inspection_session.start_session(app, part_code)`:
+
+  1. Lazily runs load_machine() if it hasn't run yet.
+  2. Re-resolves config for this specific part_code -> resolved.
+  3. Re-seeds the sim tracker (idempotent) for this part.
+  4. Creates a `PartSession` DB row (`_create_part_session`) — if the part
+     isn't seeded in the DB, the session still runs (live inspection works)
+     but results aren't persisted; this is deliberate, not a failure.
+  5. Rebuilds the StationRegistry from the resolved config (per-camera
+     frame providers: sim image-cycling provider if camera.sim.enabled,
+     else the real Arena SDK driver).
+  6. For every inspection station/camera, wires an `on_result` callback.
+     This callback is the bridge between the vision pipeline and the
+     digital twin:
+       - publishes the camera's frame over ZMQ (live preview)
+       - writes this camera's pass/fail onto the tracker's SlotRecord via
+         `tracker.record_camera_result()`
+       - once every camera expected at that station has reported,
+         `tracker.station_aggregate()` resolves the station's overall
+         pass/fail, and `tracker.apply_station_result()` flips that slot's
+         per-station state from "pending" -> "ok"/"nok"
+       - publishes the inspection verdict over ZMQ
+       - if persistence is on, enqueues a batched DB write
+  7. Constructs `StationDispatcher(resolved, registry, tracker)` and stores
+     it on app.state — but does NOT start it. A session is "wired but
+     idle": cameras/pipeline ready, ring not yet turning.
+
+At this point `GET /inspection/config` (called once by InspectionPage) has
+already handed the frontend `nSlots`, `stations` (id/type/slot_offset) —
+the STATIC layout the digital twin needs to draw itself, independent of
+live state.
+
+---------------------------------------------------------------------
+3. MOTOR START (operator explicitly starts the ring)
+---------------------------------------------------------------------
+Frontend calls `POST /inspection/motor/start` right after session/start
+(InspectionPage.jsx). Backend: `dispatcher.start()` — schedules the first
+`_tick()` via `threading.Timer`. This is the actual "simulator" run loop:
+
+Each `StationDispatcher._tick()` (repeats on a timer, interval set by the
+single `plc.sim.tick_interval_ms`, scaled by an operator-settable speed
+multiplier; the dispatcher raises `NoTickSourceConfiguredError` at
+construction time if `plc.sim.enabled` is False, since there's no
+real-PLC-pulse-driven tick source wired yet):
+  1. Advances one slot's worth of pulses into the tracker
+     (`tracker.on_pulse_update()`) — the simulated stand-in for a real
+     PULSE_COUNT Modbus read.
+  2. Every ENTRY_INTERVAL_TICKS ticks, tries to assign a new part at the
+     Entry slot (`tracker.on_part_entered()`), skipping slots marked BLANK
+     or already occupied.
+  3. Recomputes every station's current slot_id from ring-math
+     (`tracker.tick()` / `station_slot_id()`).
+  4. For each station whose slot_id just changed (edge-triggered, not
+     re-fired every tick) AND has a part assigned:
+       - inspection station: `tracker.mark_pending()` (unreached->pending)
+         then `station_registry.fire_station()` — this actually captures
+         a frame and runs the vision pipeline, whose `on_result` callback
+         (wired in step 2 above) eventually calls back into the tracker.
+       - reject (r1) station: `tracker.transition_r1()` — the instant ANY
+         inspection station on that part reads nok, the part is removed
+         (`free_slot`), nok_total += 1.
+       - exit station: `tracker.transition_exit()` — frees the slot,
+         ok_total += 1 if every inspection station resolved ok, else
+         nok_total += 1 (fail-safe default).
+  5. **`zeromq.publish_ring_state(tracker, revolutions)`** — broadcasts a
+     full per-slot snapshot (status, part_id, station_states for every
+     slot) as `MessageType.RingState` over the ZMQ PUB socket. This single
+     call, once per tick, is the entire sync mechanism between the
+     simulator's internal state and the digital twin UI.
+  6. Reschedules the next tick.
+
+---------------------------------------------------------------------
+4. HOW THE DIGITAL TWIN STAYS IN SYNC (backend -> frontend)
+---------------------------------------------------------------------
+  Backend (Python)                Electron main (Node)         Renderer (React)
+  ----------------------          ----------------------       -------------------
+  StationDispatcher._tick()
+    -> tracker mutations
+    -> zeromq.publish_ring_state()
+         ZMQ PUB tcp://*:5558  -->  zeromq.js SUB socket
+         topic: MessageType.       (native binding, main
+         RingState, JSON payload   process only)
+                                     -> ipcMain forwards       -> window.ipc
+                                        over ipcMain/               .handleRingStateMessages
+                                        ipcRenderer                 callback (useLiveEvents.js)
+                                                                     -> setRingState(state)
+                                                                     -> DigitalTwin.jsx re-renders
+
+Same path, different topics, for live camera frames
+(`MessageType.CameraFeed.<camera_id>`) and per-camera verdicts
+(`MessageType.InspectionResult`) — all three are separate ZMQ topics on the
+one bound PUB socket, fanned out to the renderer via the same
+ZMQ(main)->IPC(renderer) bridge. This is deliberately NOT REST/WebSocket —
+CLAUDE.md Section 9: live state is push-only, drop-old, no queue backlog.
+
+DigitalTwin.jsx itself does no reconstruction of state — it renders
+`ringState` verbatim:
+  - `ringState.slots[i].status` -> EMPTY/LOADED/BLANK -> ring wedge color
+  - `ringState.slots[i].station_states[station_id]` -> unreached / pending
+    / ok / nok -> one radial color band per inspection station
+  - `ringState.entry_slot_id` -> ring rotation angle (accumulated,
+    wrap-corrected so the CSS transition never visibly spins backward)
+  - `ringState.ok_total` / `nok_total` -> stat readouts
+  The static layout (n_slots, station list/order/offsets) comes from a
+  separate one-time REST call (`GET /inspection/config`), not from
+  RingState — RingState only carries what changes tick to tick.
+
+So: "sync" = the backend is the single source of truth (IndexerSlotTracker
+inside the FastAPI process); the frontend never computes state itself, it
+only paints whatever RingState snapshot arrives, at whatever cadence the
+dispatcher's tick loop publishes it (currently: once per simulated tick,
+i.e. every station-position change).
+
+---------------------------------------------------------------------
+5. SESSION / MOTOR STOP
+---------------------------------------------------------------------
+  POST /inspection/motor/stop  -> dispatcher.stop() (cancels the pending
+      threading.Timer; ring position freezes, RingState stops updating).
+      Session/DB stays open — this is a pause, not an end.
+  POST /inspection/session/stop -> dispatcher.stop() again (idempotent) +
+      flush any buffered result writes + set PartSession.session_end in
+      the DB. Cameras/PLC connection are NOT torn down (they stay live for
+      Health Check / Device Settings pages, per CLAUDE.md Section 9) —
+      only this session's pipeline/dispatcher stops.
+  Process shutdown (`stop_inspection_demo`, app/main.py) additionally stops
+  the PLC watchdog, closes the PLC client, and closes all camera handles.
+
+---------------------------------------------------------------------
+6. QUICK REFERENCE — WHO OWNS WHAT
+---------------------------------------------------------------------
+  IndexerSlotTracker   - the ONLY state the digital twin reflects. Pure
+                         ring math + per-slot/per-station verdict state.
+                         Mutated from two contexts under one lock: the
+                         dispatcher's tick thread (position/transitions)
+                         and async vision-pipeline callbacks (verdicts).
+  StationDispatcher    - the "simulator" run loop today: owns the tick
+                         timer, drives tracker mutation, fires cameras,
+                         publishes RingState. Will later read real PLC
+                         pulses instead of a timer (plc.sim.enabled: false,
+                         not wired yet) — tracker/dispatch logic doesn't
+                         change, only where pulses come from.
+  zeromq.py            - one PUB socket, three topics (CameraFeed,
+                         InspectionResult, RingState). Only sync channel
+                         to the frontend.
+  DigitalTwin.jsx       - dumb renderer of the latest RingState payload;
+                         no client-side state reconstruction.

@@ -15,7 +15,6 @@ from app.config.config_loader import (
     InspectionStation,
     ROIConfig,
     ResolutionConfig,
-    StationSourceConfig,
 )
 
 
@@ -65,7 +64,6 @@ def make_station(camera_id: str, station_id: str) -> InspectionStation:
         id=station_id,
         name=f"Station {station_id}",
         station_offset_pulses=0,
-        source=StationSourceConfig(type="simulation", sim_interval_ms=1000),
         cameras={camera_id: camera_config},
         # InspectionPipeline requires at least one of defect/measurement --
         # this test never calls read_frame() through the pipeline (only

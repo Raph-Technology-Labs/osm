@@ -4,16 +4,17 @@ requirement). A background thread drains a queue.Queue and flushes in
 batches on a size/interval trigger -- same threading-for-hot-path
 convention already used by StationDispatcher/CameraStation, not asyncio.
 
-ring_part_id caveat: today's build fires stations on a simulation timer
-(app/indexer/dispatcher.py) without ever calling
-IndexerSlotTracker.on_part_entered() -- there is no real cross-station part
-identity yet (that only exists once source.type: plc dispatch is wired, a
-gap already flagged in dispatcher.py's own docstring). Until then,
-ring_part_id here is a simple per-session, per-station incrementing
-sequence number -- it uniquely identifies a station fire, but does NOT
-correlate a physical part across multiple stations the way the real
-IndexerSlotTracker-driven value eventually will. Don't build dashboard
-queries that assume it does.
+ring_part_id caveat: app/indexer/dispatcher.py DOES call
+IndexerSlotTracker.on_part_entered() today, so real cross-station part
+identity exists (tracker.assign_part_id per slot) -- and
+app/inspection_session.py's on_result callback now uses that real id as
+wire_part_id/ring_part_id on the live dispatcher path (fixed 2026-09-07,
+closing the gap this docstring used to describe). next_ring_part_id() below
+is now only a FALLBACK for callers with no ring context (e.g. ad-hoc/manual
+captures) -- it's a simple per-session incrementing sequence number with no
+cross-station correlation. Don't build dashboard queries that assume
+ring_part_id came from this fallback; on the normal live path it's the real
+tracker id.
 """
 
 from __future__ import annotations

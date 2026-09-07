@@ -1,8 +1,8 @@
 """StationDispatcher unit tests -- real IndexerSlotTracker (the actual
 ring-math, not mocked), a fake station_registry that just records
 fire_station() calls, and a lightweight fake resolved_config (dispatcher.py
-only ever touches .stations/.inspection_stations() and each station's
-.id/.type/.source.type/.source.sim_interval_ms, so a full
+only ever touches .stations/.inspection_stations(), each station's
+.id/.type, and .plc.sim.enabled/.plc.sim.tick_interval_ms, so a full
 ResolvedMachineConfig with PLC/pipeline config isn't needed here).
 
 Timing-based (real threading.Timer ticks via time.sleep) -- same pattern
@@ -14,26 +14,34 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List
 
-from app.indexer.dispatcher import ENTRY_INTERVAL_TICKS, StationDispatcher
+import pytest
+
+from app.indexer.dispatcher import ENTRY_INTERVAL_TICKS, NoTickSourceConfiguredError, StationDispatcher
 from app.indexer.tracker import IndexerSlotTracker
-
-
-@dataclass
-class FakeSource:
-    type: str = "simulation"
-    sim_interval_ms: int = 20
 
 
 @dataclass
 class FakeStation:
     id: str
     type: str = "inspection"
-    source: FakeSource = field(default_factory=FakeSource)
+    enabled: bool = True  # only meaningful for type="reject" -- see test_reject_and_sim.py
+
+
+@dataclass
+class FakePlcSim:
+    enabled: bool = True
+    tick_interval_ms: int = 20
+
+
+@dataclass
+class FakePlc:
+    sim: FakePlcSim = field(default_factory=FakePlcSim)
 
 
 class FakeResolvedConfig:
-    def __init__(self, stations: List[FakeStation]):
+    def __init__(self, stations: List[FakeStation], tick_interval_ms: int = 20, sim_enabled: bool = True):
         self.stations = stations
+        self.plc = FakePlc(sim=FakePlcSim(enabled=sim_enabled, tick_interval_ms=tick_interval_ms))
 
     def inspection_stations(self):
         return [s for s in self.stations if s.type == "inspection"]
@@ -43,18 +51,22 @@ class FakeStationRegistry:
     def __init__(self):
         self.fired: List[str] = []
 
-    def fire_station(self, station_id: str) -> None:
+    def fire_station(self, station_id: str, slot_id=None, part_id=None) -> None:
         self.fired.append(station_id)
 
 
 def make_dispatcher(n_slots=10, encoder_cpr=100, pulse_offsets: Dict[str, int] = None, tick_ms=20):
     pulse_offsets = pulse_offsets or {"s1": 20, "exit1": 80}
     fake_stations = [
-        FakeStation(id=sid, type="exit" if sid.startswith("exit") else "inspection", source=FakeSource(sim_interval_ms=tick_ms))
+        FakeStation(id=sid, type="exit" if sid.startswith("exit") else "inspection")
         for sid in pulse_offsets
     ]
-    config = FakeResolvedConfig(fake_stations)
-    tracker = IndexerSlotTracker(n_slots=n_slots, encoder_cpr=encoder_cpr, station_pulse_offsets=pulse_offsets)
+    config = FakeResolvedConfig(fake_stations, tick_interval_ms=tick_ms)
+    inspection_ids = [sid for sid in pulse_offsets if not sid.startswith("exit")]
+    tracker = IndexerSlotTracker(
+        n_slots=n_slots, encoder_cpr=encoder_cpr, station_pulse_offsets=pulse_offsets,
+        inspection_station_ids=inspection_ids,
+    )
     registry = FakeStationRegistry()
     dispatcher = StationDispatcher(config, registry, tracker)
     return dispatcher, tracker, registry
@@ -117,6 +129,22 @@ def test_speed_scale_shortens_the_tick_interval():
     assert dispatcher._current_interval_s() == 0.05
 
 
+def test_start_is_idempotent():
+    # Motor start is now a repeatable manual operator action rather than a
+    # single call from session-start -- calling start() while already
+    # running must not schedule a second concurrent _tick() chain (which
+    # would silently double the effective tick rate).
+    dispatcher, tracker, _registry = make_dispatcher(tick_ms=60)
+    dispatcher.start()
+    dispatcher.start()  # should be a no-op, not a second timer chain
+    try:
+        wait_ticks(ENTRY_INTERVAL_TICKS * 3, 0.06)  # ~6 ticks -> ~3 entries on a single chain
+    finally:
+        dispatcher.stop()
+    # a doubled chain would produce roughly double this
+    assert tracker.entered_count <= 4
+
+
 def test_stop_prevents_further_ticks():
     dispatcher, _tracker, registry = make_dispatcher(tick_ms=60)
     dispatcher.start()
@@ -127,17 +155,20 @@ def test_stop_prevents_further_ticks():
     assert len(registry.fired) == fired_at_stop
 
 
-def test_differing_sim_intervals_uses_the_smallest_and_warns(caplog):
-    pulse_offsets = {"s1": 10, "s2": 20, "exit1": 80}
+def test_plc_sim_disabled_raises_instead_of_guessing():
+    # plc.sim.enabled=False -- there's no implemented real-PLC-pulse-driven
+    # tick source yet, so the dispatcher must refuse to start rather than
+    # silently picking a bogus interval (the old per-station-interval
+    # fallback's latent bug).
+    pulse_offsets = {"s1": 20, "exit1": 80}
     fake_stations = [
-        FakeStation(id="s1", type="inspection", source=FakeSource(sim_interval_ms=50)),
-        FakeStation(id="s2", type="inspection", source=FakeSource(sim_interval_ms=100)),
-        FakeStation(id="exit1", type="exit", source=FakeSource(sim_interval_ms=50)),
+        FakeStation(id="s1", type="inspection"),
+        FakeStation(id="exit1", type="exit"),
     ]
-    config = FakeResolvedConfig(fake_stations)
-    tracker = IndexerSlotTracker(n_slots=10, encoder_cpr=100, station_pulse_offsets=pulse_offsets)
+    config = FakeResolvedConfig(fake_stations, sim_enabled=False)
+    tracker = IndexerSlotTracker(
+        n_slots=10, encoder_cpr=100, station_pulse_offsets=pulse_offsets, inspection_station_ids=["s1"],
+    )
     registry = FakeStationRegistry()
-    with caplog.at_level("WARNING"):
-        dispatcher = StationDispatcher(config, registry, tracker)
-    assert dispatcher._tick_interval_s == 0.05  # the smaller of 50ms/100ms
-    assert any("different sim_interval_ms" in r.message for r in caplog.records)
+    with pytest.raises(NoTickSourceConfiguredError):
+        StationDispatcher(config, registry, tracker)

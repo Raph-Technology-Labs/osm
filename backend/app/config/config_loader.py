@@ -1,6 +1,6 @@
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Dict, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Annotated, Dict, List, Literal, NamedTuple, Optional, Union
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -121,18 +121,20 @@ class CameraConfig(BaseModel):
     sim: CameraSimConfig = CameraSimConfig()
     # fire-and-forget CMD, no ACK -- per-camera light, not a global strobe line
     strobe_reg: Optional[int] = None
-
-
-class StationSourceConfig(BaseModel):
-    # "simulation" = timer-fired, no PLC needed (the guaranteed fallback).
-    # "plc" = IndexerSlotTracker-driven self-fire per CLAUDE.md Rule 1.
-    type: Literal["simulation", "plc"]
-    sim_interval_ms: Optional[int] = None
+    # Delay between firing strobe_reg and actually capturing -- the light
+    # needs time to reach full brightness first. Required whenever
+    # strobe_reg is set (a strobe with no capture delay is a race against
+    # the light hardware); meaningless without it. NOT WIRED YET -- like
+    # strobe_reg itself, nothing in the codebase actually writes strobe_reg
+    # or sleeps this long before capture today (see real_frame_provider()
+    # in app/camera/station_registry.py); this is schema only until that
+    # sequencing is built.
+    strobe_capture_delay_ms: Optional[int] = None
 
     @model_validator(mode="after")
-    def sim_needs_interval(self):
-        if self.type == "simulation" and self.sim_interval_ms is None:
-            raise ValueError("source.sim_interval_ms is required when source.type == 'simulation'")
+    def strobe_delay_required_with_strobe(self):
+        if self.strobe_reg is not None and self.strobe_capture_delay_ms is None:
+            raise ValueError("strobe_capture_delay_ms is required when strobe_reg is set")
         return self
 
 
@@ -145,7 +147,6 @@ class InspectionStation(BaseModel):
     name: str
     type: Literal["inspection"] = "inspection"
     station_offset_pulses: int
-    source: StationSourceConfig
     cameras: Dict[str, CameraConfig]
     pipeline: InspectionPipeline
 
@@ -166,12 +167,14 @@ class PartAggregationResultWrite(BaseModel):
 
 
 class ExitStation(BaseModel):
-    """Where OK/NOK is evaluated -- not a physical actuator. This build has
-    no reject station; nothing is ever dropped from the ring early. At this
-    station's offset, the software checks whether the part passed every
-    inspection station it went through. OK -> result_write.ack_reg fires
-    (dummy ack, result_aggregator increments). NOK -> flagged/displayed
-    only, no physical action, so no ack is expected on that path."""
+    """Where OK/NOK is evaluated -- not a physical actuator. The reject
+    decision itself now happens at R1 (RejectStation, below), per CLAUDE.md
+    Rule 3 -- by the time a part reaches Exit, IndexerSlotTracker.slots[
+    slot_id].status is already OK or NOK (or, if R1 is disabled, still
+    unresolved and evaluated here instead -- see tracker.transition_exit).
+    OK -> result_write.ack_reg fires (dummy ack, result_aggregator
+    increments). NOK -> flagged/displayed only, no physical action, so no
+    ack is expected on that path."""
     id: str
     name: str
     type: Literal["exit"] = "exit"
@@ -180,7 +183,31 @@ class ExitStation(BaseModel):
     result_write: PartAggregationResultWrite
 
 
-Station = Annotated[Union[InspectionStation, ExitStation], Field(discriminator="type")]
+class RejectStation(BaseModel):
+    """The reject decision checkpoint (CLAUDE.md Rule 3: evaluated at R1,
+    never at Exit). Deliberately has NO cmd_reg/ack_reg yet -- unlike the
+    inert app/config/machine_config.example.yaml sketch, this build has no
+    wired reject actuator (REJECT_CMD, register 40009, stays unwired).
+    Real PLC actuation + ACK/timeout escalation (Rule 4) is separate future
+    work; today this only mutates ring state (IndexerSlotTracker
+    .transition_r1), nothing physical happens yet.
+
+    enabled=False is commissioning mode: NOK parts ride through R1
+    untouched and get resolved at Exit instead -- Exit's "everything past
+    here already passed" guarantee only holds when this is True."""
+    id: str
+    name: str
+    type: Literal["reject"] = "reject"
+    station_offset_pulses: int
+    enabled: bool = True
+
+
+Station = Annotated[Union[InspectionStation, RejectStation, ExitStation], Field(discriminator="type")]
+
+
+class SimCounts(NamedTuple):
+    ok: int
+    blank: int
 
 
 class IndexerConfig(BaseModel):
@@ -237,9 +264,41 @@ class RegisterMapConfig(BaseModel):
 
 
 class PLCSimConfig(BaseModel):
+    """The single top-level 'is this machine running in simulation' switch --
+    consolidates what used to be three separate config locations: this
+    connection target (host/port, mock Modbus server vs real PLC), the
+    dispatcher's own tick cadence (was per-station source.sim_interval_ms --
+    every station on one physical ring shares one rotation speed, so that
+    was already flagged in dispatcher.py as a config-schema smell), and the
+    ring-wide BLANK-slot harness (was a standalone top-level sim: block).
+    Distinct from CameraSimConfig, which stays per-camera on purpose (mixed
+    real/sim commissioning, one camera real while others simulated).
+
+    Deliberately has NO nok field (per explicit instruction 2026-09-07,
+    removing what was here before): OK/NOK is never forced by config --
+    every non-blank slot runs real defect/measurement inference against its
+    sim image (which already includes both good and defective photos), and
+    that real result is what decides. Only which slots are permanently
+    unfed (blank) is a sim-harness knob."""
     enabled: bool = False
     host: str = "localhost"
     port: int = 5502
+    # Replaces per-station source.sim_interval_ms -- single shared cadence
+    # at which StationDispatcher's own tick loop advances the ring by one
+    # slot when there is no real PLC pulse source.
+    tick_interval_ms: int = 3000
+    # Which physical slot indices (chosen randomly, see
+    # IndexerSlotTracker.seed_sim) are permanently unfed by the feeder.
+    blank: int = 0
+
+    def resolve(self, total: int) -> SimCounts:
+        if self.blank > total:
+            raise ValueError(
+                f"plc.sim.blank ({self.blank}) exceeds the indexer's actual slot "
+                f"count ({total}) -- total is derived from indexer.diameter_mm/"
+                f"part_size_mm/tolerance_pct, not something plc.sim can override"
+            )
+        return SimCounts(ok=total - self.blank, blank=self.blank)
 
 
 class ErrorRegisterConfig(BaseModel):
@@ -297,6 +356,13 @@ class ResolvedMachineConfig(BaseModel):
             raise ValueError(f"stations[] must contain exactly one type: exit entry, found {len(exits)}")
         return self
 
+    @model_validator(mode="after")
+    def at_most_one_reject_station(self):
+        rejects = [s for s in self.stations if s.type == "reject"]
+        if len(rejects) > 1:
+            raise ValueError(f"stations[] must contain at most one type: reject entry, found {len(rejects)}")
+        return self
+
     def inspection_stations(self) -> List[InspectionStation]:
         return [s for s in self.stations if s.type == "inspection"]
 
@@ -305,6 +371,12 @@ class ResolvedMachineConfig(BaseModel):
             if s.type == "exit":
                 return s
         raise ValueError("no type: exit station found")  # unreachable, exactly_one_exit_station enforces this
+
+    def reject_station(self) -> Optional[RejectStation]:
+        for s in self.stations:
+            if s.type == "reject":
+                return s
+        return None
 
     def cameras(self) -> Dict[str, CameraConfig]:
         """All cameras across all inspection stations, keyed by camera_id --

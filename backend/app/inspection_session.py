@@ -70,7 +70,9 @@ def load_machine(app: FastAPI) -> None:
         n_slots=resolved.indexer.n_slots,
         encoder_cpr=resolved.indexer.encoder_cpr,
         station_pulse_offsets=station_pulse_offsets,
+        inspection_station_ids=[s.id for s in resolved.inspection_stations()],
     )
+    _seed_sim_if_enabled(app, resolved)
 
     # Create the PLC client from the PLC settings in the resolved configuration.
     plc_client = ModbusPLCClient(resolved.plc)
@@ -91,6 +93,26 @@ def load_machine(app: FastAPI) -> None:
 
     # Mark machine setup as complete for later session-start checks.
     app.state.machine_loaded = True
+
+
+def _seed_sim_if_enabled(app: FastAPI, resolved: ResolvedMachineConfig) -> None:
+    """Randomly seeds IndexerSlotTracker's BLANK (permanently-unfed) slots
+    per machine_config.yaml's plc.sim: block. No forced OK/NOK -- every
+    other slot runs real defect/measurement inference against its sim
+    image, so OK/NOK is decided by the actual pipeline, not this harness.
+    Called from both load_machine() (boot) and start_session() (idempotent
+    re-seed, since sim config might not have been known/enabled yet at boot
+    time -- the tracker itself is a long-lived, boot-time object, not
+    recreated per session)."""
+    if not resolved.plc.sim.enabled:
+        return
+    counts = resolved.plc.sim.resolve(resolved.indexer.n_slots)
+    app.state.indexer_tracker.seed_sim(blank=counts.blank)
+    log.info(
+        "Sim harness enabled: %d BLANK slots randomly placed (of %d) -- every "
+        "other slot runs real inference, no forced verdict",
+        counts.blank, resolved.indexer.n_slots,
+    )
 
 
 def _create_part_session(part_code: str) -> Optional[int]:
@@ -136,6 +158,7 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
 
     resolved = resolve_config_for_part(part_code)
     app.state.resolved_config = resolved
+    _seed_sim_if_enabled(app, resolved)
 
     app.state.current_session_id = _create_part_session(part_code)
     session_id = app.state.current_session_id
@@ -170,6 +193,8 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                         defect_config=camera_defect_config,
                         measurement_config=camera_measurement_config,
                         draw_result=draw_result,
+                        indexer_tracker=app.state.indexer_tracker,
+                        sim_verdict_enabled=resolved.plc.sim.enabled,
                     )
                 )
             else:
@@ -187,16 +212,62 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                 station.set_frame_provider(provide)
                 station.set_driver(driver)
 
-            def make_on_result(cam_id=camera_id, station_id=station_cfg.id):
-                def on_result(_cam_id, captured):
+            def make_on_result(
+                cam_id=camera_id,
+                station_id=station_cfg.id,
+                is_defect_cam=(camera_defect_config is not None),
+                is_measurement_cam=(camera_measurement_config is not None),
+                pass_if=station_cfg.pipeline.result.pass_if,
+                defect_cameras=frozenset(defect_config.allowed_cameras) if defect_config else frozenset(),
+                measurement_cameras=frozenset(measurement_config.allowed_cameras) if measurement_config else frozenset(),
+            ):
+                def on_result(_cam_id, captured, slot_id=None, part_id=None):
                     zeromq.publish_camera_frame(cam_id, captured.frame)
                     passed = not captured.is_defect
-                    # Same placeholder-part-identity counter results_writer.py
-                    # uses for ring_part_id (see its module docstring) -- keyed
-                    # by 0 when there's no DB-backed session, so the live
-                    # Inspection page still has *a* part_id to show even
-                    # without persistence on.
-                    part_id = next_ring_part_id(session_id if session_id is not None else 0)
+
+                    # Ring-side bookkeeping: write this camera's result back
+                    # onto its physical slot (IndexerSlotTracker), and once
+                    # every camera at this station has reported, apply this
+                    # station's pending->ok/nok transition. One call for
+                    # either pipeline kind -- station_states treats every
+                    # inspection station symmetrically; which pipeline block
+                    # produced `passed` only matters for which key/expected-
+                    # cameras set to aggregate over. part_id here is the
+                    # tracker's real assign_part_id (threaded through from
+                    # the dispatcher's fire_station call) -- deliberately
+                    # NOT used below as the wire/DB part_id (see
+                    # wire_part_id) to keep this change scoped to the state
+                    # machine; switching ring_part_id over to the real
+                    # tracker id is a natural, separate follow-up.
+                    tracker = getattr(app.state, "indexer_tracker", None)
+                    if tracker is not None and slot_id is not None:
+                        if is_defect_cam:
+                            key = f"{station_id}:defect"
+                            tracker.record_camera_result(slot_id, key, cam_id, passed)
+                            agg = tracker.station_aggregate(slot_id, key, defect_cameras, pass_if)
+                        elif is_measurement_cam:
+                            key = f"{station_id}:measurement"
+                            tracker.record_camera_result(slot_id, key, cam_id, passed)
+                            agg = tracker.station_aggregate(slot_id, key, measurement_cameras, pass_if)
+                        else:
+                            agg = None
+                        if agg is not None:
+                            tracker.apply_station_result(slot_id, station_id, agg)
+
+                    # Real tracker-assigned physical part identity (threaded
+                    # through from the dispatcher's fire_station call) --
+                    # the same part_id shows at every station it visits, so
+                    # s1's and s2's cards for the same physical part now
+                    # agree, and s2's number is always <= whatever's
+                    # currently at s1 (it's downstream, so it's always
+                    # showing an equal-or-older part). Falls back to the
+                    # placeholder per-session fire counter (results_writer's
+                    # next_ring_part_id, see its module docstring) only for
+                    # callers with no ring context (e.g. ad-hoc/manual
+                    # captures) -- never hit on the live dispatcher path,
+                    # since fire_station() only fires when assign_part_id is
+                    # already set.
+                    wire_part_id = part_id if part_id is not None else next_ring_part_id(session_id if session_id is not None else 0)
                     zeromq.publish_inspection_result(
                         cam_id,
                         station_id,
@@ -205,7 +276,7 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                         defect_confidence=captured.defect_confidence,
                         defect_count=captured.defect_count,
                         measurement_data=captured.measurement_data,
-                        part_id=part_id,
+                        part_id=wire_part_id,
                     )
                     inspection.bump_totals(passed)
 
@@ -215,10 +286,10 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                             ResultItem(
                                 session_id=session_id,
                                 station_id=station_id,
-                                ring_part_id=part_id,
+                                ring_part_id=wire_part_id,
                                 station_fire_no=fire_no,
                                 overall_passed=passed,
-                                rejected=None,  # no reject actuator in this build -- see machine_config.yaml
+                                rejected=None,  # r1 mutates ring state only, no actuator wired yet -- see machine_config.yaml
                                 camera_results=[
                                     CameraResultItem(
                                         camera_id=cam_id,
@@ -249,7 +320,11 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     if old_dispatcher:
         old_dispatcher.stop()
 
+    # Wired but NOT started -- session start used to auto-run the motor
+    # immediately, leaving no way to look at a loaded, idle ring before
+    # parts start moving. Motor start is now a separate, explicit operator
+    # action (POST /inspection/motor/start), matching Device Settings'
+    # existing "run/stop indexer" framing (CLAUDE.md Section 3, page 4).
     dispatcher = StationDispatcher(resolved, registry, app.state.indexer_tracker)
     app.state.dispatcher = dispatcher
-    dispatcher.start()
     return resolved

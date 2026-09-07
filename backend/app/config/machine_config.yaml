@@ -16,17 +16,39 @@ plc:
   ip: "192.168.6.40" # was .41 -- per instrumentation team's sheet
   port: 502
   vendor: integra
+  # Single top-level "is this machine running in simulation" switch --
+  # consolidates what used to be three separate places: this connection
+  # target (host/port, mock Modbus server vs real PLC), the dispatcher's own
+  # tick cadence (was per-station source.sim_interval_ms, duplicated
+  # identically on every station -- a config-schema smell since the whole
+  # ring physically shares one rotation speed), and the ring-wide BLANK-slot
+  # harness (was a standalone top-level sim: block, see blank below).
+  # Distinct from each camera's own sim: block (which only controls which
+  # image file that camera reads) -- that one stays per-camera on purpose
+  # (mixed real/sim commissioning).
+  #
+  # No nok field here (removed per explicit instruction 2026-09-07) -- OK/
+  # NOK is never forced by config. Every non-blank slot runs real defect/
+  # measurement inference against its sim image (cam2's /data/sim/cats/
+  # folder, e.g., already mixes real-defect and clean photos), and that
+  # real result decides. Only which slots are permanently unfed is a
+  # sim-harness knob.
   sim:
     enabled: true
     host: "localhost"
     port: 5502
+    tick_interval_ms: 2000 # replaces every station's old source.sim_interval_ms
+    # Randomly seeds which physical slot INDICES are permanently unfed
+    # (IndexerSlotTracker.seed_sim) -- raises at config-resolve time if
+    # blank > n_slots (n_slots derives from indexer.* above).
+    blank: 5
   # Config-driven motor speed, written to the speed_setpoint register once
   # at session start (CLAUDE.md Rule 5: config-driven, never hardcoded).
   speed_setpoint_rpm: 45.0 # PLACEHOLDER
   # PLACEHOLDER -- app/plc/watchdog.py's heartbeat-staleness timeout before
   # escalating to STOP_CMD. Not tuned yet; real value once indexer/PLC
   # hardware is actually connected.
-  watchdog_timeout_ms: 5000.0 # PLACEHOLDER
+  watchdog_timeout_ms: 3000.0 # PLACEHOLDER
 
   # Register map per the instrumentation team's sheet. Register numbers used
   # EXACTLY as given -- literal 40001-40012, no 0-based conversion. pymodbus
@@ -47,7 +69,13 @@ plc:
     heartbeat_per_slot: 40007            # PC->PLC, int -- PC-configured heartbeat cadence, in pulses
     indexing_pulse_per_slot: 40008        # PC->PLC, int -- PC-configured pulses-per-slot
     reject_cmd: 40009                      # PC->PLC, bool -- rejected-part command
-    stop_cmd: 40010                         # PC->PLC, bool -- halt execution
+    stop_cmd: 40010                         # PC->PLC, bool -- sheet labels this "halt execution"
+                                             # (a pure halt bit), but the app now writes/reads it as
+                                             # a combined run/stop command (1=run, 0=halt) per
+                                             # explicit operator instruction (2026-09-07) -- see
+                                             # app/routers/inspection.py's _write_stop_cmd(). Flag
+                                             # this divergence with the instrumentation team before
+                                             # it reaches real hardware.
     speed_setpoint: 40011                    # PC->PLC, int, 0-1000 scale -- see speed_setpoint_rpm
                                               # above; rpm-to-0-1000 conversion formula is UNCONFIRMED
     fault: 40012                              # BOTH sides R/W per the sheet -- violates the
@@ -83,21 +111,21 @@ redis:
 # `type`. No trigger_reg/part_id_reg anywhere: the PC self-fires off its own
 # slot math (Rule 1), it never waits on a controller trigger register.
 #
-# This build has no reject actuator -- nothing physically leaves the ring
-# early. `type: exit` is the aggregation checkpoint: at that many pulses, the
-# software checks whether the part passed every inspection station it went
-# through. If OK, result_write.ack_reg is a dummy ACK (confirms the
-# result_aggregator increment). NOK is flagged/displayed only, no physical
-# action, so no ack is expected on that path.
+# `type: reject` (r1) is where the reject decision is actually evaluated
+# (CLAUDE.md Rule 3) -- but it has no wired actuator yet (REJECT_CMD/40009
+# stays unwired), so today it only mutates ring state
+# (IndexerSlotTracker.transition_r1), nothing physical happens. When
+# r1.enabled is false, NOK parts ride through untouched. `type: exit` is the
+# final checkpoint: by the time a part gets here its slot status is already
+# OK/NOK from s2 (or, if r1 is disabled, still unresolved and evaluated
+# here as a fallback). If OK, result_write.ack_reg is a dummy ACK (confirms
+# the result_aggregator increment). NOK is flagged/displayed only, no
+# physical action, so no ack is expected on that path.
 stations:
   - id: s1
     name: "Station 1 - Dimension Measurement"
     type: inspection
     station_offset_pulses: 540 # PLACEHOLDER -- pulses from Entry to this station
-
-    source:
-      type: simulation
-      sim_interval_ms: 3000
 
     cameras:
       cam1:
@@ -108,6 +136,7 @@ stations:
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
         strobe_reg: 18 # fire-and-forget CMD, no ACK -- per-camera light, not global
+        strobe_capture_delay_ms: 50 # PLACEHOLDER -- real light settle time not yet confirmed with the instrumentation team; not wired to an actual strobe write yet either (see CameraConfig.strobe_capture_delay_ms)
         sim:
           enabled: true
           image_path: "/data/sim/circles/" # black circle on white bg -- contour-measured, not detected by the stock model
@@ -151,10 +180,6 @@ stations:
     type: inspection
     station_offset_pulses: 1080 # PLACEHOLDER
 
-    source:
-      type: simulation
-      sim_interval_ms: 3000
-
     cameras:
       cam2:
         ip: "192.168.5.42"
@@ -164,6 +189,7 @@ stations:
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
         strobe_reg: 19
+        strobe_capture_delay_ms: 50 # PLACEHOLDER -- see cam1's note above
         sim:
           enabled: true
           image_path: "/data/sim/cats/" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
@@ -186,6 +212,14 @@ stations:
         pass_if: all_cameras_pass
         save_result: true
         draw_result: true
+
+  - id: r1
+    name: "Reject Station 1"
+    type: reject
+    station_offset_pulses: 1440 # PLACEHOLDER -- between s2 (1080) and exit1 (1800); real value
+                                 # needs the actual reject-station time-of-flight (CLAUDE.md Rule 7)
+    enabled: true # false = commissioning mode, no rejection actuator wired yet -- NOK parts
+                  # ride through untouched and get resolved at exit1 instead
 
   - id: exit1
     name: "Exit Station - Result Check"

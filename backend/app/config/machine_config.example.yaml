@@ -16,10 +16,17 @@ plc:
   ip: "192.168.6.41"
   port: 502
   vendor: siemens
+  # Single top-level "is this machine running in simulation" switch --
+  # consolidates the mock Modbus connection target, the dispatcher's own
+  # tick cadence (was per-station source.sim_interval_ms), and the
+  # ring-wide OK/NOK/BLANK verdict harness (was a standalone top-level
+  # sim: block) into one place. See machine_config.yaml for the fuller
+  # comment on why.
   sim:
     enabled: true
     host: "localhost"
     port: 5502
+    tick_interval_ms: 3000 # replaces every station's old source.sim_interval_ms
   # PLACEHOLDER register addresses -- confirm real layout with the
   # controller-program owner before wiring against real hardware. Laid out
   # contiguously (pulse_count..entry_queue block) so the poll loop can read
@@ -83,10 +90,6 @@ stations:
     type: inspection
     station_offset_pulses: 540   # PLACEHOLDER -- pulses from Entry to this station
 
-    source:
-      type: simulation
-      sim_interval_ms: 3000
-
     cameras:
       cam1:
         ip: "192.168.5.41"
@@ -96,6 +99,7 @@ stations:
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
         strobe_reg: 18   # fire-and-forget CMD, no ACK -- per-camera light, not global
+        strobe_capture_delay_ms: 50 # PLACEHOLDER -- real light settle time not yet confirmed; not wired to an actual strobe write yet either
         sim:
           enabled: true
           image_path: "/data/sim/cam1.jpg"
@@ -108,6 +112,7 @@ stations:
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
         strobe_reg: 19
+        strobe_capture_delay_ms: 50 # PLACEHOLDER -- see cam1's note above
         sim:
           enabled: true
           image_path: "/data/sim/cam2.jpg"
@@ -147,9 +152,12 @@ stations:
     type: inspection
     station_offset_pulses: 1080   # PLACEHOLDER
 
-    source:
-      type: plc
-
+    # This station used to sketch source: {type: plc} -- one station
+    # real-PLC-driven while s1 stayed simulation-timer-driven. Per-station
+    # firing-mode mixing is no longer expressible: firing mode is now
+    # machine-wide via plc.sim.enabled (see top of file). A deliberate
+    # scope reduction from "exactly ONE place governs simulation," not an
+    # oversight.
     cameras:
       cam5:
         ip: "192.168.5.45"
@@ -159,6 +167,7 @@ stations:
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
         strobe_reg: 21
+        strobe_capture_delay_ms: 50 # PLACEHOLDER -- see s1/cam1's note above
         sim:
           enabled: true
           image_path: "/data/sim/cam5.jpg"
@@ -171,6 +180,7 @@ stations:
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
         strobe_reg: 22
+        strobe_capture_delay_ms: 50 # PLACEHOLDER -- see s1/cam1's note above
         sim:
           enabled: true
           video_path: "/data/sim/cam6.mp4"
