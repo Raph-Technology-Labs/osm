@@ -73,6 +73,14 @@ class IndexerSlotTracker:
         self._accumulated_pulses += gap
         self._last_raw_pulse = raw_pulse_count
 
+    @property
+    def current_raw_pulse(self) -> int:
+        """Last raw PULSE_COUNT value fed via on_pulse_update() (0..encoder_cpr-1).
+        Public accessor so callers (StationDispatcher's simulated tick
+        source today, a real Modbus poller later) can read back the
+        current position without reaching into a private field."""
+        return self._last_raw_pulse
+
     def tick(self) -> Dict[str, int]:
         """Advance the entry pointer from the accumulator and return each
         station's current slot_id. Flags are unconditional -- returned for

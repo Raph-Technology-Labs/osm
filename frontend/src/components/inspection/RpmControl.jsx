@@ -8,12 +8,14 @@ const MAX_RPM = 100; // PLACEHOLDER ceiling -- real max comes with real hardware
 
 const RpmControl = ({ defaultRpm = 45 }) => {
   const theme = useTheme();
-  const [rpm, setRpm] = useState(defaultRpm);
+  const [appliedRpm, setAppliedRpm] = useState(defaultRpm); // last value actually written to the PLC
+  const [rpm, setRpm] = useState(defaultRpm); // live value while dragging/typing, before Apply
   const [status, setStatus] = useState(null); // { type: 'success'|'error', text }
 
   const applyRpm = async (value) => {
     try {
       await api.post("/inspection/speed", { rpm: value });
+      setAppliedRpm(value);
       setStatus({ type: "success", text: `Speed set to ${value} RPM` });
     } catch (err) {
       setStatus({ type: "error", text: err?.response?.data?.detail || "Failed to set speed" });
@@ -22,9 +24,14 @@ const RpmControl = ({ defaultRpm = 45 }) => {
 
   return (
     <Box sx={{ minWidth: 260 }}>
-      <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-        Motor Speed
-      </Typography>
+      <Box sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+          Motor Speed
+        </Typography>
+        <Typography variant="body2" sx={{ color: theme.palette.text.secondary }}>
+          Current: <b style={{ color: theme.palette.text.primary }}>{appliedRpm} RPM</b>
+        </Typography>
+      </Box>
       <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
         <Slider
           value={rpm}

@@ -12,12 +12,15 @@ const getLoginData = () => {
   }
 };
 
-const MainLayout = ({ title, children }) => {
+// noScroll: for pages meant to be installed as a fixed factory display
+// (the Inspection page) -- fills exactly one viewport, no page-level
+// scrollbar, content inside is responsible for fitting/shrinking itself.
+const MainLayout = ({ title, children, noScroll = false }) => {
   const navigate = useNavigate();
   const loginData = getLoginData();
 
   return (
-    <Box sx={{ display: "flex", minHeight: "100vh" }}>
+    <Box sx={{ display: "flex", height: "100vh", overflow: noScroll ? "hidden" : "visible" }}>
       {/* Left navigation */}
       <Sidebar loginData={loginData} onNavigate={(path) => navigate(path)} />
 
@@ -28,16 +31,23 @@ const MainLayout = ({ title, children }) => {
           flexGrow: 1,
           p: 3,
           bgcolor: "background.default",
-          minHeight: "100vh",
-          overflowY: "auto",
+          height: "100vh",
+          overflowY: noScroll ? "hidden" : "auto",
+          display: noScroll ? "flex" : "block",
+          flexDirection: noScroll ? "column" : undefined,
+          minHeight: 0,
         }}
       >
         {title && (
-          <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+          <Typography variant="h5" sx={{ fontWeight: 700, mb: noScroll ? 1.5 : 3, flexShrink: 0 }}>
             {title}
           </Typography>
         )}
-        {children}
+        {noScroll ? (
+          <Box sx={{ flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>{children}</Box>
+        ) : (
+          children
+        )}
       </Box>
     </Box>
   );

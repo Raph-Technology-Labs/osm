@@ -129,6 +129,17 @@ stations:
         parameters:
           diameter_mm:
             calibration_factor: 10.5
+            # PLACEHOLDER demo tolerance -- without these, run_measurement_inference()
+            # always defaults passed=True (no upper/lower_limit to check
+            # against), so cam1 could never show NOK. Calibrated against
+            # the actual sim images in data/sim/circles/: circle1/2/3
+            # measure 9.44-10.38mm (pass), the added circle4/5 measure
+            # 12.86mm/6.20mm (fail) -- verified by running the real
+            # measurement pipeline against each file, not guessed.
+            nominal_value: 10.0
+            upper_limit: 10.6
+            lower_limit: 9.2
+            unit: mm
 
       result:
         pass_if: all_cameras_pass
@@ -155,7 +166,9 @@ stations:
         strobe_reg: 19
         sim:
           enabled: true
-          image_path: "/data/sim/cats/"
+          image_path: "/data/sim/cats/" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
+          # -> OK -- synthetic (no internet access to source a real dog photo), just
+          # needs to not trigger the stock model's "cat" class, verified it doesn't.
 
     pipeline:
       defect:
