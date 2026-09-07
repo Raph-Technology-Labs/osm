@@ -3,6 +3,7 @@ bound once, per-camera topics so multiple simultaneous feeds don't collide
 on a single global topic (gcm hardcodes one camera and doesn't need this)."""
 
 import base64
+import json
 import logging
 import os
 import threading
@@ -61,8 +62,6 @@ def publish_inspection_result(
     measurement_data: dict | None = None,
     part_id: int | None = None,
 ) -> None:
-    import json
-
     payload = json.dumps({
         "camera_id": camera_id,
         "station_id": station_id,
@@ -74,3 +73,31 @@ def publish_inspection_result(
         "part_id": part_id,
     })
     broadcast("MessageType.InspectionResult", payload)
+
+
+def publish_ring_state(tracker, revolutions: int) -> None:
+    """Full per-slot ring snapshot, once per dispatcher tick -- the digital
+    twin's single source of truth for slot.status (DigitalTwin.jsx no
+    longer reconstructs this client-side from the per-camera
+    InspectionResult stream). Cheap at today's sim tick cadence; profile
+    before assuming a per-tick full-ring broadcast is still fine at 900 PPM
+    (CLAUDE.md Section 5)."""
+    payload = json.dumps({
+        "slots": {
+            str(slot_id): {
+                "status": record.status.value,
+                "part_id": record.assign_part_id,
+                # station_id -> "unreached"|"pending"|"ok"|"nok", one entry
+                # per inspection station -- DigitalTwin.jsx renders one
+                # radial band per entry, in this dict's key order.
+                "station_states": record.station_states,
+            }
+            for slot_id, record in tracker.slots.items()
+        },
+        "entry_slot_id": tracker._entry_slot_id,
+        "ok_total": tracker.ok_total,
+        "nok_total": tracker.nok_total,
+        "r1_removed": tracker.r1_removed,
+        "revolutions": revolutions,
+    })
+    broadcast("MessageType.RingState", payload)

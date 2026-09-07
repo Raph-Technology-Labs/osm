@@ -42,7 +42,15 @@ def get_config(request: Request):
         # evenly-spaced approximation.
         pulses_per_slot = resolved.indexer.pulses_per_slot
         stations = [
-            {"station_id": s.id, "name": s.name, "slot_offset": round(s.station_offset_pulses / pulses_per_slot)}
+            {
+                "station_id": s.id,
+                "name": s.name,
+                "slot_offset": round(s.station_offset_pulses / pulses_per_slot),
+                "type": s.type,
+                # Only reject stations carry enabled -- the frontend uses
+                # its presence/value to render commissioning-mode styling.
+                **({"enabled": s.enabled} if s.type == "reject" else {}),
+            }
             for s in resolved.stations
         ]
     return {
@@ -130,6 +138,61 @@ def stop_session_endpoint(request: Request):
         app.state.current_session_id = None
 
     return SessionStopResponse(status="stopped", session_id=session_id, totals=_state["totals"])
+
+
+class MotorCommandResponse(BaseModel):
+    status: str
+    running: bool
+    plc_updated: bool
+
+
+def _write_stop_cmd(request: Request, run: bool) -> bool:
+    """Writes stop_cmd (machine_config.yaml plc.registers.stop_cmd) as a
+    combined run/stop command: write 1 = run, write 0 = halt -- per
+    explicit operator instruction (2026-09-07), NOT the instrumentation
+    sheet's own label for this register ("halt execution", i.e. a pure
+    one-directional halt bit). Flag with the instrumentation team before
+    this reaches real hardware -- also note stop_cmd has no paired _ACK
+    register in the sheet (already called out in machine_config.yaml),
+    a real gap against CLAUDE.md Rule 4 that predates this change."""
+    resolved = getattr(request.app.state, "resolved_config", None)
+    client = getattr(request.app.state, "plc_client", None)
+    if resolved is None or client is None or not client.is_connected():
+        return False
+    from app.plc.modbus_client import PLCConnectionError
+
+    try:
+        client.write_register(resolved.plc.registers.stop_cmd, 1 if run else 0)
+        return True
+    except PLCConnectionError:
+        log.warning("motor: PLC stop_cmd write failed", exc_info=True)
+        return False
+
+
+@router.post("/motor/start", response_model=MotorCommandResponse)
+def start_motor(request: Request):
+    """Starts the ring turning -- separate from session start, which only
+    wires cameras/pipeline/dispatcher without running them (see
+    inspection_session.start_session). Requires an active session."""
+    dispatcher = getattr(request.app.state, "dispatcher", None)
+    if dispatcher is None:
+        raise HTTPException(status_code=400, detail="No active session -- start a session first")
+    dispatcher.start()
+    plc_updated = _write_stop_cmd(request, run=True)
+    return MotorCommandResponse(status="ok", running=True, plc_updated=plc_updated)
+
+
+@router.post("/motor/stop", response_model=MotorCommandResponse)
+def stop_motor(request: Request):
+    """Stops the ring without ending the session/DB persistence -- session
+    stop (POST /inspection/session/stop) already calls dispatcher.stop()
+    too, so this is for pausing mid-session."""
+    dispatcher = getattr(request.app.state, "dispatcher", None)
+    if dispatcher is None:
+        raise HTTPException(status_code=400, detail="No active session")
+    dispatcher.stop()
+    plc_updated = _write_stop_cmd(request, run=False)
+    return MotorCommandResponse(status="ok", running=False, plc_updated=plc_updated)
 
 
 class SpeedSetpointRequest(BaseModel):

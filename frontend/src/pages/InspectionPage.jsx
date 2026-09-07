@@ -29,15 +29,17 @@ const InspectionPage = () => {
   const [revolutions, setRevolutions] = useState(0);
   const [activePage, setActivePage] = useState(0);
 
-  // Assume a session is already running if we arrived with a part_code --
-  // PartSelectionPage.jsx already calls POST /inspection/session/start
-  // before navigating here. Start/Stop below just let you restart/stop it
-  // without leaving this page.
-  const [running, setRunning] = useState(Boolean(partCode));
+  // Assume a session is already WIRED (cameras/pipeline/dispatcher created)
+  // if we arrived with a part_code -- PartSelectionPage.jsx already calls
+  // POST /inspection/session/start before navigating here. That call no
+  // longer auto-runs the motor though, so this alone must not disable the
+  // Start button -- only motorRunning does that (see below).
+  const [sessionActive, setSessionActive] = useState(Boolean(partCode));
+  const [motorRunning, setMotorRunning] = useState(false);
   const [sessionStatus, setSessionStatus] = useState(null); // { type, text }
 
   const cameraIds = useMemo(() => Object.values(camerasByStation).flat(), [camerasByStation]);
-  const { frames, results, totals, lastEvent, hasIpc } = useLiveEvents(cameraIds);
+  const { frames, results, ringState, hasIpc } = useLiveEvents(cameraIds);
 
   const fetchConfig = () => {
     api
@@ -76,28 +78,42 @@ const InspectionPage = () => {
     return () => clearInterval(id);
   }, []);
 
+  // One Start button: wires the session if it isn't already (skipped when
+  // arriving from Part Selection, which already did this) then starts the
+  // motor/ring -- no separate manual step. In today's sim-only environment
+  // (no PLC attached) that's exactly right; if a real PLC is later
+  // connected, gating a real motor's auto-start behind a deliberate action
+  // is worth reconsidering then, but isn't a today problem.
   const handleStart = async () => {
     if (!partCode) {
       setSessionStatus({ type: "error", text: "No part selected -- start a session from Part Selection first." });
       return;
     }
     try {
-      await api.post("/inspection/session/start", { part_code: partCode });
-      setRunning(true);
-      setSessionStatus({ type: "success", text: `Session started for ${partCode}` });
-      fetchConfig();
+      if (!sessionActive) {
+        await api.post("/inspection/session/start", { part_code: partCode });
+        setSessionActive(true);
+        fetchConfig();
+      }
+      await api.post("/inspection/motor/start");
+      setMotorRunning(true);
+      setSessionStatus({ type: "success", text: `Running -- ${partCode}` });
     } catch (err) {
-      setSessionStatus({ type: "error", text: err?.response?.data?.detail || "Failed to start session" });
+      setSessionStatus({ type: "error", text: err?.response?.data?.detail || "Failed to start" });
     }
   };
 
+  // One Stop button: halts the motor and ends the session (finalizes the DB
+  // row) together -- no separate "pause vs. end" distinction on this page.
   const handleStop = async () => {
     try {
+      await api.post("/inspection/motor/stop");
       await api.post("/inspection/session/stop");
-      setRunning(false);
-      setSessionStatus({ type: "success", text: "Session stopped" });
+      setMotorRunning(false);
+      setSessionActive(false);
+      setSessionStatus({ type: "success", text: "Stopped" });
     } catch (err) {
-      setSessionStatus({ type: "error", text: err?.response?.data?.detail || "Failed to stop session" });
+      setSessionStatus({ type: "error", text: err?.response?.data?.detail || "Failed to stop" });
     }
   };
 
@@ -121,11 +137,17 @@ const InspectionPage = () => {
             color="success"
             startIcon={<PlayArrowIcon />}
             onClick={handleStart}
-            disabled={running}
+            disabled={motorRunning}
           >
             Start
           </Button>
-          <Button variant="contained" color="error" startIcon={<StopIcon />} onClick={handleStop} disabled={!running}>
+          <Button
+            variant="contained"
+            color="error"
+            startIcon={<StopIcon />}
+            onClick={handleStop}
+            disabled={!motorRunning}
+          >
             Stop
           </Button>
         </Stack>
@@ -134,15 +156,22 @@ const InspectionPage = () => {
 
         <Box sx={{ flexGrow: 1 }} />
 
+        {/* Per-part counts (same source as the Digital Twin's OK/NOK --
+            ringState.ok_total/nok_total, bumped once per part resolved at
+            exit/r1) -- NOT per-camera-result counts, so this always agrees
+            with the ring's green-wedge count. Per operator request
+            2026-09-07, replacing the old per-camera Fired/Passed/Failed
+            here (that mismatch, e.g. Passed:+2 for one part touching 2
+            cameras, was the source of the earlier confusion). */}
         <Stack direction="row" spacing={3}>
           <Typography>
-            Fired: <b>{totals.total_fired}</b>
+            Total Parts: <b>{(ringState?.ok_total || 0) + (ringState?.nok_total || 0)}</b>
           </Typography>
           <Typography sx={{ color: theme.palette.success.main }}>
-            Passed: <b>{totals.total_passed}</b>
+            OK: <b>{ringState?.ok_total || 0}</b>
           </Typography>
           <Typography sx={{ color: theme.palette.error.main }}>
-            Failed: <b>{totals.total_failed}</b>
+            Failed: <b>{ringState?.nok_total || 0}</b>
           </Typography>
         </Stack>
       </Stack>
@@ -188,7 +217,13 @@ const InspectionPage = () => {
         </Box>
 
         <Box sx={{ width: 300, flexShrink: 0, height: "100%" }}>
-          <DigitalTwin nSlots={nSlots} stations={stations} lastEvent={lastEvent} revolutions={revolutions} running={running} />
+          <DigitalTwin
+            nSlots={nSlots}
+            stations={stations}
+            ringState={ringState}
+            revolutions={ringState ? ringState.revolutions : revolutions}
+            running={motorRunning}
+          />
         </Box>
       </Box>
     </MainLayout>

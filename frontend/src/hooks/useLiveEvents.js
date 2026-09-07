@@ -10,7 +10,12 @@ export default function useLiveEvents(cameraIds) {
   const [frames, setFrames] = useState({}); // { camera_id: dataUrl }
   const [results, setResults] = useState({}); // { camera_id: { passed, defect_label, ... } }
   const [totals, setTotals] = useState({ total_fired: 0, total_passed: 0, total_failed: 0 });
-  const [lastEvent, setLastEvent] = useState(null); // most recent raw result payload -- DigitalTwin's trail source
+  const [lastEvent, setLastEvent] = useState(null); // most recent raw result payload -- per-camera card use
+  // Full per-slot ring snapshot, published once per dispatcher tick
+  // (MessageType.RingState) -- DigitalTwin's single source of truth for
+  // slot.status, replacing its old client-side reconstruction from
+  // lastEvent.
+  const [ringState, setRingState] = useState(null);
 
   useEffect(() => {
     if (!window.ipc || cameraIds.length === 0) return;
@@ -30,7 +35,11 @@ export default function useLiveEvents(cameraIds) {
         total_failed: t.total_failed + (r.passed ? 0 : 1),
       }));
     });
+
+    window.ipc.handleRingStateMessages((state) => {
+      setRingState(state);
+    });
   }, [cameraIds]);
 
-  return { frames, results, totals, setTotals, lastEvent, hasIpc: Boolean(window.ipc) };
+  return { frames, results, totals, setTotals, lastEvent, ringState, hasIpc: Boolean(window.ipc) };
 }

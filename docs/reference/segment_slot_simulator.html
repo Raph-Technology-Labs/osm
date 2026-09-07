@@ -1,0 +1,405 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSM · per-segment slot coloring model</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+
+<style>
+:root{
+  --cabinet:#1B222C;
+  --panel:#232C38;
+  --panel-hi:#2C3644;
+  --rule:#3A4756;
+  --rule-soft:#2F3B49;
+  --ink:#E6EBF0;
+  --ink-dim:#8A99AB;
+  --ink-faint:#5D6C7E;
+
+  --sig-unreached:#3A4756;
+  --sig-pending:#E8C547;
+  --sig-ok:#4FB286;
+  --sig-s1:#B266C9;
+  --sig-s2:#E0574F;
+  --sig-empty:#1A212A;
+
+  --r:3px;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--cabinet);
+  color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,sans-serif;
+  font-size:13px;
+  line-height:1.5;
+  padding:14px;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:12px;}
+
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:var(--r);}
+.panel-hd{
+  display:flex;align-items:baseline;gap:10px;padding:7px 11px;
+  border-bottom:1px solid var(--rule-soft);
+  font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:700;font-size:11px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--ink-dim);
+}
+.panel-hd .sub{
+  font-family:"IBM Plex Mono",monospace;font-weight:400;letter-spacing:.02em;
+  text-transform:none;font-size:10.5px;color:var(--ink-faint);margin-left:auto;
+}
+.mono{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;}
+
+header.bar{display:flex;flex-wrap:wrap;align-items:center;gap:18px;padding:10px 14px;}
+header.bar h1{margin:0;font-family:"IBM Plex Sans Condensed",sans-serif;font-size:15px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;}
+header.bar h1 span{color:var(--ink-faint);font-weight:500;}
+.readout{display:flex;flex-direction:column;line-height:1.25;}
+.readout .k{font-family:"IBM Plex Sans Condensed",sans-serif;font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-faint);}
+.readout .v{font-family:"IBM Plex Mono",monospace;font-size:15px;font-weight:500;font-variant-numeric:tabular-nums;}
+
+.controls{display:flex;align-items:center;gap:14px;padding:11px 14px;flex-wrap:wrap;}
+.btn{
+  background:var(--panel-hi);color:var(--ink);border:1px solid var(--rule);border-radius:var(--r);
+  font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:600;font-size:11px;letter-spacing:.12em;
+  text-transform:uppercase;padding:6px 12px;cursor:pointer;
+}
+.btn:hover{border-color:var(--sig-ok);color:#fff;}
+.btn.primary{background:var(--sig-ok);border-color:var(--sig-ok);color:#0F1720;}
+input[type=range]{flex:1;min-width:200px;accent-color:var(--sig-pending);height:22px;cursor:pointer;}
+.hint{font-size:11px;color:var(--ink-faint);}
+
+.toggle-row{display:flex;align-items:center;gap:8px;font-family:"IBM Plex Sans Condensed",sans-serif;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim);}
+.toggle{position:relative;width:34px;height:18px;background:var(--rule);border-radius:9px;cursor:pointer;transition:background .15s;}
+.toggle.on{background:var(--sig-ok);}
+.toggle::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;transition:transform .15s;}
+.toggle.on::after{transform:translateX(16px);}
+
+.stage{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,0.9fr);gap:12px;}
+@media(max-width:860px){.stage{grid-template-columns:1fr;}}
+.disc-wrap{padding:6px;}
+svg.disc{width:100%;height:auto;display:block;}
+.rotor{transform-origin:0 0;transition:transform .3s cubic-bezier(.4,0,.2,1);}
+@media(prefers-reduced-motion:reduce){.rotor{transition:none;}}
+
+.stn-label{font-family:"IBM Plex Sans Condensed",sans-serif;font-size:11px;font-weight:700;letter-spacing:.08em;fill:var(--ink);}
+.stn-role{font-family:"IBM Plex Mono",monospace;font-size:7.5px;fill:var(--ink-faint);letter-spacing:.05em;}
+
+.legend{display:flex;flex-wrap:wrap;gap:12px;padding:10px 11px;font-size:10.5px;color:var(--ink-dim);}
+.legend span{display:flex;align-items:center;gap:5px;}
+.legend i{width:9px;height:9px;border-radius:1.5px;display:block;}
+
+.tallies{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--rule-soft);}
+.tally{flex:1;min-width:96px;padding:8px 11px;border-right:1px solid var(--rule-soft);}
+.tally:last-child{border-right:0;}
+.tally .k{font-family:"IBM Plex Sans Condensed",sans-serif;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);}
+.tally .v{font-family:"IBM Plex Mono",monospace;font-size:17px;font-variant-numeric:tabular-nums;}
+.conserve{padding:8px 11px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--ink-dim);border-top:1px solid var(--rule-soft);}
+.conserve.bad{color:var(--sig-s2);}
+.conserve b{color:var(--sig-ok);font-weight:600;}
+
+.inspect-panel{padding:10px 11px;}
+.inspect-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--rule-soft);}
+.inspect-row:last-child{border-bottom:0;}
+.inspect-dot{width:11px;height:11px;border-radius:2px;flex-shrink:0;}
+.inspect-name{font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:700;font-size:12px;letter-spacing:.06em;flex:1;}
+.inspect-state{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-dim);}
+</style>
+
+<div class="wrap">
+
+  <div class="panel">
+    <header class="bar">
+      <h1>OSM slot model <span>· per-station segments</span></h1>
+      <div class="readout"><span class="k">Tick</span><span class="v" id="rdTick">0</span></div>
+      <div class="readout"><span class="k">Rev</span><span class="v" id="rdRev">0</span></div>
+      <div class="readout"><span class="k">In flight</span><span class="v" id="rdFlight">0</span></div>
+      <div class="toggle-row">
+        Rejection station
+        <div class="toggle on" id="rejToggle"></div>
+        <span id="rejTxt">enabled</span>
+      </div>
+    </header>
+    <div class="controls">
+      <button class="btn primary" id="play">Play</button>
+      <button class="btn" id="stepB">◀ Step</button>
+      <button class="btn" id="stepF">Step ▶</button>
+      <input type="range" id="slider" min="0" max="200" value="0" step="1" aria-label="Advance tick by tick">
+      <span class="hint">Tick <b class="mono" id="tickTxt">0</b> / 200 — 1 tick = 1 slot advance</span>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="panel disc-wrap">
+      <svg class="disc" viewBox="-230 -226 460 452" id="svg" role="img"
+           aria-label="Plan view of the indexer disc, each occupied slot split into per-station result segments"></svg>
+    </div>
+
+    <div class="panel">
+      <div class="panel-hd">Slot at entry — live segment states<span class="sub" id="headSlot">slot —</span></div>
+      <div class="inspect-panel" id="inspectPanel"></div>
+      <div class="legend" id="legend"></div>
+      <div class="tallies">
+        <div class="tally"><div class="k">Entered</div><div class="v" id="cEnt">0</div></div>
+        <div class="tally"><div class="k">Accepted</div><div class="v" id="cAcc" style="color:var(--sig-ok)">0</div></div>
+        <div class="tally"><div class="k">Rejected</div><div class="v" id="cRej" style="color:var(--sig-s2)">0</div></div>
+        <div class="tally"><div class="k">In flight</div><div class="v" id="cFly">0</div></div>
+      </div>
+      <div class="conserve" id="cons"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ============================================================
+   CONSTANTS
+   ============================================================ */
+const SLOTS = 24, DEG = 360/SLOTS, TOTAL = 200;
+
+// physical station layout — offsets are ticks from a part's entry
+const STATIONS = [
+  {id:'ENTRY', off:0,  kind:'load'},
+  {id:'S1',    off:6,  kind:'inspect', color:'var(--sig-s1)'},
+  {id:'S2',    off:12, kind:'inspect', color:'var(--sig-s2)'},
+  {id:'R1',    off:18, kind:'reject'},
+  {id:'EXIT',  off:21, kind:'exit'},
+];
+const INSPECT = STATIONS.filter(s => s.kind === 'inspect');
+const OFF = Object.fromEntries(STATIONS.map(s => [s.id, s.off]));
+
+const FEEDER_FILL = 0.82;      // probability entry loads a part this tick
+const NOK_PROB   = {S1:0.30, S2:0.22};
+const MAX_DELAY  = 4;           // inference lag range, in ticks, after trigger
+
+/* ============================================================
+   DETERMINISTIC PART TIMELINE (seeded, so scrubbing is stable)
+   ============================================================ */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t^t+Math.imul(t^t>>>7,61|t);return((t^t>>>14)>>>0)/4294967296;};}
+const rng = mulberry32(20260907);
+
+const parts = [];
+let serial = 4000;
+for (let t0 = 0; t0 <= TOTAL; t0++){
+  if (rng() > FEEDER_FILL){ parts[t0] = null; continue; }
+  const p = {t0, slot: t0 % SLOTS, serial: ++serial, seg: {}};
+  for (const st of INSPECT){
+    const nok = rng() < NOK_PROB[st.id];
+    const delay = 1 + Math.floor(rng() * MAX_DELAY);
+    p.seg[st.id] = {
+      nok, delay,
+      triggerTick: t0 + st.off,          // camera fires here
+      readyTick:   t0 + st.off + delay,  // inference result lands here
+    };
+  }
+  p.finalNok = INSPECT.some(st => p.seg[st.id].nok);
+  parts[t0] = p;
+}
+
+function removalTick(p, rejectionEnabled){
+  return (rejectionEnabled && p.finalNok) ? p.t0 + OFF.R1 : p.t0 + OFF.EXIT;
+}
+function liveAt(t, rejectionEnabled){
+  const out = [];
+  for (let d = 0; d <= OFF.EXIT + 2; d++){
+    const p = parts[t - d];
+    if (p && t <= removalTick(p, rejectionEnabled)) out.push(p);
+  }
+  return out;
+}
+
+/* per-station segment state for a part at tick t:
+   'unreached' -> camera hasn't triggered yet
+   'pending'   -> triggered, inference result not back yet (yellow)
+   'ok' / 'nok'-> resolved                                          */
+function segState(p, st, t){
+  const s = p.seg[st.id];
+  if (t < s.triggerTick) return 'unreached';
+  if (t < s.readyTick)   return 'pending';
+  return s.nok ? 'nok' : 'ok';
+}
+function segColor(p, st, t){
+  const state = segState(p, st, t);
+  if (state === 'unreached') return 'var(--sig-unreached)';
+  if (state === 'pending')   return 'var(--sig-pending)';
+  if (state === 'nok')       return st.color;
+  return 'var(--sig-ok)';
+}
+function allOk(p, t){
+  return INSPECT.every(st => segState(p, st, t) === 'ok');
+}
+
+/* ============================================================
+   DISC — built once, rotated per tick
+   ============================================================ */
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('svg');
+const R_IN = 100, R_OUT = 176, R_STN = 196;
+const el = (n,a={}) => { const e = document.createElementNS(NS,n); for(const k in a) e.setAttribute(k,a[k]); return e; };
+const pol = (r,deg) => { const a=(deg-90)*Math.PI/180; return [r*Math.cos(a), r*Math.sin(a)]; };
+const arcPath = (rOut,rIn,a0,a1) => {
+  const [x0,y0]=pol(rOut,a0),[x1,y1]=pol(rOut,a1),[x2,y2]=pol(rIn,a1),[x3,y3]=pol(rIn,a0);
+  return `M${x0} ${y0}A${rOut} ${rOut} 0 0 1 ${x1} ${y1}L${x2} ${y2}A${rIn} ${rIn} 0 0 0 ${x3} ${y3}Z`;
+};
+
+const rotor = el('g',{class:'rotor'}); svg.appendChild(rotor);
+const slotGroups = [];
+const N_SEG = INSPECT.length;
+const segBand = (R_OUT - R_IN) / N_SEG;
+
+for (let s = 0; s < SLOTS; s++){
+  const base = -s*DEG, g = 0.6;
+  const a0 = base + g, a1 = base + DEG - g;
+  const grp = el('g');
+  // one full-band path, used when the part is fully OK or the slot is empty
+  const full = el('path',{d:arcPath(R_OUT,R_IN,a0,a1), fill:'#1A212A', stroke:'#2B3542','stroke-width':.8});
+  grp.appendChild(full);
+  // per-station rings, hidden unless in use
+  const rings = INSPECT.map((st,i) => {
+    const rOut = R_OUT - i*segBand, rIn = rOut - segBand;
+    const ring = el('path',{d:arcPath(rOut,rIn,a0,a1), fill:'none', stroke:'#0F1720','stroke-width':.6, opacity:0});
+    grp.appendChild(ring);
+    return ring;
+  });
+  rotor.appendChild(grp);
+  slotGroups.push({full, rings});
+}
+
+/* fixed station markers */
+const gStn = el('g'); svg.appendChild(gStn);
+STATIONS.forEach(s => {
+  const a = s.off*DEG;
+  const [x1,y1]=pol(R_OUT+2,a+DEG/2), [x2,y2]=pol(R_STN-6,a+DEG/2);
+  gStn.appendChild(el('line',{x1,y1,x2,y2,stroke:'var(--ink-faint)','stroke-width':1}));
+  const [lx,ly]=pol(R_STN+8,a+DEG/2);
+  const anchor = (Math.abs(lx)<10) ? 'middle' : (lx>0 ? 'start':'end');
+  const t1 = el('text',{x:lx,y:ly,class:'stn-label','text-anchor':anchor}); t1.textContent=s.id;
+  const t2 = el('text',{x:lx,y:ly+9,class:'stn-role','text-anchor':anchor}); t2.textContent=`+${s.off}`;
+  gStn.appendChild(t1); gStn.appendChild(t2);
+});
+
+/* ============================================================
+   LEGEND + PER-STATION PANEL (built once)
+   ============================================================ */
+const legendEl = document.getElementById('legend');
+const legendItems = [
+  ['var(--sig-empty)','Empty slot'],
+  ['var(--sig-unreached)','Not yet reached that station'],
+  ['var(--sig-pending)','Pending — inference result not back yet'],
+  ['var(--sig-ok)','Station passed'],
+  ...INSPECT.map(st => [st.color, `${st.id} failed`]),
+];
+legendEl.innerHTML = legendItems.map(([c,l]) => `<span><i style="background:${c}"></i>${l}</span>`).join('');
+
+const inspectPanel = document.getElementById('inspectPanel');
+const inspectRows = {};
+INSPECT.forEach(st => {
+  const row = document.createElement('div'); row.className='inspect-row';
+  row.innerHTML = `<div class="inspect-dot" id="dot-${st.id}"></div><div class="inspect-name">${st.id}</div><div class="inspect-state" id="state-${st.id}">—</div>`;
+  inspectPanel.appendChild(row);
+  inspectRows[st.id] = {dot: row.querySelector('.inspect-dot'), state: row.querySelector('.inspect-state')};
+});
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+let rejectionEnabled = true;
+
+function render(t){
+  const live = liveAt(t, rejectionEnabled);
+  const byslot = new Map(live.map(p => [p.slot, p]));
+
+  rotor.setAttribute('transform', `rotate(${t*DEG})`);
+
+  for (let s = 0; s < SLOTS; s++){
+    const p = byslot.get(s);
+    const g = slotGroups[s];
+    if (!p){
+      g.full.setAttribute('fill','var(--sig-empty)'); g.full.style.display='';
+      g.rings.forEach(r => r.style.display='none');
+      continue;
+    }
+    if (allOk(p, t)){
+      g.full.setAttribute('fill','var(--sig-ok)'); g.full.style.display='';
+      g.rings.forEach(r => r.style.display='none');
+    } else {
+      g.full.style.display='none';
+      INSPECT.forEach((st,i) => {
+        g.rings[i].setAttribute('fill', segColor(p, st, t));
+        g.rings[i].style.display='';
+        g.rings[i].style.opacity=1;
+      });
+    }
+  }
+
+  // slot at entry — detail panel
+  const entrySlot = t % SLOTS;
+  const entryPart = byslot.get(entrySlot);
+  document.getElementById('headSlot').textContent = entryPart ? `slot ${String(entrySlot).padStart(2,'0')} · #${entryPart.serial}` : `slot ${String(entrySlot).padStart(2,'0')} · empty`;
+  INSPECT.forEach(st => {
+    const row = inspectRows[st.id];
+    if (!entryPart){ row.dot.style.background='var(--sig-empty)'; row.state.textContent='—'; return; }
+    const state = segState(entryPart, st, t);
+    row.dot.style.background = state==='unreached' ? 'var(--sig-unreached)'
+                              : state==='pending'   ? 'var(--sig-pending)'
+                              : state==='nok'        ? st.color : 'var(--sig-ok)';
+    row.state.textContent = state==='unreached' ? 'not reached'
+                           : state==='pending'   ? 'pending — awaiting inference'
+                           : state==='nok'        ? 'NOK' : 'OK';
+  });
+
+  document.getElementById('rdTick').textContent = t;
+  document.getElementById('rdRev').textContent = Math.floor(t/SLOTS);
+  document.getElementById('rdFlight').textContent = live.length;
+  document.getElementById('tickTxt').textContent = t;
+
+  let ent=0, acc=0, rej=0;
+  for (let k=0;k<=t;k++){ if (parts[k]) ent++; }
+  for (let k=0;k<=t;k++){
+    const p = parts[k]; if (!p) continue;
+    const rt = removalTick(p, rejectionEnabled);
+    if (rt !== t) continue;
+    if (rejectionEnabled && p.finalNok) rej++; else if (p.finalNok) rej++; else acc++;
+  }
+  document.getElementById('cEnt').textContent = ent;
+  document.getElementById('cAcc').textContent = acc;
+  document.getElementById('cRej').textContent = rej;
+  document.getElementById('cFly').textContent = live.length;
+
+  const ok = ent === acc + rej + live.length;
+  const cons = document.getElementById('cons');
+  cons.className = 'conserve' + (ok ? '' : ' bad');
+  cons.innerHTML = ok
+    ? `conservation check &nbsp; ${ent} entered = ${acc} accepted + ${rej} rejected + ${live.length} in flight &nbsp; <b>BALANCED</b>`
+    : `conservation check FAILED — a part appeared or vanished`;
+}
+
+/* ============================================================
+   CONTROLS
+   ============================================================ */
+const slider = document.getElementById('slider');
+const playBtn = document.getElementById('play');
+let tick = 0, timer = null;
+
+function goto(t){ tick = Math.max(0, Math.min(TOTAL, t)); slider.value = tick; render(tick); }
+slider.addEventListener('input', e => { stop(); goto(+e.target.value); });
+document.getElementById('stepF').addEventListener('click', () => { stop(); goto(tick+1); });
+document.getElementById('stepB').addEventListener('click', () => { stop(); goto(tick-1); });
+function stop(){ if (timer){ clearInterval(timer); timer=null; playBtn.textContent='Play'; playBtn.classList.add('primary'); } }
+playBtn.addEventListener('click', () => {
+  if (timer) return stop();
+  playBtn.textContent='Pause'; playBtn.classList.remove('primary');
+  timer = setInterval(() => { if (tick >= TOTAL) return stop(); goto(tick+1); }, 380);
+});
+
+const rejToggle = document.getElementById('rejToggle');
+const rejTxt = document.getElementById('rejTxt');
+rejToggle.addEventListener('click', () => {
+  rejectionEnabled = !rejectionEnabled;
+  rejToggle.classList.toggle('on', rejectionEnabled);
+  rejTxt.textContent = rejectionEnabled ? 'enabled' : 'disabled';
+  render(tick);
+});
+
+render(0);
+</script>

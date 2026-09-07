@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld("ipc", {
     ipcRenderer.on(`MessageType.CameraFeed.${cameraId}`, (_event, value) => callback(value)),
   handleInspectionResultMessages: (callback) =>
     ipcRenderer.on("MessageType.InspectionResult", (_event, value) => callback(value)),
+  handleRingStateMessages: (callback) =>
+    ipcRenderer.on("MessageType.RingState", (_event, value) => callback(value)),
 });
