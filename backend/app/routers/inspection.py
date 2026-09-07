@@ -2,12 +2,15 @@
 ZMQ (CLAUDE.md Section 9), this only serves the initial camera list + totals
 so the frontend isn't hardcoded to "cam1,cam2"."""
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth.dependencies import require_role
+
+log = logging.getLogger("inspection")
 
 router = APIRouter(prefix="/inspection", tags=["inspection"], dependencies=[Depends(require_role("operator"))])
 
@@ -135,22 +138,48 @@ class SpeedSetpointRequest(BaseModel):
 
 @router.post("/speed")
 def set_speed(body: SpeedSetpointRequest, request: Request):
-    """Writes the PLC's speed_setpoint register. Placed on the Inspection
-    page (not gated to administrator like the Device Settings actuator
-    toggle) since adjusting motor speed live during a run is an operator
-    task on the floor, not an admin-only device setting -- judgment call,
-    flag if that's wrong.
+    """Sets motor speed two ways, independently:
+    1. Real PLC register write (rpm*10 -> 0-1000 scale, matches
+       app/plc/poller.py's write_speed_setpoint() -- same UNCONFIRMED-
+       against-the-instrumentation-sheet caveat, not inventing a second
+       conversion here) -- only if a PLC is actually connected.
+    2. Scales StationDispatcher's simulation-timer fire interval, relative
+       to the configured speed_setpoint_rpm baseline -- so changing speed
+       has a visible effect (stations fire faster/slower) even with no
+       PLC connected at all, which is the common case in this sim-only
+       demo build. Previously this endpoint only did (1) and 503'd
+       whenever there was no PLC, meaning the control did nothing at all
+       in the far more common no-hardware case.
 
-    rpm*10 -> 0-1000 scale matches app/plc/poller.py's write_speed_setpoint()
-    -- same UNCONFIRMED-against-the-instrumentation-sheet caveat as that
-    function, not inventing a second, different conversion here."""
-    client = getattr(request.app.state, "plc_client", None)
-    if client is None or not client.is_connected():
-        raise HTTPException(status_code=503, detail="PLC not connected")
+    Placed on the Inspection page (not gated to administrator like the
+    Device Settings actuator toggle) since adjusting motor speed live
+    during a run is an operator task on the floor, not an admin-only
+    device setting -- judgment call, flag if that's wrong."""
     resolved = getattr(request.app.state, "resolved_config", None)
     if resolved is None:
         raise HTTPException(status_code=400, detail="No machine loaded")
 
-    rpm_x10 = round(body.rpm * 10)
-    client.write_register(resolved.plc.registers.speed_setpoint, rpm_x10)
-    return {"status": "ok", "rpm": body.rpm}
+    sim_updated = False
+    dispatcher = getattr(request.app.state, "dispatcher", None)
+    if dispatcher is not None:
+        baseline_rpm = resolved.plc.speed_setpoint_rpm
+        scale = (body.rpm / baseline_rpm) if baseline_rpm else 1.0
+        dispatcher.set_speed_scale(scale)
+        sim_updated = True
+
+    plc_updated = False
+    client = getattr(request.app.state, "plc_client", None)
+    if client is not None and client.is_connected():
+        from app.plc.modbus_client import PLCConnectionError
+
+        rpm_x10 = round(body.rpm * 10)
+        try:
+            client.write_register(resolved.plc.registers.speed_setpoint, rpm_x10)
+            plc_updated = True
+        except PLCConnectionError:
+            log.warning("speed: PLC register write failed, sim scaling still applied", exc_info=True)
+
+    if not sim_updated and not plc_updated:
+        raise HTTPException(status_code=503, detail="No active session and no PLC connected -- nothing to change")
+
+    return {"status": "ok", "rpm": body.rpm, "plc_updated": plc_updated, "sim_updated": sim_updated}

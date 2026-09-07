@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Typography, useTheme } from "@mui/material";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { Box, Typography, Button, Stack, useTheme } from "@mui/material";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import StopIcon from "@mui/icons-material/Stop";
 import api from "../api/axios";
 import MainLayout from "../layouts/MainLayout";
 import useLiveEvents from "../hooks/useLiveEvents";
@@ -16,23 +19,27 @@ const REVOLUTIONS_POLL_MS = 3000;
 
 const InspectionPage = () => {
   const theme = useTheme();
+  const [searchParams] = useSearchParams();
+  const partCode = searchParams.get("part_code");
+
   const [stationOrder, setStationOrder] = useState([]); // [station_id, ...] in config order
   const [camerasByStation, setCamerasByStation] = useState({}); // { station_id: [camera_id, ...] }
   const [nSlots, setNSlots] = useState(null);
   const [stations, setStations] = useState([]); // [{station_id, name, slot_offset}]
   const [revolutions, setRevolutions] = useState(0);
   const [activePage, setActivePage] = useState(0);
-  const trailRef = useRef([]);
-  const [trail, setTrail] = useState([]);
 
-  const cameraIds = useMemo(
-    () => Object.values(camerasByStation).flat(),
-    [camerasByStation]
-  );
+  // Assume a session is already running if we arrived with a part_code --
+  // PartSelectionPage.jsx already calls POST /inspection/session/start
+  // before navigating here. Start/Stop below just let you restart/stop it
+  // without leaving this page.
+  const [running, setRunning] = useState(Boolean(partCode));
+  const [sessionStatus, setSessionStatus] = useState(null); // { type, text }
+
+  const cameraIds = useMemo(() => Object.values(camerasByStation).flat(), [camerasByStation]);
   const { frames, results, totals, lastEvent, hasIpc } = useLiveEvents(cameraIds);
 
-  // Initial config: cameras grouped by station, real station ring positions.
-  useEffect(() => {
+  const fetchConfig = () => {
     api
       .get("/inspection/config")
       .then(({ data }) => {
@@ -51,7 +58,9 @@ const InspectionPage = () => {
         setStations(data.stations || []);
       })
       .catch(() => {});
-  }, []);
+  };
+
+  useEffect(fetchConfig, []);
 
   // revolutions isn't carried on the live IPC stream (it's derived
   // server-side from total_fired/n_slots, not per-camera) -- poll it.
@@ -67,19 +76,30 @@ const InspectionPage = () => {
     return () => clearInterval(id);
   }, []);
 
-  // Feed the digital twin's trail from each new live result -- see
-  // DigitalTwin.jsx's caption for why this is a proxy, not real slot state.
-  useEffect(() => {
-    if (!lastEvent || !nSlots) return;
-    const entry = {
-      key: `${lastEvent.camera_id}-${totals.total_fired}`,
-      slot: totals.total_fired % nSlots,
-      state: lastEvent.passed ? "ok" : "nok",
-    };
-    trailRef.current = [...trailRef.current, entry].slice(-8);
-    setTrail(trailRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lastEvent]);
+  const handleStart = async () => {
+    if (!partCode) {
+      setSessionStatus({ type: "error", text: "No part selected -- start a session from Part Selection first." });
+      return;
+    }
+    try {
+      await api.post("/inspection/session/start", { part_code: partCode });
+      setRunning(true);
+      setSessionStatus({ type: "success", text: `Session started for ${partCode}` });
+      fetchConfig();
+    } catch (err) {
+      setSessionStatus({ type: "error", text: err?.response?.data?.detail || "Failed to start session" });
+    }
+  };
+
+  const handleStop = async () => {
+    try {
+      await api.post("/inspection/session/stop");
+      setRunning(false);
+      setSessionStatus({ type: "success", text: "Session stopped" });
+    } catch (err) {
+      setSessionStatus({ type: "error", text: err?.response?.data?.detail || "Failed to stop session" });
+    }
+  };
 
   const pages = useMemo(() => {
     const chunks = [];
@@ -92,48 +112,84 @@ const InspectionPage = () => {
   const currentStations = pages[activePage] || [];
 
   return (
-    <MainLayout title="Live Inspection">
+    <MainLayout title="Live Inspection" noScroll>
+      {/* Top control bar -- Start/Stop, RPM, totals. Fixed height, never scrolls. */}
+      <Stack direction="row" spacing={3} alignItems="flex-start" flexWrap="wrap" sx={{ mb: 1.5, flexShrink: 0 }}>
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="contained"
+            color="success"
+            startIcon={<PlayArrowIcon />}
+            onClick={handleStart}
+            disabled={running}
+          >
+            Start
+          </Button>
+          <Button variant="contained" color="error" startIcon={<StopIcon />} onClick={handleStop} disabled={!running}>
+            Stop
+          </Button>
+        </Stack>
+
+        <RpmControl />
+
+        <Box sx={{ flexGrow: 1 }} />
+
+        <Stack direction="row" spacing={3}>
+          <Typography>
+            Fired: <b>{totals.total_fired}</b>
+          </Typography>
+          <Typography sx={{ color: theme.palette.success.main }}>
+            Passed: <b>{totals.total_passed}</b>
+          </Typography>
+          <Typography sx={{ color: theme.palette.error.main }}>
+            Failed: <b>{totals.total_failed}</b>
+          </Typography>
+        </Stack>
+      </Stack>
+
+      {sessionStatus && (
+        <Typography
+          variant="body2"
+          sx={{ mb: 1, flexShrink: 0, color: sessionStatus.type === "error" ? theme.palette.error.main : theme.palette.success.main }}
+        >
+          {sessionStatus.text}
+        </Typography>
+      )}
       {!hasIpc && (
-        <Typography sx={{ mb: 2, color: theme.palette.warning.main }}>
+        <Typography sx={{ mb: 1, flexShrink: 0, color: theme.palette.warning.main }}>
           Live feed unavailable — this page needs the Electron app (ZMQ bridge), not a plain browser tab.
         </Typography>
       )}
 
-      <DigitalTwin nSlots={nSlots} stations={stations} recentEvents={trail} revolutions={revolutions} />
+      {/* Main area: camera grid (left, flexible) + digital twin (right, fixed width). No scrolling. */}
+      <Box sx={{ flexGrow: 1, minHeight: 0, display: "flex", gap: 2, overflow: "hidden" }}>
+        <Box sx={{ flexGrow: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <PageTabs pageCount={pages.length} activePage={activePage} onChange={setActivePage} />
+          <Box
+            sx={{
+              flexGrow: 1,
+              minHeight: 0,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+              gap: 2,
+              overflow: "hidden",
+            }}
+          >
+            {currentStations.map((stationId) => (
+              <StationCell
+                key={stationId}
+                stationId={stationId}
+                cameras={camerasByStation[stationId] || []}
+                frames={frames}
+                results={results}
+              />
+            ))}
+          </Box>
+        </Box>
 
-      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 2, mb: 1 }}>
-        <PageTabs pageCount={pages.length} activePage={activePage} onChange={setActivePage} />
-        <RpmControl />
-      </Box>
-
-      <Box
-        sx={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-          gap: 2,
-        }}
-      >
-        {currentStations.map((stationId) => (
-          <StationCell
-            key={stationId}
-            stationId={stationId}
-            cameras={camerasByStation[stationId] || []}
-            frames={frames}
-            results={results}
-          />
-        ))}
-      </Box>
-
-      <Box sx={{ mt: 3, display: "flex", gap: 3 }}>
-        <Typography>
-          This page — Fired: <b>{totals.total_fired}</b>
-        </Typography>
-        <Typography sx={{ color: theme.palette.success.main }}>
-          Passed: <b>{totals.total_passed}</b>
-        </Typography>
-        <Typography sx={{ color: theme.palette.error.main }}>
-          Failed: <b>{totals.total_failed}</b>
-        </Typography>
+        <Box sx={{ width: 300, flexShrink: 0, height: "100%" }}>
+          <DigitalTwin nSlots={nSlots} stations={stations} lastEvent={lastEvent} revolutions={revolutions} running={running} />
+        </Box>
       </Box>
     </MainLayout>
   );

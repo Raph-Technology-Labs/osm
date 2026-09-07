@@ -249,7 +249,7 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     if old_dispatcher:
         old_dispatcher.stop()
 
-    dispatcher = StationDispatcher(resolved, registry)
+    dispatcher = StationDispatcher(resolved, registry, app.state.indexer_tracker)
     app.state.dispatcher = dispatcher
     dispatcher.start()
     return resolved
