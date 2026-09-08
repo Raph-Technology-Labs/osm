@@ -1,3 +1,4 @@
+import logging
 import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Dict, List, Literal, NamedTuple, Optional, Union
@@ -7,6 +8,8 @@ from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+log = logging.getLogger("config_loader")
 
 
 class DefectConfig(BaseModel):
@@ -219,25 +222,55 @@ class IndexerConfig(BaseModel):
     encoder_cpr: int
 
     @property
-    def n_slots(self) -> int:
-        """Derived from the disc's physical size, not configured directly
-        (indexer-ring-math skill: "n_slots is part-size dependent, computed
-        per recipe, not fixed"). tolerance_pct pads part_size_mm so slots
-        aren't packed tighter than the part needs; floored (never rounded up)
-        so every slot keeps at least tolerance_pct clearance."""
+    def _requested_n_slots(self) -> int:
+        """Slot count implied by tolerance_pct alone, before reconciling
+        against encoder_cpr divisibility. Floored (never rounded up) so
+        every slot keeps at least tolerance_pct clearance -- see n_slots."""
         circumference_mm = math.pi * self.diameter_mm
         effective_spacing_mm = self.part_size_mm * (1 + self.tolerance_pct / 100)
         return math.floor(circumference_mm / effective_spacing_mm)
 
-    @model_validator(mode="after")
-    def cpr_divisible_by_slots(self):
-        if self.encoder_cpr % self.n_slots != 0:
+    @property
+    def n_slots(self) -> int:
+        """Derived from the disc's physical size, not configured directly
+        (indexer-ring-math skill: "n_slots is part-size dependent, computed
+        per recipe, not fixed"), then reconciled against encoder_cpr.
+
+        pulses_per_slot = encoder_cpr // n_slots must be exact -- a
+        fractional pulses_per_slot silently corrupts slot-boundary math. The
+        requested tolerance_pct (including 0) only sets a *minimum*
+        clearance floor; if it doesn't happen to land on a slot count that
+        divides encoder_cpr evenly, search downward for the nearest slot
+        count that does. Decreasing n_slots only ever *increases* physical
+        spacing per slot, so this can never give less clearance than
+        tolerance_pct asked for -- only ever more. Searching upward instead
+        would shrink spacing below the requested tolerance, which is unsafe.
+        """
+        requested = self._requested_n_slots
+        if requested < 1:
             raise ValueError(
-                f"encoder_cpr ({self.encoder_cpr}) must be evenly divisible by the "
-                f"derived n_slots ({self.n_slots}) -- adjust encoder_cpr, diameter_mm, "
-                f"part_size_mm, or tolerance_pct"
+                f"derived n_slots ({requested}) from diameter_mm="
+                f"{self.diameter_mm}, part_size_mm={self.part_size_mm}, "
+                f"tolerance_pct={self.tolerance_pct} is not a positive slot "
+                f"count"
             )
-        return self
+        n = requested
+        while n > 1 and self.encoder_cpr % n != 0:
+            n -= 1
+        if n != requested:
+            actual_tolerance_pct = (
+                math.pi * self.diameter_mm / (n * self.part_size_mm) - 1
+            ) * 100
+            log.warning(
+                "indexer n_slots adjusted from %d (requested via "
+                "tolerance_pct=%.3f%%) to %d so encoder_cpr (%d) divides "
+                "evenly -- effective tolerance is now %.3f%%. Confirm "
+                "tolerance_pct with whoever owns the mechanical clearance "
+                "spec.",
+                requested, self.tolerance_pct, n, self.encoder_cpr,
+                actual_tolerance_pct,
+            )
+        return n
 
     @property
     def pulses_per_slot(self) -> int:

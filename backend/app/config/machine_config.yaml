@@ -6,11 +6,22 @@ machine:
 # controller program (per CLAUDE.md's "ask, don't invent" rule). Validated
 # only against the simulator (backend/services/plc_sim), not real hardware.
 indexer:
-  diameter_mm: 150.0 # PLACEHOLDER -- real indexer disc diameter
-  part_size_mm: 20.0 # PLACEHOLDER
-  tolerance_pct: 15.0 # PLACEHOLDER -- extra clearance added to part_size_mm per slot
+  diameter_mm: 500.0 # CONFIRMED -- real indexer disc diameter (per explicit instruction, 2026-09-08)
+  part_size_mm: 20.0 # CONFIRMED -- real part size (per explicit instruction, 2026-09-08)
+  # PLACEHOLDER -- set to 4 per explicit instruction, 2026-09-08. The prior
+  # "15% -> 16%" comment here was stale: it was computed against an earlier
+  # diameter_mm=450 assumption, not the CONFIRMED diameter_mm=500 above, and
+  # the value actually left in this field (0.0) didn't match either number.
+  # At diameter_mm=500, part_size_mm=20, tolerance_pct=4 derives n_slots=75,
+  # which divides the confirmed encoder_cpr=4800 below evenly (64/slot) --
+  # see IndexerConfig.n_slots (config_loader.py) for the general reconciler:
+  # it now walks n_slots down to the nearest divisor automatically instead
+  # of hard-erroring, so this value is a starting point, not the only value
+  # that would load -- confirm the real mechanical clearance tolerance with
+  # whoever owns that requirement.
+  tolerance_pct: 4 # PLACEHOLDER -- extra clearance added to part_size_mm per slot
   # n_slots is DERIVED, not set here: floor(pi * diameter_mm / (part_size_mm * (1 + tolerance_pct/100)))
-  encoder_cpr: 3600 # PLACEHOLDER -- must be divisible by the derived n_slots (180/slot at n_slots=20)
+  encoder_cpr: 4800 # CONFIRMED -- real encoder CPR (per instrumentation team, 2026-09-08)
 
 plc:
   ip: "192.168.6.40" # was .41 -- per instrumentation team's sheet
