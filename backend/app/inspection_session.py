@@ -153,6 +153,19 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     from app.routers import inspection  # local import: avoids a circular
     # import (inspection.py would otherwise need this module at load time)
 
+    # Stop and drain the PREVIOUS session's dispatcher before anything else
+    # here, in particular before _seed_sim_if_enabled() below (spec13 #6,
+    # found missing in spec12's code review): seed_sim() rewrites which
+    # slots are BLANK on the shared, long-lived IndexerSlotTracker, which is
+    # only safe once the old dispatcher is confirmed to have fired its last
+    # tick -- otherwise a still-ticking old dispatcher can dispatch stations
+    # against slots seed_sim() just reseeded out from under it. stop() now
+    # blocks until drained (StationDispatcher.stop()), so this is a real
+    # guarantee, not just "no new timer scheduled yet".
+    old_dispatcher = getattr(app.state, "dispatcher", None)
+    if old_dispatcher:
+        old_dispatcher.stop()
+
     if not getattr(app.state, "machine_loaded", False):
         load_machine(app)
 
@@ -320,10 +333,6 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     inspection.set_cameras(
         [{"camera_id": s.camera_id, "station_id": s.station_id} for s in registry.all_stations()]
     )
-
-    old_dispatcher = getattr(app.state, "dispatcher", None)
-    if old_dispatcher:
-        old_dispatcher.stop()
 
     # Wired but NOT started -- session start used to auto-run the motor
     # immediately, leaving no way to look at a loaded, idle ring before

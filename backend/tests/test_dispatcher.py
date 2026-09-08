@@ -10,6 +10,7 @@ already used successfully in tests/plc/test_watchdog.py tonight, generous
 margins to avoid flakiness from thread-scheduling jitter.
 """
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List
@@ -153,6 +154,37 @@ def test_stop_prevents_further_ticks():
     fired_at_stop = len(registry.fired)
     time.sleep(0.1)
     assert len(registry.fired) == fired_at_stop
+
+
+def test_stop_blocks_until_an_in_flight_tick_finishes():
+    # spec13 #6: stop() must actually drain, not just cancel the
+    # not-yet-fired timer -- a tick already executing when stop() is
+    # called must finish before stop() returns, so a caller (e.g.
+    # start_session() reseeding IndexerSlotTracker sim state) can rely on
+    # "stopped" meaning no more ticks will fire. Deterministic via a
+    # patched, coordinated slow tick rather than timing/probability.
+    dispatcher, _tracker, _registry = make_dispatcher(tick_ms=50)
+    tick_started = threading.Event()
+    tick_may_finish = threading.Event()
+    original_tick = dispatcher._tick_fn
+
+    def slow_tick():
+        tick_started.set()
+        tick_may_finish.wait(timeout=2)
+        original_tick()
+
+    dispatcher._tick_fn = slow_tick
+    dispatcher.start()
+    assert tick_started.wait(timeout=1), "tick never started"
+
+    stop_thread = threading.Thread(target=dispatcher.stop)
+    stop_thread.start()
+    time.sleep(0.05)  # stop() should be blocked in join(), waiting on the in-flight tick
+    assert stop_thread.is_alive(), "stop() returned before the in-flight tick finished draining"
+
+    tick_may_finish.set()  # let the slow tick complete
+    stop_thread.join(timeout=2)
+    assert not stop_thread.is_alive(), "stop() never returned after the tick finished"
 
 
 def test_plc_sim_disabled_raises_instead_of_guessing():

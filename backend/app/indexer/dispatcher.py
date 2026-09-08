@@ -191,6 +191,26 @@ class StationDispatcher:
         self.tracker.on_part_entered(entry_pulse, part_id)
 
     def stop(self) -> None:
+        """Stops AND drains (spec13 #6, found missing in spec12's code
+        review) -- blocks until no more ticks will fire, not just until the
+        next-scheduled timer is cancelled. cancel() alone only prevents a
+        not-yet-fired timer from running; it does nothing for a tick that's
+        already executing on the timer thread at the moment stop() is
+        called. That in-flight tick (having already passed its own
+        `if self._stopped: return` check) still runs to completion and
+        unconditionally schedules one more timer before returning -- but
+        THAT tick sees _stopped=True immediately and returns without
+        rescheduling again, so the chain always ends within two ticks.
+        Joining across both possible timers gives callers (e.g.
+        start_session() reseeding IndexerSlotTracker sim state via
+        seed_sim(), which is only safe once dispatch has genuinely
+        stopped) a real "fully stopped" guarantee."""
         self._stopped = True
-        if self._timer:
-            self._timer.cancel()
+        for _ in range(2):
+            timer = self._timer
+            if timer is None:
+                break
+            timer.cancel()  # no-op if it's already firing/fired -- cancel() only stops a not-yet-fired timer
+            if not timer.is_alive():
+                break
+            timer.join(timeout=5.0)
