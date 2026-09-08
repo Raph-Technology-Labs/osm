@@ -525,3 +525,37 @@ class IndexerSlotTracker:
         self.free_slot(slot_id)
         with self._lock:
             self.nok_total += 1
+
+    def transition_virtual_exit(self, slot_id: int) -> None:
+        """spec11 Part 3 (continuous, no removal) -- tick-driven, fired by
+        a type: virtual_exit station exactly like transition_exit() is
+        fired by type: exit. Reuses transition_exit's exact ok/nok
+        decision (all_stations_ok() -> ok_total++, anything else ->
+        nok_total++), including the same fail-safe-to-NOK-on-unresolved
+        philosophy (CLAUDE.md Section 15), but does NOT call free_slot():
+        assign_part_id and the part stay on the ring permanently -- there
+        is nothing to discharge here, unlike a real exit. Instead,
+        station_states resets to unreached (not assign_part_id) so the
+        digital twin shows a fresh pending->resolved sweep next
+        revolution -- same physical part, same eventual result (driven by
+        the sim harness's forced_verdict, which free_slot() would have
+        preserved anyway), every lap."""
+        all_ok = self.all_stations_ok(slot_id)
+        if not all_ok and not self.any_station_nok(slot_id):
+            with self._lock:
+                unresolved = {
+                    sid: st for sid, st in self.slots[slot_id].station_states.items() if st != STATION_OK
+                }
+            log.error(
+                "transition_virtual_exit(slot=%d): part reached virtual exit with "
+                "unresolved station(s) %s -- inference result hadn't landed in "
+                "time; failing safe to NOK",
+                slot_id, unresolved,
+            )
+        with self._lock:
+            if all_ok:
+                self.ok_total += 1
+            else:
+                self.nok_total += 1
+            record = self.slots[slot_id]
+            record.station_states = {sid: STATION_UNREACHED for sid in self.inspection_station_ids}

@@ -96,7 +96,7 @@ Part 1 (rubber_small) can be implemented directly once Step 0 resolves
 where part files actually live — it needs no new tracker/dispatcher
 behavior, config only.
 
-## Status: Part 1 and Part 2 implemented (2026-09-08)
+## Status: Parts 1, 2, and 3 implemented (2026-09-08)
 
 **Part 1 (rubber_small)**: see Step 0's finding above -- `machine_config
 .rubber_small.yaml`, a sibling file to `machine_config.yaml`, resolved via
@@ -152,6 +152,42 @@ while deciding `VirtualExitStation` shouldn't carry it either for Part 3);
 and multi-reject-station real-mode firing shares one `reject_cmd`
 register (a real limitation for separate physical actuators, out of
 scope per this spec's own "real reject-actuator wiring" exclusion).
+
+**Part 3 (continuous, no removal)**: implemented as proposed, both open
+questions resolved as predicted and confirmed empirically, not just
+reasoned about:
+- **Entry re-fill guard**: confirmed unnecessary, no code change --
+  `StationDispatcher._try_assign_entry()`'s existing `if
+  record.assign_part_id is not None: return` already excludes a
+  virtual_exit slot forever, since `transition_virtual_exit()` never
+  clears `assign_part_id`. `test_virtual_exit_never_frees_the_slot`
+  proves this across three full revolutions (`entered_count` never grows
+  past one entry per non-blank slot).
+- **sim.blank/sim.nok seeding**: confirmed unchanged, no code change --
+  both are per-physical-slot properties `free_slot()` already preserves
+  regardless of anything, and `transition_virtual_exit()` never calls
+  `free_slot()` at all. `machine_config.continuous_part.yaml` sets
+  `plc.sim.blank: 2`, meaning exactly what it means everywhere else.
+
+New: `VirtualExitStation` (id/name/station_offset_pulses only --
+deliberately no `pass_if`, matching the finding above that `ExitStation`'s
+own `pass_if` isn't even wired up, so there was nothing worth propagating).
+`ResolvedMachineConfig.exactly_one_exit_station` became
+`exactly_one_terminal_station`: exactly one `type: exit` with zero
+`virtual_exit`, OR zero `exit` with one-or-more `virtual_exit` -- never
+both, never neither. `reject_before_exit` was made to no-op cleanly when
+there's no real exit station to check against (a reject station combined
+with virtual_exit-only stations isn't what Part 3 itself builds, but
+isn't forbidden by the schema either, and the validator must not crash on
+it). `IndexerSlotTracker.transition_virtual_exit()` reuses
+`transition_exit()`'s exact ok/nok decision and fail-safe-to-NOK-on-
+unresolved logic, but skips `free_slot()` and instead resets
+`station_states` back to unreached for next lap.
+`machine_config.continuous_part.yaml` (2 inspection stations, reused
+verbatim from rubber_big, plus one `virtual_exit`) exercises it end to
+end; `test_per_revolution_invariant_no_double_counting_for_continuous_part`
+confirms `ok_total`/`nok_total` increment by exactly one per non-blank
+slot per revolution, matching the acceptance criteria exactly.
 
 ## Acceptance criteria
 - rubber_small: 6 cameras (2/station) all fire correctly, single r1/exit1

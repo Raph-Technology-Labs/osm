@@ -217,7 +217,33 @@ class RejectStation(BaseModel):
     watches: Optional[List[str]] = None
 
 
-Station = Annotated[Union[InspectionStation, RejectStation, ExitStation], Field(discriminator="type")]
+class VirtualExitStation(BaseModel):
+    """spec11 Part 3 (continuous, no removal) -- a checkpoint that tallies
+    ok/nok exactly like ExitStation, but never discharges the part
+    (IndexerSlotTracker.transition_virtual_exit() does NOT call
+    free_slot()). Sits at a configured station_offset_pulses like any
+    other station, dispatched by the same slot-changed detection every
+    other station already uses -- no new revolution-boundary mechanism
+    needed. A part config using this has no type: reject/exit stations at
+    all (see ResolvedMachineConfig.exactly_one_terminal_station): there's
+    nothing to physically reject or discharge, only inspection stations
+    plus one or more of these.
+
+    Deliberately has NO pass_if field, unlike ExitStation -- ExitStation's
+    own pass_if is a dead field today (declared but never read by
+    transition_exit(), see docs/specs/spec14_followup_hardening.md #1);
+    propagating that same unused field here would just be adding more
+    dead weight, not restoring real functionality."""
+    id: str
+    name: str
+    type: Literal["virtual_exit"] = "virtual_exit"
+    station_offset_pulses: int
+
+
+Station = Annotated[
+    Union[InspectionStation, RejectStation, ExitStation, VirtualExitStation],
+    Field(discriminator="type"),
+]
 
 
 class SimCounts(NamedTuple):
@@ -424,11 +450,30 @@ class ResolvedMachineConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def exactly_one_exit_station(self):
+    def exactly_one_terminal_station(self):
+        """Every part needs exactly one terminal checkpoint -- otherwise
+        either nothing ever gets tallied (neither present) or it's
+        ambiguous which discharge semantics apply (both present). Two
+        valid shapes only: exactly one type: exit and zero type:
+        virtual_exit (the original, still-default shape -- rubber_big/
+        rubber_small/med_3_station all look like this), OR zero type: exit
+        and one-or-more type: virtual_exit (spec11 Part 3 -- continuous,
+        no removal; more than one virtual_exit checkpoint around the ring
+        is allowed, since none of them discharge the part, unlike a real
+        exit). Replaces the old exactly_one_exit_station, which had no
+        way to express a config with no real exit station at all."""
         exits = [s for s in self.stations if s.type == "exit"]
-        if len(exits) != 1:
-            raise ValueError(f"stations[] must contain exactly one type: exit entry, found {len(exits)}")
-        return self
+        virtual_exits = [s for s in self.stations if s.type == "virtual_exit"]
+        if len(exits) == 1 and len(virtual_exits) == 0:
+            return self
+        if len(exits) == 0 and len(virtual_exits) >= 1:
+            return self
+        raise ValueError(
+            f"stations[] must contain exactly one type: exit entry with zero "
+            f"type: virtual_exit, OR zero type: exit entries with at least one "
+            f"type: virtual_exit (never both, never neither) -- found "
+            f"{len(exits)} exit and {len(virtual_exits)} virtual_exit"
+        )
 
     @model_validator(mode="after")
     def reject_watches_reference_real_stations(self):
@@ -459,9 +504,20 @@ class ResolvedMachineConfig(BaseModel):
         to "every reject station" -- multiple are now valid). Nothing
         previously checked even the single-station case; found in spec12's
         code review as a config typo that would load and validate cleanly
-        while silently violating Rule 3 at runtime."""
+        while silently violating Rule 3 at runtime.
+
+        No-ops entirely if there's no real exit station (spec11 Part 3:
+        virtual_exit-only parts have no type: exit at all) -- Rule 3's
+        "before Exit" constraint has nothing to be evaluated against
+        there. exactly_one_terminal_station has already run (declared
+        above this validator) and guarantees at most one exit station
+        whenever any exist, so exit_station() below is safe once we know
+        at least one reject station is present to check."""
+        rejects = [s for s in self.stations if s.type == "reject"]
+        if not rejects or not any(s.type == "exit" for s in self.stations):
+            return self
         exit_st = self.exit_station()
-        for reject in (s for s in self.stations if s.type == "reject"):
+        for reject in rejects:
             if reject.station_offset_pulses >= exit_st.station_offset_pulses:
                 raise ValueError(
                     f"reject station {reject.id!r} (station_offset_pulses="
@@ -476,10 +532,21 @@ class ResolvedMachineConfig(BaseModel):
         return [s for s in self.stations if s.type == "inspection"]
 
     def exit_station(self) -> ExitStation:
+        """Only call this when a real exit station is known to exist (a
+        virtual_exit-only part per spec11 Part 3 has none) -- callers
+        outside a `type == "exit"` check of their own should confirm via
+        exactly_one_terminal_station's shape first, same as
+        reject_before_exit does."""
         for s in self.stations:
             if s.type == "exit":
                 return s
-        raise ValueError("no type: exit station found")  # unreachable, exactly_one_exit_station enforces this
+        raise ValueError("no type: exit station found")
+
+    def virtual_exit_stations(self) -> List[VirtualExitStation]:
+        """spec11 Part 3 -- zero for every part except a continuous,
+        no-removal one (exactly_one_terminal_station guarantees these are
+        mutually exclusive with a real exit station)."""
+        return [s for s in self.stations if s.type == "virtual_exit"]
 
     def reject_stations(self) -> List[RejectStation]:
         """Every configured reject station (spec11 Part 2: zero, one, or

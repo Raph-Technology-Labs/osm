@@ -400,6 +400,76 @@ def test_transition_exit_requires_every_station_ok_not_just_no_nok():
     assert tracker.nok_total == 1
 
 
+def test_transition_virtual_exit_ok_bumps_ok_total_without_freeing_the_slot():
+    # spec11 Part 3: same ok/nok decision as transition_exit, but the part
+    # (and its slot) stay permanently -- no free_slot().
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+    tracker.mark_pending(slot_id, "s1")
+    tracker.apply_station_result(slot_id, "s1", passed=True)
+    tracker.mark_pending(slot_id, "s2")
+    tracker.apply_station_result(slot_id, "s2", passed=True)
+
+    tracker.transition_virtual_exit(slot_id)
+
+    assert tracker.ok_total == 1
+    assert tracker.nok_total == 0
+    assert tracker.slots[slot_id].assign_part_id == 1  # still here
+    assert tracker.slots[slot_id].status == SlotStatus.LOADED  # never freed
+    assert tracker.slots[slot_id].station_states == {"s1": "unreached", "s2": "unreached"}  # reset for next lap
+
+
+def test_transition_virtual_exit_nok_bumps_nok_total_without_freeing_the_slot():
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+    tracker.mark_pending(slot_id, "s1")
+    tracker.apply_station_result(slot_id, "s1", passed=False)
+    tracker.mark_pending(slot_id, "s2")
+    tracker.apply_station_result(slot_id, "s2", passed=True)
+
+    tracker.transition_virtual_exit(slot_id)
+
+    assert tracker.ok_total == 0
+    assert tracker.nok_total == 1
+    assert tracker.slots[slot_id].assign_part_id == 1  # still here, not discharged
+    assert tracker.slots[slot_id].station_states == {"s1": "unreached", "s2": "unreached"}
+
+
+def test_transition_virtual_exit_on_unresolved_slot_fails_safe_to_nok():
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+    # both stations still unreached -- no inference ever landed before virtual exit
+
+    tracker.transition_virtual_exit(slot_id)
+
+    assert tracker.nok_total == 1
+    assert tracker.ok_total == 0
+    assert tracker.slots[slot_id].assign_part_id == 1  # still here
+
+
+def test_transition_virtual_exit_resets_for_a_fresh_sweep_next_revolution():
+    # Same physical part, laps forever -- confirm a SECOND call (simulating
+    # the next revolution's sweep) works from the reset unreached state,
+    # not leftover ok/nok from the previous lap.
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+    tracker.mark_pending(slot_id, "s1")
+    tracker.apply_station_result(slot_id, "s1", passed=True)
+    tracker.mark_pending(slot_id, "s2")
+    tracker.apply_station_result(slot_id, "s2", passed=True)
+    tracker.transition_virtual_exit(slot_id)  # lap 1: ok
+
+    tracker.mark_pending(slot_id, "s1")
+    tracker.apply_station_result(slot_id, "s1", passed=False)  # lap 2: fails this time
+    tracker.mark_pending(slot_id, "s2")
+    tracker.apply_station_result(slot_id, "s2", passed=True)
+    tracker.transition_virtual_exit(slot_id)  # lap 2: nok
+
+    assert tracker.ok_total == 1
+    assert tracker.nok_total == 1
+    assert tracker.slots[slot_id].assign_part_id == 1  # same part, both laps
+
+
 def test_free_slot_preserves_blank_and_forced_verdict_across_discharge():
     tracker = make_tracker(n_slots=10, encoder_cpr=100)
     tracker.seed_sim(blank=0, nok=3)  # slots 0-2 forced NOK, 3-9 forced OK

@@ -240,6 +240,12 @@ class StationDispatcher:
             if station.type == "exit":
                 log.info("Part %r reached exit station %s (slot %d)", record.assign_part_id, station.id, slot_id)
                 self.tracker.transition_exit(slot_id)
+            elif station.type == "virtual_exit":
+                # spec11 Part 3 (continuous, no removal) -- same
+                # slot-changed dispatch as a real exit station, but never
+                # discharges: the part stays on the ring permanently (see
+                # transition_virtual_exit's own docstring).
+                self.tracker.transition_virtual_exit(slot_id)
             elif station.type == "reject":
                 # This per-station loop already naturally handles multiple
                 # reject stations (spec11 Part 2) with no restructuring --
@@ -353,6 +359,8 @@ class StationDispatcher:
             if station.type == "exit":
                 log.info("Part %r reached exit station %s (slot %d)", record.assign_part_id, station.id, slot_id)
                 self.tracker.transition_exit(slot_id)
+            elif station.type == "virtual_exit":
+                self.tracker.transition_virtual_exit(slot_id)  # spec11 Part 3 -- see _tick_sim's comment
             else:
                 self.tracker.mark_pending(slot_id, station.id)
                 self.station_registry.fire_station(station.id, slot_id=slot_id, part_id=record.assign_part_id)

@@ -1,0 +1,138 @@
+machine:
+  part_code: "CP-001"
+  part_name: "Continuous Part"
+
+# spec11 Part 3 -- "continuous, no removal": parts stay on the indexer
+# forever, re-evaluated every revolution via a virtual_exit checkpoint
+# instead of a real reject/exit that would discharge them. No type:
+# reject/exit stations at all -- see ResolvedMachineConfig
+# .exactly_one_terminal_station. Same physical indexer/PLC as rubber_big
+# (one machine, different parts) -- reused verbatim, not re-guessed. See
+# machine_config.yaml for the fuller per-field reasoning behind every
+# PLACEHOLDER/CONFIRMED value below.
+indexer:
+  diameter_mm: 500.0 # CONFIRMED -- same physical disc as rubber_big
+  part_size_mm: 20.0 # CONFIRMED -- same physical disc as rubber_big
+  tolerance_pct: 4 # PLACEHOLDER -- same as rubber_big; see machine_config.yaml's comment
+  encoder_cpr: 4800 # CONFIRMED -- same physical disc as rubber_big
+  entry_sensor_mid_offset_pulses: 40 # PLACEHOLDER -- same as rubber_big; see its comment
+
+plc:
+  ip: "192.168.6.40" # same physical PLC as rubber_big -- one machine, different parts
+  port: 502
+  vendor: integra
+  sim:
+    enabled: true
+    host: "localhost"
+    port: 5502
+    tick_interval_ms: 300
+    # 2 permanently-unfed slots -- same n_slots (75) as rubber_big, so
+    # this stays well under it. Meaning is UNCHANGED for a continuous
+    # part (confirmed during spec11 Part 3 design): blank is a per-
+    # physical-slot property preserved across every free_slot() call
+    # regardless, and virtual_exit stations never call free_slot() at
+    # all, so a blank slot here is just as permanently unfed as on any
+    # other part.
+    blank: 2
+    entry_sensor_response_delay_ms: 0 # PLACEHOLDER -- same as rubber_big
+    reject_actuator_response_delay_ms: 0 # PLACEHOLDER -- same as rubber_big (unused: no reject station here)
+  real_poll_interval_ms: 50.0 # PLACEHOLDER -- same as rubber_big
+  speed_setpoint_rpm: 45.0 # PLACEHOLDER -- same as rubber_big
+  watchdog_timeout_ms: 3000.0 # PLACEHOLDER -- same as rubber_big
+
+  registers:
+    pulse_count: 40001
+    encoder_indexer_ppr: 40002
+    encoder_count: 40003
+    part_sensor: 40004
+    heartbeat: 40005
+    indexing_pulse: 40006
+    heartbeat_per_slot: 40007
+    indexing_pulse_per_slot: 40008
+    reject_cmd: 40009
+    stop_cmd: 40010
+    speed_setpoint: 40011
+    fault: 40012
+
+# 2 inspection stations (s1 measurement, s2 defect -- same shape/reuse
+# pattern as rubber_big's own s1/s2), then ONE virtual_exit checkpoint.
+# No reject, no real exit -- every part that ever enters stays on the
+# ring permanently, re-evaluated (and re-tallied into ok_total/nok_total)
+# fresh every revolution by IndexerSlotTracker.transition_virtual_exit().
+stations:
+  - id: s1
+    name: "Station 1 - Dimension Measurement"
+    type: inspection
+    station_offset_pulses: 400 # PLACEHOLDER
+
+    cameras:
+      cam1:
+        ip: "192.168.5.41"
+        vendor: lucid
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 18
+        strobe_capture_delay_ms: 50
+        sim:
+          enabled: true
+          image_path: "/data/sim/circles/"
+
+    pipeline:
+      measurement:
+        model_path: "/models/pt/yolo11n.pt"
+        model_type: yolo
+        allowed_cameras: [cam1]
+        allowed_classes: [rubber_part]
+        method: caliper
+        parameters:
+          diameter_mm:
+            calibration_factor: 10.5 # reused from rubber_big -- see its comment for calibration provenance
+            nominal_value: 10.0
+            upper_limit: 10.6
+            lower_limit: 9.2
+            unit: mm
+
+      result:
+        pass_if: all_cameras_pass
+        save_result: true
+        draw_result: true
+
+  - id: s2
+    name: "Station 2 - Defect Detection"
+    type: inspection
+    station_offset_pulses: 900 # PLACEHOLDER
+
+    cameras:
+      cam2:
+        ip: "192.168.5.42"
+        vendor: lucid
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 19
+        strobe_capture_delay_ms: 50
+        sim:
+          enabled: true
+          image_path: "/data/sim/cats/"
+
+    pipeline:
+      defect:
+        model_path: "/models/pt/yolo11n.pt" # stock COCO-pretrained, reused from rubber_big -- see its comment
+        model_type: yolo
+        conf_thresh: 0.3
+        allowed_cameras: [cam2]
+        detect_classes: [cat]
+        allowed_defects: [cat]
+
+      result:
+        pass_if: all_cameras_pass
+        save_result: true
+        draw_result: true
+
+  - id: vexit1
+    name: "Virtual Exit - Continuous Recheck"
+    type: virtual_exit
+    station_offset_pulses: 1400 # PLACEHOLDER
