@@ -94,6 +94,36 @@ def test_on_part_entered_initializes_every_inspection_station_unreached():
     assert tracker.all_stations_ok(slot_id) is False  # unreached != ok
 
 
+def test_get_slot_returns_a_snapshot_matching_live_state():
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+
+    snapshot = tracker.get_slot(slot_id)
+
+    assert snapshot.assign_part_id == 1
+    assert snapshot.station_states == {"s1": "unreached", "s2": "unreached"}
+
+
+def test_get_slot_mutation_does_not_leak_into_live_state():
+    # spec13 #10: get_slot() must return a copy, not the live SlotRecord --
+    # mutating what it returns (including its dict fields) must never
+    # affect the tracker's actual internal state.
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+
+    snapshot = tracker.get_slot(slot_id)
+    snapshot.assign_part_id = 999
+    snapshot.blank = True
+    snapshot.station_states["s1"] = "nok"
+    snapshot.results["s1:defect"] = {"cam1": False}
+
+    live = tracker.get_slot(slot_id)  # fresh snapshot, to check real internal state
+    assert live.assign_part_id == 1
+    assert live.blank is False
+    assert live.station_states == {"s1": "unreached", "s2": "unreached"}
+    assert live.results == {}
+
+
 def test_mark_pending_transitions_unreached_to_pending():
     tracker = make_tracker(n_slots=10, encoder_cpr=100)
     slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)

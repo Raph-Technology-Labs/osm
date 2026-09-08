@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Dict, Optional, Set
 
@@ -232,7 +232,21 @@ class IndexerSlotTracker:
             return slot_id
 
     def get_slot(self, slot_id: int) -> SlotRecord:
-        return self.slots[slot_id]
+        """Returns a copy, never the live SlotRecord (spec13 #10, found
+        missing in spec12's code review) -- every caller outside this
+        module (dispatcher.py, station_registry.py) only ever reads from
+        what this returns today (confirmed: none mutate it), but a live
+        reference would let a caller bypass self._lock's discipline
+        entirely, mutating tracker state from outside every locked method
+        above. Internal code must always go through the locked methods
+        (mark_pending, apply_station_result, free_slot, ...), never
+        get_slot() + mutate. results/station_states are copied too, not
+        just the SlotRecord wrapper -- both are mutable dicts that would
+        otherwise still be shared with the live record even after a
+        shallow copy."""
+        with self._lock:
+            record = self.slots[slot_id]
+            return replace(record, results=dict(record.results), station_states=dict(record.station_states))
 
     def free_slot(self, slot_id: int) -> None:
         """Called once a part has been accepted or rejected and discharged --
