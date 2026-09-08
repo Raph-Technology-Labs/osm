@@ -55,7 +55,7 @@ def test_watchdog_escalates_to_stop_cmd_on_stalled_heartbeat():
     time.sleep(0.08)  # exceed the 50ms timeout with no heartbeat change
     wd._check_once()
 
-    assert client.written == [(40010, 1)]  # stop_cmd written exactly once
+    assert client.written == [(40010, 0)]  # stop_cmd written exactly once, 0=halt
 
 
 def test_watchdog_does_not_spam_stop_cmd_after_first_escalation():
@@ -68,7 +68,7 @@ def test_watchdog_does_not_spam_stop_cmd_after_first_escalation():
     wd._check_once()  # still stalled -- must not write again
     wd._check_once()
 
-    assert client.written == [(40010, 1)]
+    assert client.written == [(40010, 0)]
 
 
 def test_watchdog_recovers_after_heartbeat_resumes():
@@ -78,7 +78,7 @@ def test_watchdog_recovers_after_heartbeat_resumes():
     wd._check_once()
     time.sleep(0.05)
     wd._check_once()  # escalates once
-    assert client.written == [(40010, 1)]
+    assert client.written == [(40010, 0)]
 
     client.heartbeat_value = 2  # PLC resumes ticking
     wd._check_once()
@@ -91,7 +91,7 @@ def test_watchdog_treats_read_failure_as_escalation():
 
     wd._check_once()
 
-    assert client.written == [(40010, 1)]
+    assert client.written == [(40010, 0)]
 
 
 def test_watchdog_ignores_checks_while_disconnected():

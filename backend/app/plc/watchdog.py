@@ -91,7 +91,14 @@ class PLCWatchdog:
     def _escalate(self, register_snapshot: dict) -> None:
         self._escalated = True
         try:
-            self._client.write_register(self._client.config.registers.stop_cmd, 1)
+            # stop_cmd is a combined run/stop bit (1=run, 0=halt) per the
+            # 2026-09-07 convention change -- see routers/inspection.py's
+            # _write_stop_cmd(), the newer, authoritative source for this
+            # register's meaning. A halt-on-escalation write is therefore 0,
+            # not 1 (the register's original, pre-convention-change meaning
+            # this watchdog was still using -- found in spec12's code
+            # review: the two PC-side writers of this register disagreed).
+            self._client.write_register(self._client.config.registers.stop_cmd, 0)
         except PLCConnectionError:
             log.error("watchdog: STOP_CMD write ALSO failed -- PLC fully unreachable", exc_info=True)
         log.error("watchdog: FAULT_STATUS -- register snapshot at escalation: %s", register_snapshot)
