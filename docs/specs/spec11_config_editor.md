@@ -72,11 +72,30 @@ audit-log requirement below, rather than building a second one.
   live.
 - **Validation before save**, surfaced in the UI, not just a 500 on
   submit: every `pipeline.defect.allowed_defects`/`measurement.allowed_classes`
-  reference must resolve; `encoder_cpr` must be evenly divisible by the
-  *derived* `n_slots` (see Constraints — this already raises a clear
-  `pydantic.ValidationError` server-side via `IndexerConfig.cpr_divisible_by_slots`,
-  the editor's job is to surface that error inline against the right
-  field, not just show a raw 422 body); exactly one `type: exit` station.
+  reference must resolve; exactly one `type: exit` station.
+- **Live tolerance-suggestion, not a hard rejection**: `encoder_cpr` must be
+  evenly divisible by the *derived* `n_slots`, but as of the
+  `encoder_cpr`-divisibility fix, `IndexerConfig.n_slots`
+  (`backend/app/config/config_loader.py`) no longer raises when the
+  slot count implied by the entered `diameter_mm`/`part_size_mm`/
+  `tolerance_pct` doesn't divide evenly — it silently walks *down* to the
+  nearest slot count that does (never up, since that would shrink physical
+  spacing below the requested tolerance) and logs the adjustment. The
+  editor's job is to make that adjustment **visible and interactive**, not
+  just accept the silent server-side correction:
+  - As the user edits `diameter_mm`/`part_size_mm`/`tolerance_pct`/
+    `encoder_cpr`, call the resolver live (debounced) and show both the
+    *requested* derived `n_slots` and the *actual* (reconciled) `n_slots`/
+    `pulses_per_slot` side by side whenever they differ.
+  - When they differ, surface the **suggested `tolerance_pct`** that would
+    make the requested value exact — i.e. the effective tolerance the
+    backend actually applied — as a one-click "use suggested value"
+    affordance next to the `tolerance_pct` field, rather than making the
+    user hunt for a working number by trial and error.
+  - Saving with a mismatched `tolerance_pct` is allowed (the backend
+    reconciles it either way), but the UI must not let the mismatch pass
+    silently — show it every time, even if the user chooses to save
+    without accepting the suggestion.
 - **Audit log**: every saved change recorded (who, when, what changed) —
   see the recommended resolution to the Open Question above for how this
   reuses existing schema.
@@ -93,13 +112,21 @@ audit-log requirement below, rather than building a second one.
 ## 4. Constraints
 
 - **`n_slots` is derived, never a direct input field** — `IndexerConfig.n_slots`
-  (`backend/app/config/config_loader.py`) is a computed `@property`
-  (`floor(π × diameter_mm / (part_size_mm × (1 + tolerance_pct/100)))`),
-  not a stored value, as of tonight's work. `CHECKLIST.md`'s original
-  "n_slots override with validation" line predates this and is stale —
-  the editor exposes `diameter_mm`/`part_size_mm`/`tolerance_pct` and
-  shows the *resulting* `n_slots` read-only, it does not let someone type
-  a conflicting `n_slots` directly.
+  (`backend/app/config/config_loader.py`) is a computed `@property`, not a
+  stored value. `CHECKLIST.md`'s original "n_slots override with
+  validation" line predates this and is stale — the editor exposes
+  `diameter_mm`/`part_size_mm`/`tolerance_pct` and shows the *resulting*
+  `n_slots` read-only, it does not let someone type a conflicting
+  `n_slots` directly.
+- **`n_slots` self-reconciles against `encoder_cpr`, it doesn't reject** —
+  `IndexerConfig._requested_n_slots` is the floor-derived value from the
+  three geometry fields alone; `IndexerConfig.n_slots` then walks that
+  value *down* (only down — see the property's docstring for why up is
+  unsafe) until `encoder_cpr % n_slots == 0`, logging a warning when it had
+  to adjust. The editor must expose this reconciliation as the live
+  tolerance-suggestion UX described in Section 2, not treat divisibility
+  as a pass/fail gate the way the old `cpr_divisible_by_slots` validator
+  did before this fix.
 - **`resolve_config_for_part()` caches by `part_code`** (also from
   tonight's work) — after a save, the editor must account for this cache
   when deciding when the new config actually takes effect (next session
@@ -120,7 +147,8 @@ audit-log requirement below, rather than building a second one.
 
 | Edge case | How to handle |
 |---|---|
-| Edited `encoder_cpr` no longer divisible by the derived `n_slots` | Reject with the existing `IndexerConfig.cpr_divisible_by_slots` validator's message, surfaced against the `encoder_cpr` field specifically |
+| Edited `diameter_mm`/`part_size_mm`/`tolerance_pct`/`encoder_cpr` combination doesn't divide evenly | Not rejected — `IndexerConfig.n_slots` reconciles it automatically (walks `n_slots` down to the nearest valid divisor). The editor shows the reconciled `n_slots`/`pulses_per_slot` next to the requested ones and offers the suggested `tolerance_pct` as a one-click fix (Section 2) |
+| Requested `tolerance_pct` is already exact (including `0`) | No adjustment, no suggestion shown — the requested and reconciled `n_slots` match |
 | Pipeline block references a camera not in that station's `cameras` map | Reject — mirrors `InspectionStation.validate_camera_refs`'s existing check |
 | Two `type: exit` stations, or zero | Reject — mirrors `ResolvedMachineConfig.exactly_one_exit_station`'s existing check |
 | Save while a session is active | Reject, or queue-and-apply-on-stop — decide explicitly, don't leave implicit; a live station/camera topology change mid-session is undefined behavior today |
@@ -136,9 +164,12 @@ The feature is considered complete if:
 - [ ] Editing and saving `diameter_mm`/`part_size_mm`/`tolerance_pct`
       shows the resulting derived `n_slots` and per-station slot-offset
       preview before commit
-- [ ] Saving a config with `encoder_cpr` not divisible by the derived
-      `n_slots` is rejected with a clear, field-targeted error, not a raw
-      500/422
+- [ ] Entering a `diameter_mm`/`part_size_mm`/`tolerance_pct`/`encoder_cpr`
+      combination that doesn't divide evenly does **not** block saving —
+      it shows the reconciled `n_slots`/`pulses_per_slot` alongside the
+      requested ones and a suggested `tolerance_pct` (the smallest bump
+      that makes it exact) with a one-click apply, per Section 2's live
+      tolerance-suggestion requirement
 - [ ] Every save is recorded in a retrievable audit log (who, when, diff
       or full snapshot)
 - [ ] Category/part add-new works end-to-end against the existing
