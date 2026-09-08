@@ -363,6 +363,27 @@ class ResolvedMachineConfig(BaseModel):
             raise ValueError(f"stations[] must contain at most one type: reject entry, found {len(rejects)}")
         return self
 
+    @model_validator(mode="after")
+    def reject_before_exit(self):
+        """CLAUDE.md Critical Rule 3: the reject decision is evaluated at
+        R1, never at Exit -- that guarantee only holds if R1 physically
+        sits before Exit on the ring. Nothing previously checked this;
+        found in spec12's code review as a config typo that would load and
+        validate cleanly while silently violating Rule 3 at runtime."""
+        reject = self.reject_station()
+        if reject is None:
+            return self
+        exit_st = self.exit_station()
+        if reject.station_offset_pulses >= exit_st.station_offset_pulses:
+            raise ValueError(
+                f"reject station {reject.id!r} (station_offset_pulses="
+                f"{reject.station_offset_pulses}) must be strictly before the exit "
+                f"station {exit_st.id!r} (station_offset_pulses="
+                f"{exit_st.station_offset_pulses}) in ring order -- CLAUDE.md Rule 3 "
+                f"requires the reject decision to be evaluated before Exit"
+            )
+        return self
+
     def inspection_stations(self) -> List[InspectionStation]:
         return [s for s in self.stations if s.type == "inspection"]
 
