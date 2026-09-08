@@ -10,12 +10,19 @@ indexer:
   part_size_mm: 20.0     # PLACEHOLDER
   tolerance_pct: 15.0    # PLACEHOLDER -- extra clearance added to part_size_mm per slot
   # n_slots is DERIVED, not set here: floor(pi * diameter_mm / (part_size_mm * (1 + tolerance_pct/100)))
-  encoder_cpr: 3600      # PLACEHOLDER -- must be divisible by the derived n_slots (180/slot at n_slots=20)
+  # -> 20 at these values. IndexerConfig.n_slots (config_loader.py) then
+  # reconciles that against encoder_cpr below -- if a future edit here no
+  # longer divides evenly, it walks n_slots down to the nearest value that
+  # does (never up) and logs a warning, it does not fail to load.
+  encoder_cpr: 3600      # PLACEHOLDER -- 180 pulses/slot at n_slots=20
 
 plc:
   ip: "192.168.6.41"
   port: 502
   vendor: siemens
+  # Written to the speed_setpoint register once at session start
+  # (CLAUDE.md Rule 5: config-driven, never hardcoded).
+  speed_setpoint_rpm: 30.0 # PLACEHOLDER
   # Single top-level "is this machine running in simulation" switch --
   # consolidates the mock Modbus connection target, the dispatcher's own
   # tick cadence (was per-station source.sim_interval_ms), and the
@@ -28,61 +35,52 @@ plc:
     port: 5502
     tick_interval_ms: 3000 # replaces every station's old source.sim_interval_ms
   # PLACEHOLDER register addresses -- confirm real layout with the
-  # controller-program owner before wiring against real hardware. Laid out
-  # contiguously (pulse_count..entry_queue block) so the poll loop can read
-  # them in one batched read_holding_registers call per CLAUDE.md Rule 6.
+  # controller-program owner before wiring against real hardware. Every
+  # field below is required by RegisterMapConfig (config_loader.py); no
+  # subset of these is optional, even though not all are wired into the
+  # poller/dispatcher yet (see machine_config.yaml's fuller per-register
+  # comments for what's actually consumed today).
   registers:
-    pulse_count: 200            # free-running, wraps every encoder_cpr counts
-    heartbeat_plc: 201          # plain periodic alive signal, not slot math
-    entry_queue_write_idx: 202  # PLC increments on every part-entry trigger
-    entry_queue_slots_start: 203  # first of `entry_queue_size` contiguous regs
-    entry_queue_size: 16        # ring buffer depth -- confirm vs. real burst rate
+    pulse_count: 300              # PLC->PC, int -- free-running, wraps every encoder_cpr counts
+    encoder_indexer_ppr: 301      # PLC->PC, int -- resets to 0 at indexer revolution
+    encoder_count: 302            # PLC->PC, long -- total pulses since machine start
+    part_sensor: 303              # PLC->PC, bool -- part detection at entry
+    heartbeat: 304                # PLC->PC -- per-slot heartbeat tick count
+    indexing_pulse: 305           # PLC->PC, bool
+    heartbeat_per_slot: 306       # PC->PLC, int -- PC-configured heartbeat cadence
+    indexing_pulse_per_slot: 307  # PC->PLC, int -- PC-configured pulses-per-slot
+    reject_cmd: 308               # PC->PLC, bool
+    stop_cmd: 309                 # PC->PLC, bool -- combined run/stop (1=run, 0=halt)
+    speed_setpoint: 310           # PC->PLC, int -- rpm-to-scale conversion is PLACEHOLDER
+    fault: 311                    # BOTH sides -- confirm register-ownership with the
+                                   # controller-program owner before real use
 
   # PLACEHOLDER -- names AND register numbers, confirm with the Integra
   # controller-program owner. Expected to differ per client deployment.
-  # Kept clear of 200-218 (pulse/heartbeat/entry-queue block) and 220-221
-  # (r1's cmd/ack below) since these are read far less often.
   error_registers:
     - name: "e_stop"
-      reg: 230 # PLACEHOLDER
+      reg: 320 # PLACEHOLDER
     - name: "air_pressure_low"
-      reg: 231 # PLACEHOLDER
+      reg: 321 # PLACEHOLDER
 
 # PLACEHOLDER -- names AND register numbers, same caveat as error_registers
 # above. Device Settings page renders one row per entry.
 actuators:
   - name: "rejection_station_1"
-    reg: 240 # PLACEHOLDER
+    reg: 330 # PLACEHOLDER
     type: toggle
   - name: "rejection_station_2"
-    reg: 241 # PLACEHOLDER
+    reg: 331 # PLACEHOLDER
     type: toggle
 
-redis:
-  keys:
-    result: "rv_inspection_result"
-    trigger: "rv_trigger_event"
-
-# OK-path confirmation: the machine has a part-presence sensor at the OK bin
-# too, so ack_reg here is a real physical ACK ("this part landed in the OK
-# bin"), not just a log write. Only fires on the accept path -- the reject
-# path already has its own per-station CMD/ACK below.
-part_aggregation:
-  pass_if: all_stations_pass
-  result_write:
-    part_id_reg: 100
-    result_reg: 101
-    ack_reg: 102
-
-# Every physical station on the ring -- inspection AND reject alike -- is a
-# stations[] entry, discriminated by `type`. No trigger_reg/part_id_reg
+# Every physical station on the ring -- inspection, reject, AND exit alike --
+# is a stations[] entry, discriminated by `type`. No trigger_reg/part_id_reg
 # anywhere: the PC self-fires off its own slot math (Rule 1), it never waits
-# on a controller trigger register. Reject stations are their own entries
-# here (not owned by any one inspection station) since multiple stations'
-# defect classes can route to the same reject station via
-# pipeline.defect.reject_station: <id>. "Last inspection station" (when to
-# evaluate part_aggregation) is derived from station_offset_pulses at load
-# time -- no manual is_last_station flag.
+# on a controller trigger register. Exactly one type: exit entry is required
+# (ResolvedMachineConfig.exactly_one_exit_station); at most one type: reject
+# entry, and if present it must sit strictly before exit in ring order
+# (station_offset_pulses), per CLAUDE.md Rule 3
+# (ResolvedMachineConfig.reject_before_exit).
 stations:
 
   - id: s1
@@ -126,7 +124,6 @@ stations:
         allowed_cameras: [cam1, cam2]
         detect_classes: [bolt, rust, crack, scratch] # everything this model outputs
         allowed_defects: [rust, crack, scratch] # ok/nok decided ONLY on these
-        reject_station: r1
 
       # no model_path -> reuses defect's raw detections, just filters allowed_classes.
       # allowed_cameras ∩ defect.allowed_cameras = {cam1} -> CMD, serial, one inference
@@ -193,7 +190,6 @@ stations:
         allowed_cameras: [cam6]
         detect_classes: [bolt, dent, rust]
         allowed_defects: [dent, rust]
-        reject_station: r1
 
       # different model than defect -> needs its own inference call. allowed_cameras
       # {cam5} doesn't intersect defect's {cam6} -> parallel, not CMD -- confirmed by
@@ -218,9 +214,24 @@ stations:
   - id: r1
     name: "Reject Station 1"
     type: reject
-    station_offset_pulses: 1800   # PLACEHOLDER -- real time-of-flight to this
-                                   # station, needed for reject deadline math
-                                   # (CLAUDE.md Rule 7)
-    cmd_reg: 220
-    ack_reg: 221
-    ack_timeout_ms: 500           # reject DOES need ACK+timeout, unlike strobe
+    station_offset_pulses: 1440   # PLACEHOLDER -- between s2 (1080) and exit1 (1800); real
+                                   # value needs the actual reject-station time-of-flight
+                                   # (CLAUDE.md Rule 7). Must be strictly before exit1's
+                                   # station_offset_pulses (CLAUDE.md Rule 3).
+    enabled: true # false = commissioning mode, no rejection actuator wired yet -- NOK parts
+                  # ride through untouched and get resolved at exit1 instead
+
+  - id: exit1
+    name: "Exit Station - Result Check"
+    type: exit
+    station_offset_pulses: 1800   # PLACEHOLDER -- point where OK/NOK is evaluated if r1
+                                   # is disabled, or re-confirmed if r1 already resolved it
+    pass_if: all_stations_pass
+    # OK-path confirmation: the machine has a part-presence sensor at the OK
+    # bin too, so ack_reg here is a real physical ACK ("this part landed in
+    # the OK bin"), not just a log write. Only fires on the accept path --
+    # the reject path (r1 above) has no wired actuator/ACK yet.
+    result_write:
+      part_id_reg: 100
+      result_reg: 101
+      ack_reg: 102
