@@ -105,32 +105,52 @@ def _run_pipeline(
     defect_config path (s2), never measurement (s1 keeps using real
     inference against the real calibrated sim images, per this feature's
     frozen spec). None in real/hardware mode -- real_frame_provider never
-    passes a non-None value, so this branch is simply dead code there."""
+    passes a non-None value, so this branch is simply dead code there.
+
+    defect_config and measurement_config are not mutually exclusive -- a
+    "cmd" camera (config_loader.InspectionPipeline.cmd_cameras(): in both
+    blocks' allowed_cameras, the measurement_shares_defect_model() case)
+    gets BOTH passed here for the same capture. Previously the defect
+    branch returned immediately, so measurement never ran on a shared
+    camera at all (found in spec13's review, #5). Now defect inference (or
+    its forced_verdict) runs first as before, then -- if measurement_config
+    is also set -- measurement runs against the defect stage's own output
+    frame (so any drawn defect boxes and the measurement ellipse both land
+    on the one returned frame, not two independent copies), and the two
+    verdicts combine: NOK if either fails."""
+    defect_result: Optional[CapturedFrame] = None
+    working_frame = frame
+
     if defect_config is not None:
         if forced_verdict is not None:
             is_nok = forced_verdict == "NOK"
-            return CapturedFrame(
+            defect_result = CapturedFrame(
                 frame=frame,
                 is_defect=is_nok,
                 defect_label="sim_forced_nok" if is_nok else None,
                 defect_confidence=None,
                 defect_count=1 if is_nok else 0,
             )
-        from app.pipeline.defect import run_defect_inference  # deferred: avoids importing
-        # ultralytics for stations that never run inference
+        else:
+            from app.pipeline.defect import run_defect_inference  # deferred: avoids importing
+            # ultralytics for stations that never run inference
 
-        is_defect, label, confidence, count, frame_out = run_defect_inference(frame, defect_config, draw_result)
-        return CapturedFrame(
-            frame=frame_out,
-            is_defect=is_defect,
-            defect_label=label,
-            defect_confidence=confidence,
-            defect_count=count,
-        )
+            is_defect, label, confidence, count, frame_out = run_defect_inference(frame, defect_config, draw_result)
+            defect_result = CapturedFrame(
+                frame=frame_out,
+                is_defect=is_defect,
+                defect_label=label,
+                defect_confidence=confidence,
+                defect_count=count,
+            )
+        working_frame = defect_result.frame
+        if measurement_config is None:
+            return defect_result
+
     if measurement_config is not None:
         from app.pipeline.measurement import run_measurement_inference  # deferred, same reason
 
-        result = run_measurement_inference(frame, measurement_config, draw_result)
+        result = run_measurement_inference(working_frame, measurement_config, draw_result)
         label = f"⌀{result.diameter_mm:.2f}mm oval {result.ovality_mm:.2f}mm"
         # Matches run_measurement_inference's own hardcoded "diameter_mm"
         # param lookup -- not generalizing to other param names here since
@@ -146,6 +166,18 @@ def _run_pipeline(
                 "passed": result.passed,
             }
         }
+        if defect_result is not None:
+            # Shared camera: combine both verdicts rather than letting
+            # measurement silently overwrite defect's (or vice versa).
+            combined_label = f"{defect_result.defect_label} | {label}" if defect_result.defect_label else label
+            return CapturedFrame(
+                frame=result.frame_out,
+                is_defect=defect_result.is_defect or not result.passed,
+                defect_label=combined_label,
+                defect_confidence=defect_result.defect_confidence,
+                defect_count=defect_result.defect_count,
+                measurement_data=measurement_data,
+            )
         return CapturedFrame(
             frame=result.frame_out,
             is_defect=not result.passed,
