@@ -352,9 +352,34 @@ const DigitalTwin = ({ nSlots, stations, ringState, revolutions, running }) => {
           return (
             <Box
               key={i}
-              sx={{ width: 10, height: 10, borderRadius: "2px", bgcolor: color }}
+              sx={{
+                width: 10,
+                height: 10,
+                borderRadius: "2px",
+                bgcolor: color,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
               title={`slot ${i} — ${status}${status === "LOADED" ? ` (${detail})` : ""}`}
-            />
+            >
+              {/* Same black-digit convention as the ring wedge labels above
+                  (slotLabel) -- readable against every summaryColor tone
+                  without introducing a second text color. */}
+              <Typography
+                component="span"
+                sx={{
+                  fontSize: "5px",
+                  fontFamily: MONO_FONT,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                  color: "#000000",
+                  userSelect: "none",
+                }}
+              >
+                {i}
+              </Typography>
+            </Box>
           );
         })}
       </Box>
