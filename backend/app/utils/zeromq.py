@@ -81,23 +81,36 @@ def publish_ring_state(tracker, revolutions: int) -> None:
     longer reconstructs this client-side from the per-camera
     InspectionResult stream). Cheap at today's sim tick cadence; profile
     before assuming a per-tick full-ring broadcast is still fine at 900 PPM
-    (CLAUDE.md Section 5)."""
-    payload = json.dumps({
-        "slots": {
-            str(slot_id): {
-                "status": record.status.value,
-                "part_id": record.assign_part_id,
-                # station_id -> "unreached"|"pending"|"ok"|"nok", one entry
-                # per inspection station -- DigitalTwin.jsx renders one
-                # radial band per entry, in this dict's key order.
-                "station_states": record.station_states,
-            }
-            for slot_id, record in tracker.slots.items()
-        },
-        "entry_slot_id": tracker._entry_slot_id,
-        "ok_total": tracker.ok_total,
-        "nok_total": tracker.nok_total,
-        "r1_removed": tracker.r1_removed,
-        "revolutions": revolutions,
-    })
+    (CLAUDE.md Section 5).
+
+    Called from StationDispatcher's tick, itself run from a
+    threading.Timer callback -- an uncaught exception here would propagate
+    into that callback, kill the timer thread, and never call
+    _schedule_tick() (which runs after this in the tick), silently halting
+    all future ticks with no error surfaced anywhere else (spec13 #7,
+    found missing in spec12's code review). Caught and logged instead,
+    skipping just this tick's publish, so a bad snapshot never takes down
+    dispatch itself."""
+    try:
+        payload = json.dumps({
+            "slots": {
+                str(slot_id): {
+                    "status": record.status.value,
+                    "part_id": record.assign_part_id,
+                    # station_id -> "unreached"|"pending"|"ok"|"nok", one entry
+                    # per inspection station -- DigitalTwin.jsx renders one
+                    # radial band per entry, in this dict's key order.
+                    "station_states": record.station_states,
+                }
+                for slot_id, record in tracker.slots.items()
+            },
+            "entry_slot_id": tracker._entry_slot_id,
+            "ok_total": tracker.ok_total,
+            "nok_total": tracker.nok_total,
+            "r1_removed": tracker.r1_removed,
+            "revolutions": revolutions,
+        })
+    except (TypeError, ValueError):
+        log.error("publish_ring_state: failed to serialize ring state -- skipping this tick's publish", exc_info=True)
+        return
     broadcast("MessageType.RingState", payload)
