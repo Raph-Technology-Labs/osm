@@ -19,11 +19,12 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple, Iterator
+from contextlib import contextmanager
 from plc import ModbusPLCClient
 import cv2
 import numpy as np
-
+from app.plc import ModbusPLCClient
 from app.camera.camera_driver import CameraConnectionError
 
 if TYPE_CHECKING:
@@ -265,30 +266,94 @@ class CameraStation:
     def set_driver(self, driver: "CameraDriver") -> None:
         self.driver = driver
 
+    # def fire_strobe(self, duration_ms: int = 2) -> None:
+    #     if self.strobe_reg is None:
+    #         log.warning(f"{self.camera_id}: strobe_reg not configured, can't fire strobe")
+    #         return None
+    #     try:
+    #         self.plc.write_register(self.strobe_reg, duration_ms)
+    #         time.sleep(duration_ms / 1000.0)
+    #         try:
+    #             self.plc.write_register(self.strobe_reg, 0)
+    #         except Exception as e:
+    #             log.warning(f"{self.camera_id}: failed to reset strobe at reg {self.strobe_reg}: {e}", exc_info=True)
+    #     except Exception as e:
+    #         log.warning(f"{self.camera_id}: failed to fire strobe at reg {self.strobe_reg}: {e}", exc_info=True)
+    @contextmanager
+    def fire_strobe(self, duration_ms: int = 2) -> Iterator[None]:
+        if self.strobe_reg is None:
+            log.warning(
+                f"{self.camera_id}: strobe_reg not configured, can't fire strobe"
+            )
+            yield
+            return
+
+        try:
+            self.plc.write_register(self.strobe_reg, 1)
+            yield
+        finally:
+            try:
+                self.plc.write_register(self.strobe_reg, 0)
+            except Exception as e:
+                log.warning(
+                    f"{self.camera_id}: failed to reset strobe "
+                    f"at reg {self.strobe_reg}: {e}",
+                    exc_info=True,
+                )
+
+
     def close(self) -> None:
         if self.driver is not None:
             self.driver.close()
             self.driver = None
 
+    # def capture_and_infer(self) -> Optional[CapturedFrame]:
+    #     """Runs on its own thread per firing -- captures one frame and
+    #     returns the inference result. A real camera that never connected, or
+    #     that disconnects mid-session, is logged and marks the station
+    #     unavailable rather than crashing this thread (CLAUDE.md's
+    #     camera-disconnect-mid-session rule)."""
+    #     if self._frame_provider is None:
+    #         log.warning(f"{self.camera_id}: fired with no frame provider set (not connected) -- skipping")
+    #         return None
+    #     try:
+    #         self.fire_strobe(2)
+    #         captured = self._frame_provider()
+    #     except CameraConnectionError:
+    #         log.warning(f"{self.camera_id}: capture failed, marking disconnected", exc_info=True)
+    #         self.last_capture_ok = False
+    #         return None
+    #     self.last_capture_ts = time.time()
+    #     self.last_capture_ok = True
+    #     if self.on_result:
+    #         self.on_result(self.camera_id, captured)
+    #     return captured
     def capture_and_infer(self) -> Optional[CapturedFrame]:
-        """Runs on its own thread per firing -- captures one frame and
-        returns the inference result. A real camera that never connected, or
-        that disconnects mid-session, is logged and marks the station
-        unavailable rather than crashing this thread (CLAUDE.md's
-        camera-disconnect-mid-session rule)."""
         if self._frame_provider is None:
-            log.warning(f"{self.camera_id}: fired with no frame provider set (not connected) -- skipping")
+            log.warning(
+                f"{self.camera_id}: fired with no frame provider set "
+                f"(not connected) -- skipping"
+            )
             return None
+
         try:
-            captured = self._frame_provider()
+            with self.fire_strobe():
+                captured = self._frame_provider()
+
         except CameraConnectionError:
-            log.warning(f"{self.camera_id}: capture failed, marking disconnected", exc_info=True)
+            log.warning(
+                f"{self.camera_id}: capture failed, marking disconnected",
+                exc_info=True,
+            )
             self.last_capture_ok = False
             return None
+
         self.last_capture_ts = time.time()
         self.last_capture_ok = True
+
         if self.on_result:
             self.on_result(self.camera_id, captured)
+
         return captured
 
 
@@ -322,7 +387,7 @@ class StationRegistry:
                 existing = self._stations.get(camera_id)
                 if existing is not None:
                     existing.close()
-                self._stations[camera_id] = CameraStation(camera_id, station.id)
+                self._stations[camera_id] = CameraStation(camera_id, station.id, station.strobe_reg)
 
     def stations_for_station(self, station_id: str) -> list[CameraStation]:
         """Return all camera stations belonging to the given station ID."""
