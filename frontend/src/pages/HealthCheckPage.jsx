@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Box, Chip, Typography, Paper, CircularProgress, Divider } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 
-import MainLayout from "../layouts/MainLayout";
+// import MainLayout from "../layouts/MainLayout";
 import api from "../api/axios";
 import { toTitleCase } from "../utils/formatLabel";
 
@@ -53,7 +53,11 @@ const HealthCheckPage = () => {
   }, []);
 
   return (
-    <MainLayout title="Health Check">
+   <Box>
+      <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+        Health Check
+      </Typography>
+
       <Paper elevation={0} sx={{ p: 4, border: "1px solid", borderColor: "divider", borderRadius: 2, maxWidth: 720 }}>
         {loading ? (
           <Box display="flex" justifyContent="center" py={4}>
@@ -100,7 +104,7 @@ const HealthCheckPage = () => {
           </>
         )}
       </Paper>
-    </MainLayout>
+   </Box>
   );
 };
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Box, Typography, Button, Paper, Stack, CircularProgress, Snackbar, Alert } from "@mui/material";
 
-import MainLayout from "../layouts/MainLayout";
+// import MainLayout from "../layouts/MainLayout";
 import api from "../api/axios";
 import { toTitleCase } from "../utils/formatLabel";
 
@@ -101,7 +101,10 @@ const DeviceSettingsPage = () => {
   );
 
   return (
-    <MainLayout title="Device Settings">
+    <Box>
+    <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+  Device Settings
+</Typography>
       {loading && (
         <Box display="flex" justifyContent="center" py={4}>
           <CircularProgress />
@@ -128,7 +131,7 @@ const DeviceSettingsPage = () => {
           {snackbar.message}
         </Alert>
       </Snackbar>
-    </MainLayout>
+    </Box>
   );
 };
 

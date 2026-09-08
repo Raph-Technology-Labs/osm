@@ -13,6 +13,8 @@ import {
   TableCell,
   TableBody,
   TablePagination,
+  Alert,
+  Snackbar,
   useTheme,
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
@@ -28,7 +30,6 @@ import {
   LabelList,
 } from "recharts";
 import api from "../api/axios";
-import MainLayout from "../layouts/MainLayout";
 
 const StatTile = ({ label, value, color }) => {
   const theme = useTheme();
@@ -55,6 +56,8 @@ const DashboardPage = () => {
   const [sessions, setSessions] = useState({ total: 0, data: [] });
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [downloading, setDownloading] = useState(false);
+  const [toast, setToast] = useState("");
 
   const filterParams = useCallback(() => {
     const params = { time_filter: timeFilter };
@@ -79,22 +82,34 @@ const DashboardPage = () => {
   }, [filterParams, timeFilter, startDate, endDate, page, rowsPerPage]);
 
   const handleDownload = async () => {
-    const { data } = await api.get("/dashboard/download-report", {
-      params: filterParams(),
-      responseType: "blob",
-    });
-    const url = window.URL.createObjectURL(new Blob([data], { type: "text/csv" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", `osm_report_${timeFilter}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(url);
+    setDownloading(true);
+    try {
+      const { data } = await api.get("/dashboard/download-report", {
+        params: filterParams(),
+        responseType: "blob",
+      });
+      const url = window.URL.createObjectURL(new Blob([data], { type: "text/csv" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `osm_report_${timeFilter}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("download failed:", err);
+      setToast("Could not download the report. Please try again.");
+    } finally {
+      setDownloading(false);
+    }
   };
 
   return (
-    <MainLayout title="Dashboard">
+    <Box>
+      <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+        Dashboard
+      </Typography>
+
       {/* Filters -- one row, above the charts */}
       <Box sx={{ display: "flex", gap: 2, alignItems: "center", mb: 3, flexWrap: "wrap" }}>
         <Select size="small" value={timeFilter} onChange={(e) => setTimeFilter(e.target.value)} sx={{ minWidth: 140 }}>
@@ -124,8 +139,13 @@ const DashboardPage = () => {
           </>
         )}
         <Box sx={{ flexGrow: 1 }} />
-        <Button variant="outlined" startIcon={<DownloadIcon />} onClick={handleDownload}>
-          Download CSV
+        <Button
+          variant="outlined"
+          startIcon={<DownloadIcon />}
+          onClick={handleDownload}
+          disabled={downloading}
+        >
+          {downloading ? "Preparing…" : "Download CSV"}
         </Button>
       </Box>
 
@@ -213,13 +233,20 @@ const DashboardPage = () => {
                 <TableRow key={s.session_id}>
                   <TableCell>{s.session_id}</TableCell>
                   <TableCell>
-                    {s.part_name} <Typography component="span" variant="caption" sx={{ color: theme.palette.text.secondary }}>({s.part_code})</Typography>
+                    {s.part_name}{" "}
+                    <Typography component="span" variant="caption" sx={{ color: theme.palette.text.secondary }}>
+                      ({s.part_code})
+                    </Typography>
                   </TableCell>
                   <TableCell>{s.session_start ? new Date(s.session_start).toLocaleString() : "—"}</TableCell>
                   <TableCell>{s.session_end ? new Date(s.session_end).toLocaleString() : "in progress"}</TableCell>
                   <TableCell align="right">{s.total_fired}</TableCell>
-                  <TableCell align="right" sx={{ color: theme.palette.success.main }}>{s.total_passed}</TableCell>
-                  <TableCell align="right" sx={{ color: theme.palette.error.main }}>{s.total_failed}</TableCell>
+                  <TableCell align="right" sx={{ color: theme.palette.success.main }}>
+                    {s.total_passed}
+                  </TableCell>
+                  <TableCell align="right" sx={{ color: theme.palette.error.main }}>
+                    {s.total_failed}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -238,7 +265,18 @@ const DashboardPage = () => {
           rowsPerPageOptions={[10, 20, 50]}
         />
       </Paper>
-    </MainLayout>
+
+      <Snackbar
+        open={Boolean(toast)}
+        autoHideDuration={4000}
+        onClose={() => setToast("")}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert severity="error" onClose={() => setToast("")} sx={{ width: "100%" }}>
+          {toast}
+        </Alert>
+      </Snackbar>
+    </Box>
   );
 };
 

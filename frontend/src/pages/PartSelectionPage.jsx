@@ -83,7 +83,10 @@ const PartSelectionPage = () => {
   };
 
   return (
-    <MainLayout title="New Session — Select Part">
+   <Box>
+      <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>
+        New Session — Select Part
+      </Typography>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
         Choose a category, then find the part by name or code.
       </Typography>
@@ -189,7 +192,7 @@ const PartSelectionPage = () => {
           )}
         </Box>
       )}
-    </MainLayout>
+    </Box>
   );
 };
 
