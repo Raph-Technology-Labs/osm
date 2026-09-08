@@ -85,6 +85,17 @@ STATION_NOK = "nok"
 class SlotRecord:
     assign_part_id: Optional[object] = None
     entry_pulse: Optional[int] = None
+    # spec12 (pulse-precise reject timing) -- the MONOTONIC, unwrapped pulse
+    # count at the instant this occupant was actually detected (real-mode
+    # part_sensor rising edge), as opposed to entry_pulse above (a raw,
+    # revolution-relative 0..encoder_cpr-1 value, sim mode's only use of
+    # entry_pulse). StationDispatcher._arm_reject_targets() subtracts
+    # entry_sensor_mid_offset_pulses/entry_sensor_response_delay_ms from
+    # this to get the part's true arrival pulse, then projects forward to
+    # the reject station. None until real-mode entry detection sets it
+    # (sim mode never does -- reject there is slot-changed, not pulse-
+    # precise, so this stays None for every sim-mode occupant).
+    pulse_count_at_detection: Optional[int] = None
     results: dict = field(default_factory=dict)
     status: SlotStatus = SlotStatus.EMPTY
     # One entry per INSPECTION station (station_id -> STATION_* state) for
@@ -225,6 +236,13 @@ class IndexerSlotTracker:
                 )
             record.assign_part_id = part_id
             record.entry_pulse = entry_pulse
+            # In real mode, callers pass the monotonic accumulated pulse
+            # count here (see StationDispatcher._on_part_sensor_edge) --
+            # the same value that belongs in pulse_count_at_detection.
+            # Harmless in sim mode too (entry_pulse there is revolution-
+            # relative, but nothing reads pulse_count_at_detection for a
+            # sim-mode occupant -- reject is slot-changed, not pulse-precise).
+            record.pulse_count_at_detection = entry_pulse
             record.results = {}
             record.station_states = {sid: STATION_UNREACHED for sid in self.inspection_station_ids}
             record.status = SlotStatus.LOADED
@@ -260,6 +278,7 @@ class IndexerSlotTracker:
                 self.exited_count += 1
             record.assign_part_id = None
             record.entry_pulse = None
+            record.pulse_count_at_detection = None
             record.results = {}
             record.station_states = {}
             record.status = SlotStatus.BLANK if record.blank else SlotStatus.EMPTY

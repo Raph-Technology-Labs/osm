@@ -339,6 +339,19 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     # parts start moving. Motor start is now a separate, explicit operator
     # action (POST /inspection/motor/start), matching Device Settings'
     # existing "run/stop indexer" framing (CLAUDE.md Section 3, page 4).
-    dispatcher = StationDispatcher(resolved, registry, app.state.indexer_tracker)
+    #
+    # plc_client threaded through (spec12, found missing in code review --
+    # real-mode dispatch was fully implemented/tested but unreachable from
+    # actual app startup without this): load_machine() already connects
+    # (or fails to and leaves None) app.state.plc_client unconditionally,
+    # regardless of plc.sim.enabled. Passing it here is a no-op when sim is
+    # enabled (StationDispatcher only touches plc_client in its real-mode
+    # branch). When sim is disabled and the PLC never connected at boot,
+    # this now correctly raises NoTickSourceConfiguredError (caught as a
+    # 400 by routers/inspection.py) instead of silently constructing a
+    # dispatcher with no way to ever tick.
+    dispatcher = StationDispatcher(
+        resolved, registry, app.state.indexer_tracker, plc_client=getattr(app.state, "plc_client", None)
+    )
     app.state.dispatcher = dispatcher
     return resolved

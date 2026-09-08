@@ -5,7 +5,7 @@ that resolves s1/s2 verdicts immediately (no threads, no real inference),
 so the per-revolution invariant checks below are exact and deterministic
 rather than timing-dependent.
 
-Ticks are driven manually (dispatcher._tick() called directly in a loop,
+Ticks are driven manually (dispatcher._tick_sim() called directly in a loop,
 with _schedule_tick() stubbed out) rather than via real threading.Timer +
 time.sleep -- avoids both flakiness and the minutes it would otherwise take
 to run enough real-time ticks for a multi-revolution invariant check.
@@ -39,7 +39,7 @@ class SyncSimRegistry:
     chain (app/inspection_session.py), whose actual wiring is covered by
     the live smoke test, not this fast unit suite. mark_pending() is NOT
     called here -- the dispatcher itself already calls it right before
-    fire_station() (see dispatcher.py's _tick()), so by the time this runs
+    fire_station() (see dispatcher.py's _tick_sim()), so by the time this runs
     the station is already "pending"; this only needs to resolve it."""
     tracker: IndexerSlotTracker
     measurement_station_ids: Set[str] = field(default_factory=set)
@@ -82,23 +82,23 @@ def make_sim_dispatcher(n_slots=20, encoder_cpr=200, r1_enabled=True, blank=5, n
 
 
 def run_ticks_synchronously(dispatcher, n: int, monkeypatch) -> None:
-    """Drives dispatcher._tick() directly n times with no real timers/sleep
+    """Drives dispatcher._tick_sim() directly n times with no real timers/sleep
     -- stubs _schedule_tick() to a no-op (it would otherwise start a real
-    threading.Timer for the next tick even when _tick() is called directly)
+    threading.Timer for the next tick even when _tick_sim() is called directly)
     and forces ENTRY_INTERVAL_TICKS=1 for the reason in this module's
     docstring."""
     monkeypatch.setattr(dispatcher_module, "ENTRY_INTERVAL_TICKS", 1)
     monkeypatch.setattr(dispatcher, "_schedule_tick", lambda: None)
     dispatcher._stopped = False
     for _ in range(n):
-        dispatcher._tick()
+        dispatcher._tick_sim()
 
 
 def return_arc_slot_ids(tracker: IndexerSlotTracker, exit_offset_slots: int) -> List[int]:
     """Physical slot indices currently positioned strictly between Exit and
     Entry (the empty return path) -- offsets exit_offset..n_slots-1 from the
     current entry position, inclusive of exit's own offset (its
-    transition_exit has already run by the time _tick() returns)."""
+    transition_exit has already run by the time _tick_sim() returns)."""
     return [
         (tracker._entry_slot_id - offset) % tracker.n_slots
         for offset in range(exit_offset_slots, tracker.n_slots)
@@ -148,7 +148,7 @@ def test_return_arc_never_shows_an_occupied_slot(monkeypatch):
     from app.indexer.tracker import SlotStatus
 
     for _ in range(60):  # three full revolutions
-        dispatcher._tick()
+        dispatcher._tick_sim()
         for slot_id in return_arc_slot_ids(tracker, exit_offset_slots):
             record = tracker.get_slot(slot_id)
             assert record.status in (SlotStatus.EMPTY, SlotStatus.BLANK), (

@@ -15,6 +15,11 @@ indexer:
   # longer divides evenly, it walks n_slots down to the nearest value that
   # does (never up) and logs a warning, it does not fail to load.
   encoder_cpr: 3600      # PLACEHOLDER -- 180 pulses/slot at n_slots=20
+  # spec12 -- part_sensor is mounted mid-slot by design, not at the slot
+  # boundary; required (no default) since 0 would be the specific physical
+  # claim "sensor sits exactly at the boundary." PLACEHOLDER until
+  # instrumentation measures the real mounting offset.
+  entry_sensor_mid_offset_pulses: 0
 
 plc:
   ip: "192.168.6.41"
@@ -34,6 +39,13 @@ plc:
     host: "localhost"
     port: 5502
     tick_interval_ms: 3000 # replaces every station's old source.sim_interval_ms
+    # spec12 -- ring-wide (not per-station) real-hardware timing
+    # corrections for pulse-precise reject firing. Both optional (default
+    # 0.0, a valid "no delay," not a sentinel) -- shown explicitly here so
+    # a new machine's file has somewhere obvious to trial-and-error them
+    # against real hardware later.
+    entry_sensor_response_delay_ms: 0 # optical sensor lag before it registers a part
+    reject_actuator_response_delay_ms: 0 # solenoid/valve lag after reject_cmd is set
   # PLACEHOLDER register addresses -- confirm real layout with the
   # controller-program owner before wiring against real hardware. Every
   # field below is required by RegisterMapConfig (config_loader.py); no

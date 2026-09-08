@@ -22,6 +22,13 @@ indexer:
   tolerance_pct: 4 # PLACEHOLDER -- extra clearance added to part_size_mm per slot
   # n_slots is DERIVED, not set here: floor(pi * diameter_mm / (part_size_mm * (1 + tolerance_pct/100)))
   encoder_cpr: 4800 # CONFIRMED -- real encoder CPR (per instrumentation team, 2026-09-08)
+  # spec12 (pulse-precise reject timing) -- part_sensor is mounted mid-slot
+  # by design, not at the slot boundary. PLACEHOLDER -- written here as
+  # pulses_per_slot/2 (=40 at the current 80 pulses/slot) purely as an inert
+  # stand-in; do NOT treat this as the real calibrated value (spec12 Step 0
+  # explicitly warns against assuming exactly half), it's just a plausible
+  # non-zero number until instrumentation measures the real mounting offset.
+  entry_sensor_mid_offset_pulses: 40 # PLACEHOLDER -- see comment above
 
 plc:
   ip: "192.168.6.40" # was .41 -- per instrumentation team's sheet
@@ -48,11 +55,30 @@ plc:
     enabled: true
     host: "localhost"
     port: 5502
-    tick_interval_ms: 2000 # replaces every station's old source.sim_interval_ms
+    tick_interval_ms: 300 # replaces every station's old source.sim_interval_ms
     # Randomly seeds which physical slot INDICES are permanently unfed
     # (IndexerSlotTracker.seed_sim) -- raises at config-resolve time if
     # blank > n_slots (n_slots derives from indexer.* above).
     blank: 5
+    # spec12 -- ring-wide (not per-station) real-hardware timing
+    # corrections for pulse-precise reject firing, per explicit
+    # instruction 2026-09-08. Both in milliseconds (matches how they'll
+    # actually be measured -- stopwatch/scope against real hardware) and
+    # converted to pulses internally using the CURRENT measured rotation
+    # rate at the moment of use (StationDispatcher._ms_to_pulses), not a
+    # fixed conversion baked in here. 0 is a valid default for both -- a
+    # real, physically meaningful "no delay," not a sentinel for "unset."
+    # Live here (not under indexer:/the reject station) so either can be
+    # trial-and-error'd directly in this file with no code change needed.
+    entry_sensor_response_delay_ms: 0 # optical sensor lag before it registers a part
+    reject_actuator_response_delay_ms: 0 # solenoid/valve lag after reject_cmd is set
+  # spec12 -- real-hardware poll cadence (part_sensor + pulse_count), only
+  # used when sim.enabled above is false. NOT the same knob as
+  # sim.tick_interval_ms (that's a simulated "time per slot," far too
+  # coarse for real rising-edge/pulse-precise work). PLACEHOLDER -- matches
+  # app/plc/poller.py's existing poll_hz=20.0 order of magnitude, not a
+  # measured number.
+  real_poll_interval_ms: 50.0 # PLACEHOLDER
   # Config-driven motor speed, written to the speed_setpoint register once
   # at session start (CLAUDE.md Rule 5: config-driven, never hardcoded).
   speed_setpoint_rpm: 45.0 # PLACEHOLDER
@@ -231,6 +257,8 @@ stations:
                                  # needs the actual reject-station time-of-flight (CLAUDE.md Rule 7)
     enabled: true # false = commissioning mode, no rejection actuator wired yet -- NOK parts
                   # ride through untouched and get resolved at exit1 instead
+    # spec12's reject_actuator_response_delay_ms lives under plc.sim: now
+    # (ring-wide, not per-station -- see that block's comment), not here.
 
   - id: exit1
     name: "Exit Station - Result Check"

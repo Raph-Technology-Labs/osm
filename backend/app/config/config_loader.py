@@ -220,6 +220,14 @@ class IndexerConfig(BaseModel):
     part_size_mm: float
     tolerance_pct: float
     encoder_cpr: int
+    # spec12 -- part_sensor is mounted mid-slot by design, not at the slot
+    # boundary, so a raw detection pulse needs this subtracted before it's
+    # a usable "true arrival" pulse (StationDispatcher._arm_reject_targets).
+    # Required, not defaulted to 0 -- unlike the two response-delay fields
+    # below (0ms is a physically meaningful "no delay"), 0 pulses here
+    # would be the specific physical claim "sensor sits exactly at the
+    # slot boundary," which isn't a safe default to assume silently.
+    entry_sensor_mid_offset_pulses: int
 
     @property
     def _requested_n_slots(self) -> int:
@@ -324,6 +332,20 @@ class PLCSimConfig(BaseModel):
     # IndexerSlotTracker.seed_sim) are permanently unfed by the feeder.
     blank: int = 0
 
+    # spec12 -- ring-wide (not per-station) real-hardware timing corrections
+    # for pulse-precise reject firing, per explicit instruction 2026-09-08.
+    # Live here alongside tick_interval_ms/blank rather than under indexer:
+    # or on the reject station itself, matching this class's existing job:
+    # one place for singular, ring-wide PC-side timing knobs, regardless of
+    # sim.enabled -- these two are read by StationDispatcher._arm_reject_targets
+    # in REAL mode specifically, but the "sim:" block is still where they're
+    # meant to be trial-and-error-edited directly against real hardware
+    # (stopwatch/scope measurement), same workflow as every other value here.
+    # 0 is a valid default for both -- a real, physically meaningful "no
+    # delay," not a sentinel for "unset."
+    entry_sensor_response_delay_ms: float = 0.0  # optical sensor lag before it registers a part
+    reject_actuator_response_delay_ms: float = 0.0  # solenoid/valve lag after reject_cmd is set
+
     def resolve(self, total: int) -> SimCounts:
         if self.blank > total:
             raise ValueError(
@@ -355,6 +377,13 @@ class PLCConnectionConfig(BaseModel):
     # Deliberately not tuned yet; real value comes once the indexer/PLC
     # hardware is actually connected (explicit instruction, not guessed).
     watchdog_timeout_ms: float = 5000.0
+    # spec12 -- real-hardware poll cadence (part_sensor + pulse_count), only
+    # used when sim.enabled above is false (StationDispatcher's real-mode
+    # tick interval). NOT the same knob as sim.tick_interval_ms (that's a
+    # simulated "time per slot," far too coarse for real rising-edge/pulse-
+    # precise work). Defaults to app/plc/poller.py's existing poll_hz=20.0
+    # order of magnitude (1000/20=50ms), not a measured number.
+    real_poll_interval_ms: float = 50.0
     registers: RegisterMapConfig
     error_registers: List[ErrorRegisterConfig] = []
 

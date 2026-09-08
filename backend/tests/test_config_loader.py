@@ -44,7 +44,10 @@ def make_config(reject_offset=None, exit_offset=100):
     return ResolvedMachineConfig(
         part_code="TEST-001",
         part_name="Test Part",
-        indexer={"diameter_mm": 150.0, "part_size_mm": 20.0, "tolerance_pct": 15.0, "encoder_cpr": 3600},
+        indexer={
+            "diameter_mm": 150.0, "part_size_mm": 20.0, "tolerance_pct": 15.0,
+            "encoder_cpr": 3600, "entry_sensor_mid_offset_pulses": 0,
+        },
         plc={
             "ip": "1.2.3.4",
             "port": 502,

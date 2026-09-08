@@ -188,10 +188,12 @@ def test_stop_blocks_until_an_in_flight_tick_finishes():
 
 
 def test_plc_sim_disabled_raises_instead_of_guessing():
-    # plc.sim.enabled=False -- there's no implemented real-PLC-pulse-driven
-    # tick source yet, so the dispatcher must refuse to start rather than
-    # silently picking a bogus interval (the old per-station-interval
-    # fallback's latent bug).
+    # plc.sim.enabled=False with no plc_client given -- there's nothing to
+    # drive real-hardware polling from (spec12 added real dispatch, but it
+    # still needs a connected client), so the dispatcher must refuse to
+    # start rather than silently picking a bogus interval (the old
+    # per-station-interval fallback's latent bug). See
+    # test_dispatcher_real_mode.py for real-mode dispatch with a plc_client.
     pulse_offsets = {"s1": 20, "exit1": 80}
     fake_stations = [
         FakeStation(id="s1", type="inspection"),
