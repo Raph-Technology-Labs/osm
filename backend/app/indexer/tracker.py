@@ -329,16 +329,32 @@ class IndexerSlotTracker:
             values = [reported[c] for c in expected_cameras]
         return all(values) if pass_if == "all_cameras_pass" else any(values)
 
-    def mark_pending(self, slot_id: int, station_id: str) -> None:
+    def mark_pending(self, slot_id: int, station_id: str, part_id: object = None) -> None:
         """Tick-driven -- called by StationDispatcher._tick() at the exact
         moment it fires that station's cameras for this slot (i.e. the part
         has physically arrived at that station's position). unreached ->
         pending. Guarded to only fire from unreached, since a re-fire on an
         already-pending/resolved station would be a dispatcher bug (the
         edge-triggered "slot_id just changed" guard in _tick() should
-        already prevent this), not silently overwritten."""
+        already prevent this), not silently overwritten.
+
+        part_id (optional): when the caller knows which part it fired this
+        station for, passing it lets a call for a part that's no longer in
+        this slot be dropped outright (see apply_station_result's docstring
+        for the full reasoning -- same identity-guard pattern, added here
+        for symmetry even though mark_pending's synchronous, tick-driven
+        call site is far less exposed to this race in practice). Omitted
+        (None) disables the check entirely -- existing callers that don't
+        pass it keep today's exact behavior."""
         with self._lock:
             record = self.slots[slot_id]
+            if part_id is not None and record.assign_part_id != part_id:
+                log.warning(
+                    "mark_pending(slot=%d, station=%s, part=%r): slot now holds %r -- "
+                    "stale call for a part that's no longer here, dropping",
+                    slot_id, station_id, part_id, record.assign_part_id,
+                )
+                return
             current = record.station_states.get(station_id, STATION_UNREACHED)
             if current != STATION_UNREACHED:
                 log.warning(
@@ -348,15 +364,38 @@ class IndexerSlotTracker:
                 )
             record.station_states[station_id] = STATION_PENDING
 
-    def apply_station_result(self, slot_id: int, station_id: str, passed: bool) -> None:
+    def apply_station_result(self, slot_id: int, station_id: str, passed: bool, part_id: object = None) -> None:
         """Async, inference-driven -- called once station_aggregate() has
         every expected camera's result in for this station. pending ->
         ok/nok. One method for every inspection station (not split by
         measurement vs. defect) -- station_states treats every inspection
         station symmetrically; WHICH pipeline block produced `passed` is
-        inspection_session.py's concern, not the tracker's."""
+        inspection_session.py's concern, not the tracker's.
+
+        part_id (optional, found missing in spec12's code review): the
+        part_id this result was actually captured for, if the caller has
+        it (inspection_session.py's on_result closure captures it at
+        fire-time). If given and it no longer matches this slot's current
+        occupant, the result is stale -- the part it was for already left
+        (rejected/exited) and a DIFFERENT part has since rotated into the
+        same slot index -- and is dropped before the write, not just
+        logged-and-applied. This is a distinct, separate check from the
+        state-mismatch one below: a part_id mismatch means "wrong part,"
+        drop unconditionally; a state mismatch with a MATCHING part_id
+        means "same part, unexpected state" (e.g. a genuine double-fire),
+        which still logs and applies exactly as before -- only identity
+        mismatches are new grounds for dropping a result. Omitted (None)
+        disables the identity check entirely, preserving today's behavior
+        for any caller that doesn't pass it."""
         with self._lock:
             record = self.slots[slot_id]
+            if part_id is not None and record.assign_part_id != part_id:
+                log.warning(
+                    "apply_station_result(slot=%d, station=%s, part=%r): slot now holds "
+                    "%r -- stale async result for a part that's no longer here, dropping",
+                    slot_id, station_id, part_id, record.assign_part_id,
+                )
+                return
             current = record.station_states.get(station_id, STATION_UNREACHED)
             if current != STATION_PENDING:
                 log.warning(

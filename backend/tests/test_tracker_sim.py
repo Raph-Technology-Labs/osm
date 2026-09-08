@@ -116,6 +116,60 @@ def test_apply_station_result_transitions_pending_to_ok_or_nok():
     assert tracker.slots[slot_id].station_states["s2"] == "nok"
 
 
+def test_mark_pending_drops_stale_call_for_a_different_part_id():
+    # spec13 #1: a mark_pending call carrying the part_id it was fired for
+    # must be dropped, not applied, if a DIFFERENT part now occupies that
+    # slot (the original part already left -- rejected/exited -- and the
+    # ring rotated a new part into the same physical index).
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+
+    tracker.mark_pending(slot_id, "s1", part_id=999)  # stale -- slot holds part 1, not 999
+
+    assert tracker.slots[slot_id].station_states == {"s1": "unreached", "s2": "unreached"}
+
+
+def test_mark_pending_applies_when_part_id_matches():
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+
+    tracker.mark_pending(slot_id, "s1", part_id=1)
+
+    assert tracker.slots[slot_id].station_states["s1"] == "pending"
+
+
+def test_apply_station_result_drops_stale_call_for_a_different_part_id():
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+    tracker.mark_pending(slot_id, "s1", part_id=1)
+
+    tracker.apply_station_result(slot_id, "s1", passed=True, part_id=999)  # stale
+
+    assert tracker.slots[slot_id].station_states["s1"] == "pending"  # unchanged, not "ok"
+
+
+def test_apply_station_result_applies_when_part_id_matches():
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+    tracker.mark_pending(slot_id, "s1", part_id=1)
+
+    tracker.apply_station_result(slot_id, "s1", passed=True, part_id=1)
+
+    assert tracker.slots[slot_id].station_states["s1"] == "ok"
+
+
+def test_part_id_check_disabled_when_omitted_preserves_existing_behavior():
+    # Callers that don't pass part_id (omitted -> None) get today's exact
+    # behavior -- no identity check at all, matches every pre-spec13 caller.
+    tracker = make_tracker(n_slots=10, encoder_cpr=100)
+    slot_id = tracker.on_part_entered(entry_pulse=5, part_id=1)
+
+    tracker.mark_pending(slot_id, "s1")
+    tracker.apply_station_result(slot_id, "s1", passed=True)
+
+    assert tracker.slots[slot_id].station_states["s1"] == "ok"
+
+
 def test_any_station_nok_is_true_even_while_another_station_still_pending():
     # The core "don't wait for the rest" rule -- r1 acts on this.
     tracker = make_tracker(n_slots=10, encoder_cpr=100)

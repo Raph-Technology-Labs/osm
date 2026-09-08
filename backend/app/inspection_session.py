@@ -252,7 +252,12 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                         else:
                             agg = None
                         if agg is not None:
-                            tracker.apply_station_result(slot_id, station_id, agg)
+                            # part_id passed through (spec13 #1) so a stale
+                            # async result for a part that's since left this
+                            # slot -- rejected/exited and a different part
+                            # rotated in -- is dropped instead of silently
+                            # applied to whoever's here now.
+                            tracker.apply_station_result(slot_id, station_id, agg, part_id=part_id)
 
                     # Real tracker-assigned physical part identity (threaded
                     # through from the dispatcher's fire_station call) --

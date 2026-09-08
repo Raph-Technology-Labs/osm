@@ -170,8 +170,11 @@ class StationDispatcher:
                 # mark_pending() before fire_station() so a RingState
                 # snapshot published between the two (or a race on the
                 # async on_result path) never observes a station that's
-                # already "fired" but still shows "unreached".
-                self.tracker.mark_pending(slot_id, station.id)
+                # already "fired" but still shows "unreached". part_id
+                # passed through (spec13 #1) so a stale call for a part
+                # that's since left this slot is dropped rather than
+                # silently overwriting whatever's here now.
+                self.tracker.mark_pending(slot_id, station.id, part_id=record.assign_part_id)
                 self.station_registry.fire_station(station.id, slot_id=slot_id, part_id=record.assign_part_id)
 
         zeromq.publish_ring_state(self.tracker, revolutions=self.tracker.revolutions)
