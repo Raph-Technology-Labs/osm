@@ -27,7 +27,7 @@ const AppRoutes = () => {
       >
         <Route path="/" element={<DashboardPage />} />
         <Route path="/part-selection" element={<PartSelectionPage />} />
-        <Route path="/inspection/:sessionId" element={<InspectionPage />} />
+        <Route path="/inspection" element={<InspectionPage />} />
         <Route path="/part-details" element={<PlaceholderPage title="Part Details" />} />
         <Route path="/add-part" element={<PlaceholderPage title="Add New Part" />} />
         <Route path="/health-check" element={<HealthCheckPage />} />

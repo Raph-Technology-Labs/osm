@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Box, Chip, Typography, Paper, CircularProgress, Divider } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 
-// import MainLayout from "../layouts/MainLayout";
 import api from "../api/axios";
 import { toTitleCase } from "../utils/formatLabel";
 

@@ -4,8 +4,6 @@ import PhoneIcon from "@mui/icons-material/Phone";
 import LocationOnIcon from "@mui/icons-material/LocationOn";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 
-import MainLayout from "../layouts/MainLayout";
-
 const CONTACT_CARDS = [
   {
     Icon: EmailIcon,
@@ -44,7 +42,11 @@ const CONTACT_CARDS = [
 
 const TechnicalSupport = () => {
   return (
-    <MainLayout title="Technical Support">
+    <>
+      <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+        Technical Support
+      </Typography>
+
       <Box sx={{ maxWidth: 1200, mx: "auto" }}>
         <Typography variant="body2" sx={{ color: "text.secondary", mb: 3 }}>
           Reach out to our team through any of the channels below.
@@ -166,7 +168,7 @@ const TechnicalSupport = () => {
           ))}
         </Box>
       </Box>
-    </MainLayout>
+    </>
   );
 };
 

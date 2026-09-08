@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { Box, Typography, Button, Paper, Stack, CircularProgress, Snackbar, Alert } from "@mui/material";
 
-// import MainLayout from "../layouts/MainLayout";
 import api from "../api/axios";
 import { toTitleCase } from "../utils/formatLabel";
 

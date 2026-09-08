@@ -13,7 +13,6 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useTheme } from "@mui/material/styles";
 
-import MainLayout from "../layouts/MainLayout";
 import api from "../api/axios";
 
 const PartSelectionPage = () => {

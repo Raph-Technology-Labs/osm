@@ -5,11 +5,16 @@ import Sidebar from "../components/Sidebar";
 // noScroll: for pages meant to be installed as a fixed factory display
 // (the Inspection page) -- fills exactly one viewport, no page-level
 // scrollbar, content inside is responsible for fitting/shrinking itself.
-const MainLayout = ({ title, children, noScroll = false }) => {
+const MainLayout = ({ title, children, noScroll: noScrollProp = false }) => {
   const navigate = useNavigate();
   const location = useLocation();
 
   const sessionActive = location.pathname.startsWith("/inspection");
+  // Inspection is the one page that needs the full-viewport, no-page-scroll
+  // layout -- derived from the route the same way sessionActive is, since
+  // the shared route-level <MainLayout /> (see AppRoutes.jsx) is a single
+  // static instance and can't take a different noScroll prop per page.
+  const noScroll = noScrollProp || sessionActive;
 
   return (
     <Box
