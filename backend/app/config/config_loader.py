@@ -187,22 +187,34 @@ class ExitStation(BaseModel):
 
 
 class RejectStation(BaseModel):
-    """The reject decision checkpoint (CLAUDE.md Rule 3: evaluated at R1,
-    never at Exit). Deliberately has NO cmd_reg/ack_reg yet -- unlike the
-    inert app/config/machine_config.example.yaml sketch, this build has no
-    wired reject actuator (REJECT_CMD, register 40009, stays unwired).
-    Real PLC actuation + ACK/timeout escalation (Rule 4) is separate future
-    work; today this only mutates ring state (IndexerSlotTracker
-    .transition_r1), nothing physical happens yet.
+    """The reject decision checkpoint (CLAUDE.md Rule 3: evaluated at the
+    reject station itself, never at Exit). Deliberately has NO cmd_reg/
+    ack_reg yet -- unlike the inert app/config/machine_config.example.yaml
+    sketch, this build has no wired reject actuator (REJECT_CMD, register
+    40009, stays unwired). Real PLC actuation + ACK/timeout escalation
+    (Rule 4) is separate future work; today this only mutates ring state
+    (IndexerSlotTracker.transition_reject), nothing physical happens yet.
 
-    enabled=False is commissioning mode: NOK parts ride through R1
-    untouched and get resolved at Exit instead -- Exit's "everything past
-    here already passed" guarantee only holds when this is True."""
+    enabled=False is commissioning mode: NOK parts ride through this
+    station untouched and get resolved at Exit instead -- Exit's
+    "everything past here already passed" guarantee only holds when every
+    configured reject station is enabled.
+
+    watches (spec11 Part 2, dual reject routing): which inspection
+    station(s)' nok verdict this station acts on. None (the default) means
+    "watch every inspection station" -- the original, pre-Part-2 single-
+    reject-station behavior (any_station_nok), preserved exactly so
+    existing single-reject configs (rubber_big, rubber_small) need no
+    change. A part failing a station NOT in this reject station's watches
+    rides through it untouched and is caught by whichever later reject
+    station (if any) does watch that station, or falls through to Exit's
+    own any_station_nok() fallback if none does."""
     id: str
     name: str
     type: Literal["reject"] = "reject"
     station_offset_pulses: int
     enabled: bool = True
+    watches: Optional[List[str]] = None
 
 
 Station = Annotated[Union[InspectionStation, RejectStation, ExitStation], Field(discriminator="type")]
@@ -419,31 +431,45 @@ class ResolvedMachineConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def at_most_one_reject_station(self):
-        rejects = [s for s in self.stations if s.type == "reject"]
-        if len(rejects) > 1:
-            raise ValueError(f"stations[] must contain at most one type: reject entry, found {len(rejects)}")
+    def reject_watches_reference_real_stations(self):
+        """spec11 Part 2 (dual reject routing) -- a RejectStation.watches
+        entry that doesn't match any real inspection station id is a config
+        typo that would otherwise load cleanly and just silently never
+        fire (any_watched_station_nok() only ever sees nok states for
+        stations that actually exist in station_states). Same "catch the
+        typo at load time" spirit as validate_camera_refs above."""
+        inspection_ids = {s.id for s in self.inspection_stations()}
+        for reject in (s for s in self.stations if s.type == "reject"):
+            if reject.watches is None:
+                continue
+            unknown = set(reject.watches) - inspection_ids
+            if unknown:
+                raise ValueError(
+                    f"reject station {reject.id!r}.watches references unknown "
+                    f"inspection station(s): {unknown}"
+                )
         return self
 
     @model_validator(mode="after")
     def reject_before_exit(self):
         """CLAUDE.md Critical Rule 3: the reject decision is evaluated at
-        R1, never at Exit -- that guarantee only holds if R1 physically
-        sits before Exit on the ring. Nothing previously checked this;
-        found in spec12's code review as a config typo that would load and
-        validate cleanly while silently violating Rule 3 at runtime."""
-        reject = self.reject_station()
-        if reject is None:
-            return self
+        a reject station, never at Exit -- that guarantee only holds if
+        EVERY configured reject station physically sits before Exit on the
+        ring (spec11 Part 2 generalized this from "the one reject station"
+        to "every reject station" -- multiple are now valid). Nothing
+        previously checked even the single-station case; found in spec12's
+        code review as a config typo that would load and validate cleanly
+        while silently violating Rule 3 at runtime."""
         exit_st = self.exit_station()
-        if reject.station_offset_pulses >= exit_st.station_offset_pulses:
-            raise ValueError(
-                f"reject station {reject.id!r} (station_offset_pulses="
-                f"{reject.station_offset_pulses}) must be strictly before the exit "
-                f"station {exit_st.id!r} (station_offset_pulses="
-                f"{exit_st.station_offset_pulses}) in ring order -- CLAUDE.md Rule 3 "
-                f"requires the reject decision to be evaluated before Exit"
-            )
+        for reject in (s for s in self.stations if s.type == "reject"):
+            if reject.station_offset_pulses >= exit_st.station_offset_pulses:
+                raise ValueError(
+                    f"reject station {reject.id!r} (station_offset_pulses="
+                    f"{reject.station_offset_pulses}) must be strictly before the exit "
+                    f"station {exit_st.id!r} (station_offset_pulses="
+                    f"{exit_st.station_offset_pulses}) in ring order -- CLAUDE.md Rule 3 "
+                    f"requires the reject decision to be evaluated before Exit"
+                )
         return self
 
     def inspection_stations(self) -> List[InspectionStation]:
@@ -455,11 +481,20 @@ class ResolvedMachineConfig(BaseModel):
                 return s
         raise ValueError("no type: exit station found")  # unreachable, exactly_one_exit_station enforces this
 
-    def reject_station(self) -> Optional[RejectStation]:
-        for s in self.stations:
-            if s.type == "reject":
-                return s
-        return None
+    def reject_stations(self) -> List[RejectStation]:
+        """Every configured reject station (spec11 Part 2: zero, one, or
+        more -- the old at_most_one_reject_station cap is gone), sorted by
+        station_offset_pulses ascending (ring order). Callers that iterate
+        this to arm/fire pulse-precise reject targets (StationDispatcher
+        ._tick_real) depend on this order: it's what guarantees the
+        PHYSICALLY-FIRST eligible reject station always wins the race to
+        claim a slot in _pending_reject_targets when two reject stations'
+        watches overlap, regardless of the order they happen to be listed
+        in stations[] in the YAML."""
+        return sorted(
+            (s for s in self.stations if s.type == "reject"),
+            key=lambda s: s.station_offset_pulses,
+        )
 
     def cameras(self) -> Dict[str, CameraConfig]:
         """All cameras across all inspection stations, keyed by camera_id --

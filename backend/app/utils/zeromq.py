@@ -107,7 +107,7 @@ def publish_ring_state(tracker, revolutions: int) -> None:
             "entry_slot_id": tracker._entry_slot_id,
             "ok_total": tracker.ok_total,
             "nok_total": tracker.nok_total,
-            "r1_removed": tracker.r1_removed,
+            "reject_removed": tracker.reject_removed,
             "revolutions": revolutions,
         })
     except (TypeError, ValueError):

@@ -32,15 +32,20 @@ Per-tick model, matching docs/specs/09_system_simulator.html's step():
      passing slot_id/part_id through so the async inference result can be
      written back onto the right SlotRecord.station_states entry (see
      IndexerSlotTracker.apply_station_result).
-  5. The reject station (r1, if configured): IndexerSlotTracker
-     .transition_r1() -- removes the part (free_slot + nok_total++) the
-     instant ANY inspection station has reported nok, even if others are
-     still unreached/pending; a no-op passthrough otherwise (disabled, or
-     nothing nok yet) so the part continues to exit.
+  5. Each reject station (zero, one, or more -- spec11 Part 2 added dual
+     reject routing): IndexerSlotTracker.transition_reject() -- removes
+     the part (free_slot + nok_total++) the instant a station THIS reject
+     station watches has reported nok (any_watched_station_nok(); watches
+     =None means "watch every inspection station," the original single-
+     reject-station behavior), even if others are still unreached/pending;
+     a no-op passthrough otherwise (disabled, nothing watched-and-nok yet,
+     or the failing station isn't one this particular reject station
+     watches) so the part continues on toward the next reject station (if
+     any watches its failure) or exit.
   6. The exit station: IndexerSlotTracker.transition_exit() -- frees the
      slot and counts it into ok_total (every station resolved ok) or
-     nok_total (anything else -- either r1 disabled and a nok slipped
-     through, or a station's async result hadn't landed in time, both
+     nok_total (anything else -- either no enabled/watching reject station
+     caught it, or a station's async result hadn't landed in time, both
      logged distinctly). free_slot() clears assign_part_id, and once the
      ring rotates that same physical index back around to ENTRY, step 2 can
      assign a new part into it again -- this is the actual mechanism by
@@ -65,7 +70,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from app.utils import zeromq
 
@@ -133,15 +138,41 @@ class StationDispatcher:
             self._last_raw_pulse_count: Optional[int] = None
             self._last_part_sensor_state = False
             # slot_id -> target_fire_pulse (monotonic space), armed the
-            # instant any inspection station reports nok for that slot.
+            # instant a watched inspection station reports nok for that
+            # slot. Deliberately keyed by slot_id ALONE, shared across every
+            # reject station (spec11 Part 2 can have more than one) -- a
+            # physical slot must only ever be claimed by ONE reject station
+            # at a time (once freed, another reject station firing on it
+            # would be acting on a phantom/wrong part). _arm_reject_targets'
+            # own `if slot_id in self._pending_reject_targets: continue`
+            # guard is what enforces that; _tick_real iterates
+            # reject_stations() in ring order (sorted by
+            # station_offset_pulses) specifically so that if two reject
+            # stations' watches ever overlap, the PHYSICALLY-FIRST one
+            # always wins the race to claim a slot, never whichever happens
+            # to be listed first in the YAML -- see
+            # test_dispatcher_real_mode.py's overlapping-watches tests.
             self._pending_reject_targets: Dict[int, int] = {}
-            # slot_id -> pulse_count_at_detection, recorded once a slot's
-            # reject target is found already-passed at arm time (see
-            # _arm_reject_targets) so the same occupant isn't re-logged
-            # every tick -- keyed by detection pulse, not just slot_id, so
-            # a later, different occupant of the same physical slot index
-            # is re-evaluated fresh rather than silently staying skipped.
-            self._reject_target_skipped: Dict[int, int] = {}
+            # slot_id -> the RejectStation object that actually armed this
+            # target (spec11 Part 2). _fire_crossed_reject_targets() reads
+            # this to fire/transition using the SAME station whose
+            # .enabled/.watches determined eligibility when it was armed --
+            # not whichever reject station's loop iteration happens to
+            # notice the crossing, which could be a different one entirely
+            # once more than one reject station exists.
+            self._pending_reject_armed_by: Dict[int, object] = {}
+            # (reject_station_id, slot_id) -> pulse_count_at_detection,
+            # recorded once THAT reject station's target for that occupant
+            # is found already-passed at arm time (see _arm_reject_targets)
+            # so the same occupant isn't re-logged every tick. Keyed
+            # per-reject-station (spec11 Part 2), NOT just slot_id: one
+            # reject station missing its (earlier) window does not mean a
+            # later reject station has also missed its (later) window --
+            # each must get its own independent chance. Also keyed by
+            # detection pulse (not just slot_id) so a later, different
+            # occupant of the same physical slot index is re-evaluated
+            # fresh rather than silently staying skipped.
+            self._reject_target_skipped: Dict[Tuple[str, int], int] = {}
             # For converting a ms delay into a pulse count at the real,
             # currently-measured rotation rate (never from speed_scale,
             # which only affects _tick_sim -- see _ms_to_pulses()).
@@ -210,7 +241,13 @@ class StationDispatcher:
                 log.info("Part %r reached exit station %s (slot %d)", record.assign_part_id, station.id, slot_id)
                 self.tracker.transition_exit(slot_id)
             elif station.type == "reject":
-                self.tracker.transition_r1(slot_id, enabled=station.enabled)
+                # This per-station loop already naturally handles multiple
+                # reject stations (spec11 Part 2) with no restructuring --
+                # it fires once per reject-type entry in resolved_config
+                # .stations as the ring rotates each one into position, in
+                # whatever order they're configured, each independently
+                # checking only its own .watches.
+                self.tracker.transition_reject(slot_id, station)
             else:
                 # Part physically arrived at this inspection station's
                 # position -- unreached -> pending, then fire the cameras.
@@ -320,11 +357,15 @@ class StationDispatcher:
                 self.tracker.mark_pending(slot_id, station.id)
                 self.station_registry.fire_station(station.id, slot_id=slot_id, part_id=record.assign_part_id)
 
-        # -- 4. Reject: pulse-precise, not slot-changed.
-        reject_station = self.resolved_config.reject_station()
-        if reject_station is not None and reject_station.enabled:
+        # -- 4. Reject: pulse-precise, not slot-changed. reject_stations()
+        # is already sorted ring-order (station_offset_pulses ascending) --
+        # see its own docstring for why that order matters when two reject
+        # stations' watches overlap (spec11 Part 2).
+        for reject_station in self.resolved_config.reject_stations():
+            if not reject_station.enabled:
+                continue
             self._arm_reject_targets(reject_station)
-            self._fire_crossed_reject_targets(reject_station, registers)
+        self._fire_crossed_reject_targets(registers)
 
         zeromq.publish_ring_state(self.tracker, revolutions=self.tracker.revolutions)
         self._schedule_tick()
@@ -368,12 +409,31 @@ class StationDispatcher:
         self.tracker.on_part_entered(pulse_count_at_detection, part_id)
 
     def _arm_reject_targets(self, reject_station) -> None:
-        """Computes target_fire_pulse once per slot, the instant any
-        inspection station reports nok for it -- reusing tracker's existing
-        any_station_nok() rather than reimplementing that check. Checked
-        every tick across every in-flight slot (not just when the reject
-        station's own slot_id changes), since a nok can land asynchronously
-        at any point in the rotation, independent of ring position."""
+        """Computes target_fire_pulse once per slot, the instant a station
+        this reject station watches reports nok for it -- reusing
+        tracker's any_watched_station_nok() rather than reimplementing
+        that check. Checked every tick across every in-flight slot (not
+        just when the reject station's own slot_id changes), since a nok
+        can land asynchronously at any point in the rotation, independent
+        of ring position.
+
+        Called once per configured, enabled reject station each tick
+        (spec11 Part 2), in ring order (_tick_real iterates
+        reject_stations(), sorted by station_offset_pulses). The
+        `if slot_id in self._pending_reject_targets: continue` guard below
+        is a global, cross-reject-station lock on that slot: once ANY
+        reject station successfully arms a slot, every other reject
+        station's call this tick (and every tick after, until the slot is
+        freed) sees it already claimed and skips it outright. Combined
+        with ring-order iteration, this guarantees that if two reject
+        stations' watches ever overlap in a future config, the
+        PHYSICALLY-FIRST eligible one always wins the claim -- never
+        whichever happens to run second and would otherwise silently
+        overwrite the first one's (earlier, correct) target with its own
+        (later) one. See test_dispatcher_real_mode.py's
+        test_overlapping_watches_* tests, which exercise this directly
+        rather than relying on today's specific station layout never
+        overlapping."""
         indexer = self.resolved_config.indexer
         # Ring-wide (not per-station), live-editable directly in
         # machine_config.yaml's plc.sim: block -- per explicit instruction
@@ -391,9 +451,10 @@ class StationDispatcher:
                 continue
             if record.pulse_count_at_detection is None:
                 continue  # entered before real-mode entry detection was wired up -- can't compute a target
-            if self._reject_target_skipped.get(slot_id) == record.pulse_count_at_detection:
-                continue  # already logged as missed for this exact occupant -- don't spam every tick
-            if not self.tracker.any_station_nok(slot_id):
+            skip_key = (reject_station.id, slot_id)
+            if self._reject_target_skipped.get(skip_key) == record.pulse_count_at_detection:
+                continue  # already logged as missed for THIS reject station, this exact occupant -- don't spam every tick
+            if not self.tracker.any_watched_station_nok(slot_id, reject_station.watches):
                 continue
 
             corrected_detection = (
@@ -409,50 +470,76 @@ class StationDispatcher:
 
             if target_fire_pulse < self._real_accumulated_pulses:
                 # The nok verdict landed so late the physical part has
-                # already passed the reject nozzle -- arming this target
-                # now would fire on whatever OTHER part currently sits at
-                # the nozzle, not this one (found in review, 2026-09-08).
-                # Don't arm it: firing on the wrong part is worse than not
-                # firing at all. This part rides through un-rejected --
+                # already passed THIS reject station's nozzle -- arming it
+                # now would fire on whatever OTHER part currently sits
+                # there, not this one (found in review, 2026-09-08). Don't
+                # arm it: firing on the wrong part is worse than not firing
+                # at all. This part rides through THIS reject station
+                # un-rejected -- a later reject station (spec11 Part 2)
+                # that also watches this occupant's failing inspection
+                # station still gets its own independent chance (separate
+                # skip-tracking, keyed per reject station, see __init__'s
+                # comment on _reject_target_skipped), and
                 # transition_exit()'s own any_station_nok() fallback still
-                # catches it as nok_total at exit, same as today's
-                # r1-disabled commissioning path, so it's still correctly
-                # tallied as NOK, just not physically discarded.
+                # catches it as nok_total at exit either way, same as
+                # today's disabled-reject-station commissioning path -- so
+                # it's still correctly tallied as NOK, just not physically
+                # discarded at this particular station.
                 log.error(
-                    "reject target for slot %d (part %r) already passed by the "
-                    "time it was armed: target_fire_pulse=%d, current "
+                    "reject station %s: target for slot %d (part %r) already passed by "
+                    "the time it was armed: target_fire_pulse=%d, current "
                     "accumulated_pulses=%d (%d pulses late) -- nok verdict "
                     "arrived too slowly for pulse-precise rejection; skipping "
                     "fire rather than actuating on whatever part is now at the "
-                    "reject nozzle. Part will still be tallied nok at exit.",
-                    slot_id, record.assign_part_id, target_fire_pulse,
+                    "reject nozzle. A later reject station watching the same "
+                    "failure (if any) still gets its own chance; otherwise the "
+                    "part will still be tallied nok at exit.",
+                    reject_station.id, slot_id, record.assign_part_id, target_fire_pulse,
                     self._real_accumulated_pulses,
                     self._real_accumulated_pulses - target_fire_pulse,
                 )
-                self._reject_target_skipped[slot_id] = record.pulse_count_at_detection
+                self._reject_target_skipped[skip_key] = record.pulse_count_at_detection
                 continue
 
             self._pending_reject_targets[slot_id] = target_fire_pulse
+            self._pending_reject_armed_by[slot_id] = reject_station
 
-    def _fire_crossed_reject_targets(self, reject_station, registers) -> None:
+    def _fire_crossed_reject_targets(self, registers) -> None:
         """Fires reject_cmd for every pending target the ring has now
         reached or passed. Fire-and-immediately-clear, not hold-then-clear
         (explicit instruction, 2026-09-08): the PLC generates the actual
         pulse width itself, so the PC's job is just to set reject_cmd and
-        clear it right back down, not time a hold."""
+        clear it right back down, not time a hold.
+
+        Called once per tick, after every enabled reject station has had a
+        chance to arm (spec11 Part 2) -- NOT once per reject station, since
+        this scans the one shared _pending_reject_targets dict regardless.
+        Each crossed slot fires/transitions using _pending_reject_armed_by
+        [slot_id], the SPECIFIC reject station that armed it, not whichever
+        reject station's config happened to be passed in -- using the
+        wrong one here would re-check .watches against a station it was
+        never armed for and could silently no-op transition_reject() even
+        though the physical reject_cmd register was already written,
+        leaving a freed-in-the-real-world part still marked in-flight in
+        the tracker.
+
+        reject_cmd is a single, ring-wide register (RegisterMapConfig) --
+        every reject station currently shares it (spec11's own scope
+        explicitly excludes real reject-actuator wiring). A machine with
+        genuinely separate physical actuators per reject station would
+        need per-station command registers; tracked as a follow-up, not
+        needed for anything exercised today (sim mode, or real mode
+        against a single physical actuator)."""
         crossed = [
             slot_id for slot_id, target in self._pending_reject_targets.items()
             if self._real_accumulated_pulses >= target
         ]
         for slot_id in crossed:
             del self._pending_reject_targets[slot_id]
+            armed_by = self._pending_reject_armed_by.pop(slot_id)
             self.plc_client.write_register(registers.reject_cmd, 1)
             self.plc_client.write_register(registers.reject_cmd, 0)
-            # spec11 hasn't landed (paused, nothing implemented) -- this is
-            # the correct current method name. Flag: if spec11's later
-            # transition_r1 -> transition_reject(slot_id, reject_station)
-            # rename lands, this call site needs updating too.
-            self.tracker.transition_r1(slot_id, enabled=reject_station.enabled)
+            self.tracker.transition_reject(slot_id, armed_by)
 
     def stop(self) -> None:
         """Stops AND drains (spec13 #6, found missing in spec12's code

@@ -58,6 +58,7 @@ class FakeRejectStation:
     type: str = "reject"
     enabled: bool = True
     station_offset_pulses: int = 0
+    watches: Optional[List[str]] = None  # spec11 Part 2 -- None means "watch every inspection station"
 
 
 @dataclass
@@ -75,11 +76,15 @@ class FakeRealResolvedConfig:
     def inspection_stations(self):
         return [s for s in self.stations if s.type == "inspection"]
 
-    def reject_station(self):
-        for s in self.stations:
-            if s.type == "reject":
-                return s
-        return None
+    def reject_stations(self):
+        # Real ResolvedMachineConfig.reject_stations() sorts by
+        # station_offset_pulses (ring order) -- mirrored here since
+        # _tick_real's overlapping-watches safety depends on that order,
+        # not on YAML/list declaration order.
+        return sorted(
+            (s for s in self.stations if s.type == "reject"),
+            key=lambda s: s.station_offset_pulses,
+        )
 
 
 class FakeStationRegistry:
@@ -113,18 +118,30 @@ def make_real_dispatcher(
     n_slots=10,
     encoder_cpr=100,
     reject_station: Optional[FakeRejectStation] = None,
+    reject_stations: Optional[List[FakeRejectStation]] = None,
+    inspection_ids=("s1",),
     indexer: Optional[FakeIndexerConfig] = None,
     plc: Optional[FakeRealPlc] = None,
 ):
-    stations = [FakeInspectionStation(id="s1")]
-    if reject_station is not None:
-        stations.append(reject_station)
+    # reject_stations (plural, spec11 Part 2) takes precedence; reject_station
+    # (singular) stays as sugar for the common single-reject-station case so
+    # every pre-Part-2 test call site here needs no change.
+    if reject_stations is not None:
+        rejects = list(reject_stations)
+    elif reject_station is not None:
+        rejects = [reject_station]
+    else:
+        rejects = []
+
+    stations = [FakeInspectionStation(id=sid) for sid in inspection_ids] + rejects
     config = FakeRealResolvedConfig(stations, indexer=indexer, plc=plc)
+    offsets = {sid: 0 for sid in inspection_ids}
+    offsets.update({r.id: 0 for r in rejects})
     tracker = IndexerSlotTracker(
         n_slots=n_slots,
         encoder_cpr=encoder_cpr,
-        station_pulse_offsets={"s1": 0} if reject_station is None else {"s1": 0, "r1": 0},
-        inspection_station_ids=["s1"],
+        station_pulse_offsets=offsets,
+        inspection_station_ids=list(inspection_ids),
     )
     registry = FakeStationRegistry()
     plc_client = FakePlcClient()
@@ -231,7 +248,7 @@ def test_wraparound_crossing_between_detection_and_fire():
     assert (REJECT_CMD_REG, 1) in plc.writes
     assert (REJECT_CMD_REG, 0) in plc.writes
     assert tracker.get_slot(slot_index).assign_part_id is None
-    assert tracker.r1_removed == 1
+    assert tracker.reject_removed == 1
 
 
 def test_speed_scale_change_does_not_corrupt_pending_target():
@@ -327,6 +344,108 @@ def test_disabled_reject_station_never_arms_or_fires():
     assert dispatcher._pending_reject_targets == {}
     assert plc.writes == []
     assert tracker.get_slot(0).assign_part_id is not None  # untouched, rides through to exit
+
+
+# --- spec11 Part 2 (dual reject routing): overlapping-watches safety ---
+#
+# Today's actual configs never give two reject stations overlapping
+# watches: lists, but nothing in the schema forbids it, and _arm_reject_
+# targets' cross-reject-station guards only matter AT ALL when it happens.
+# These tests construct that overlap directly so the mechanism itself is
+# proven safe, not just "safe because today's specific layout happens not
+# to exercise it."
+
+def test_overlapping_watches_does_not_overwrite_the_pending_target():
+    r1 = FakeRejectStation(id="r1", station_offset_pulses=30, watches=["s1"])
+    r2 = FakeRejectStation(id="r2", station_offset_pulses=80, watches=["s1"])  # overlaps r1 on s1
+    dispatcher, tracker, _plc = make_real_dispatcher(reject_stations=[r1, r2])
+
+    tracker.on_part_entered(5, part_id="A")  # slot 0, pulse_count_at_detection=5
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    dispatcher._arm_reject_targets(r1)
+    dispatcher._arm_reject_targets(r2)  # must NOT overwrite r1's claim with 5+80=85
+
+    assert dispatcher._pending_reject_targets[0] == 5 + 30  # r1's target, unmodified
+    assert dispatcher._pending_reject_armed_by[0] is r1
+
+
+def test_overlapping_watches_physically_first_station_wins_regardless_of_declared_order():
+    r1 = FakeRejectStation(id="r1", station_offset_pulses=30, watches=["s1"])
+    r2 = FakeRejectStation(id="r2", station_offset_pulses=80, watches=["s1"])
+    # Declared r2-before-r1 -- reject_stations() must still process them in
+    # ring order (by station_offset_pulses), not declaration order.
+    dispatcher, tracker, _plc = make_real_dispatcher(reject_stations=[r2, r1])
+
+    tracker.on_part_entered(5, part_id="A")
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    for rs in dispatcher.resolved_config.reject_stations():
+        dispatcher._arm_reject_targets(rs)
+
+    assert dispatcher._pending_reject_targets[0] == 5 + 30  # r1 (physically first), never r2
+    assert dispatcher._pending_reject_armed_by[0] is r1
+
+
+def test_overlapping_watches_fires_using_the_armer_not_whichever_station_is_checked_last(monkeypatch):
+    # The dangerous version of this bug: if firing used whichever reject
+    # station's loop iteration happened to notice the crossing (instead of
+    # whichever one actually armed it), and that station's .watches
+    # didn't happen to match, transition_reject() would silently no-op
+    # even though the physical reject_cmd register was already written --
+    # a part physically discarded but the tracker still believes it's
+    # in-flight.
+    r1 = FakeRejectStation(id="r1", station_offset_pulses=0, watches=["s1"])
+    r2 = FakeRejectStation(id="r2", station_offset_pulses=50, watches=["s1"])
+    dispatcher, tracker, plc = make_real_dispatcher(reject_stations=[r2, r1])  # declared out of ring order
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()  # part enters at accumulated=5, slot 0
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)  # nok -- both r1 and r2 watch s1
+
+    calls = []
+    real_transition_reject = tracker.transition_reject
+
+    def spy(slot_id, reject_station):
+        calls.append(reject_station.id)
+        return real_transition_reject(slot_id, reject_station)
+
+    tracker.transition_reject = spy
+
+    plc.queue(PULSE_COUNT_REG, [5])  # flat -- r1's target (0+5=5) == accumulated(5): arms AND fires this tick
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert calls == ["r1"]  # never r2, even though r2 also watches s1
+    assert tracker.get_slot(0).assign_part_id is None
+    assert tracker.reject_removed == 1
+
+
+def test_overlapping_watches_one_stations_missed_window_does_not_block_a_laters_chance():
+    # r1 (physically first) misses its window (nok verdict arrived too
+    # late) -- r2 (physically later, also watching s1) must still get its
+    # own independent chance to arm the SAME occupant, not be silently
+    # skipped just because r1 already logged a miss for it.
+    r1 = FakeRejectStation(id="r1", station_offset_pulses=5, watches=["s1"])
+    r2 = FakeRejectStation(id="r2", station_offset_pulses=50, watches=["s1"])
+    dispatcher, tracker, _plc = make_real_dispatcher(reject_stations=[r1, r2])
+
+    tracker.on_part_entered(5, part_id="A")  # pulse_count_at_detection=5
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    dispatcher._real_accumulated_pulses = 12  # already past r1's target (5+5=10)
+    dispatcher._arm_reject_targets(r1)  # skips + logs, does NOT arm
+    assert 0 not in dispatcher._pending_reject_targets
+
+    dispatcher._arm_reject_targets(r2)  # r2's target (5+50=55) is still ahead -- gets its own chance
+    assert dispatcher._pending_reject_targets[0] == 55
+    assert dispatcher._pending_reject_armed_by[0] is r2
 
 
 def test_ms_to_pulses_converts_at_the_currently_measured_rate():

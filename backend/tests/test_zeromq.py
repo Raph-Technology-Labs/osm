@@ -33,7 +33,7 @@ class FakeTracker:
         self._entry_slot_id = 0
         self.ok_total = 0
         self.nok_total = 0
-        self.r1_removed = 0
+        self.reject_removed = 0
 
 
 def test_publish_ring_state_broadcasts_valid_snapshot(monkeypatch):

@@ -7,7 +7,7 @@ station_slot_id() to decide when to fire cameras and rejects. Formulas follow
 the project's indexer-ring-math skill.
 
 Slot lifecycle (SlotRecord.status): EMPTY -> LOADED (on_part_entered) ->
-EMPTY again (transition_r1 or transition_exit, whichever actually
+EMPTY again (transition_reject or transition_exit, whichever actually
 discharges the part). BLANK is a sim-only permanent mark (seed_sim) for a
 slot the feeder deterministically never loads -- distinct from a slot that's
 merely EMPTY-right-now-but-feedable.
@@ -19,9 +19,11 @@ ok/nok (apply_station_result, called once that station's cameras have all
 reported back). Each inspection station's state is independent -- a part
 can be "ok at s1, still pending at s2" simultaneously; there is no single
 whole-slot OK/NOK, only what's derived from station_states:
-  - any_station_nok(slot_id): true the instant ANY station reports nok,
-    even while others are still unreached/pending -- this is what gates r1
-    (reject on the first sign of a problem, don't wait for the rest).
+  - any_station_nok(slot_id) / any_watched_station_nok(slot_id, watches):
+    true the instant ANY (or any WATCHED, spec11 Part 2) station reports
+    nok, even while others are still unreached/pending -- this is what
+    gates a reject station (reject on the first sign of a problem it
+    cares about, don't wait for the rest).
   - all_stations_ok(slot_id): true only once EVERY station has resolved ok
     -- this is what gates exit (accept only once everything has cleared).
 Matches docs/reference/segment_slot_simulator.html's segState()/allOk()
@@ -29,8 +31,8 @@ model exactly.
 
 Two different call contexts mutate this state, concurrently:
   - Synchronous, tick-driven: StationDispatcher's tick thread calls
-    on_part_entered/mark_pending/transition_r1/transition_exit/tick once
-    per tick.
+    on_part_entered/mark_pending/transition_reject/transition_exit/tick
+    once per tick.
   - Asynchronous, inference-driven: app/inspection_session.py's per-camera
     on_result callbacks (running in station_registry's background capture
     threads) call record_camera_result/apply_station_result whenever a
@@ -154,11 +156,15 @@ class IndexerSlotTracker:
         self.entered_count = 0
         self.exited_count = 0
 
-        # Ring-wide verdict counters (r1/exit discharge bookkeeping -- see
-        # transition_r1/transition_exit below).
+        # Ring-wide verdict counters (reject/exit discharge bookkeeping --
+        # see transition_reject/transition_exit below). reject_removed is a
+        # single ring-wide total across every reject station (spec11 Part
+        # 2 can have more than one) -- not consumed by any frontend code
+        # today (confirmed), so no per-station breakdown was added; a
+        # future need for that is a separate, later change.
         self.ok_total = 0
         self.nok_total = 0
-        self.r1_removed = 0
+        self.reject_removed = 0
 
         # Serializes tick-driven mutation (dispatcher's tick thread) against
         # inference-driven mutation (station_registry's background capture
@@ -442,9 +448,22 @@ class IndexerSlotTracker:
         """True the instant ANY inspection station has reported nok for the
         current occupant, regardless of whether others are still
         unreached/pending -- a real defect doesn't need corroboration from
-        the other stations before it's actionable at r1."""
+        the other stations before it's actionable at a reject station."""
         with self._lock:
             return any(v == STATION_NOK for v in self.slots[slot_id].station_states.values())
+
+    def any_watched_station_nok(self, slot_id: int, watches: Optional[list]) -> bool:
+        """spec11 Part 2 (dual reject routing) -- like any_station_nok(),
+        but scoped to only the given station ids (a reject station's
+        RejectStation.watches). watches=None means "watch every inspection
+        station," delegating to any_station_nok() so a reject station with
+        no watches configured keeps the exact original (pre-Part-2, single-
+        reject-station) behavior."""
+        if watches is None:
+            return self.any_station_nok(slot_id)
+        with self._lock:
+            states = self.slots[slot_id].station_states
+            return any(states.get(sid) == STATION_NOK for sid in watches)
 
     def all_stations_ok(self, slot_id: int) -> bool:
         """True only once EVERY inspection station has resolved ok. A slot
@@ -453,27 +472,36 @@ class IndexerSlotTracker:
             states = self.slots[slot_id].station_states.values()
             return all(v == STATION_OK for v in states)
 
-    def transition_r1(self, slot_id: int, enabled: bool) -> None:
+    def transition_reject(self, slot_id: int, reject_station) -> None:
         """Tick-driven (called from StationDispatcher._tick, synchronous
-        with the ring clock -- NOT from an async on_result callback). No-op
-        unless enabled and any_station_nok(): r1 disabled means NOK parts
-        ride through untouched (commissioning mode, no actuator wired) and
-        get resolved at exit instead (transition_exit's fallback branch)."""
-        if not enabled or not self.any_station_nok(slot_id):
+        with the ring clock -- NOT from an async on_result callback).
+        No-op unless reject_station.enabled and
+        any_watched_station_nok(reject_station.watches): a disabled reject
+        station lets NOK parts ride through untouched (commissioning mode,
+        no actuator wired), and a part failing a station this particular
+        reject station doesn't watch also rides through it untouched --
+        caught by a later reject station that does watch it (spec11 Part
+        2), or falls through to Exit's own any_station_nok() fallback if
+        none does. reject_station is a RejectStation config object (needs
+        only .enabled/.watches), not just an id, so callers don't need a
+        separate station lookup."""
+        if not reject_station.enabled or not self.any_watched_station_nok(slot_id, reject_station.watches):
             return
         self.free_slot(slot_id)
         with self._lock:
             self.nok_total += 1
-            self.r1_removed += 1
+            self.reject_removed += 1
 
     def transition_exit(self, slot_id: int) -> None:
         """Tick-driven. all_stations_ok() -> freed, ok_total+=1. Otherwise
         -> freed, nok_total+=1 -- covers two distinct cases, logged
-        differently: (a) r1 disabled and any_station_nok() is true (the
-        expected fallback-resolution path), or (b) some station is still
-        unreached/pending when the part physically reached exit (the async
-        race this codebase already flags elsewhere as a known, narrow-
-        window limitation) -- fails SAFE to NOK per CLAUDE.md Section 15
+        differently: (a) every reject station that could have caught this
+        is disabled, or none of them watches whatever station actually
+        went nok, and any_station_nok() is true (the expected fallback-
+        resolution path), or (b) some station is still unreached/pending
+        when the part physically reached exit (the async race this
+        codebase already flags elsewhere as a known, narrow-window
+        limitation) -- fails SAFE to NOK per CLAUDE.md Section 15
         ("defaults to NOK, fail-safe not fail-open") rather than silently
         let an unresolved part through as OK."""
         if self.all_stations_ok(slot_id):
@@ -483,7 +511,7 @@ class IndexerSlotTracker:
             return
 
         if self.any_station_nok(slot_id):
-            log.info("transition_exit(slot=%d): NOK (r1 disabled or slot bypassed it)", slot_id)
+            log.info("transition_exit(slot=%d): NOK (no enabled/watching reject station caught it)", slot_id)
         else:
             with self._lock:
                 unresolved = {
