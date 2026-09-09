@@ -11,6 +11,10 @@ import HealthCheckPage from "../pages/HealthCheckPage";
 import DeviceSettingsPage from "../pages/DeviceSettingsPage";
 import TechnicalSupport from "../pages/TechinicalSupport";
 import PlaceholderPage from "../pages/PlaceholderPage";
+import AddNewPartPage from "../pages/AddNewPartPage";
+import RequireSuperAdmin from "../auth/RequireSuperAdmin";
+import RequireAdmin from "../auth/RequireAdmin";
+import ConfigPage from "../pages/ConfigPage";
 
 const AppRoutes = () => {
   return (
@@ -29,9 +33,30 @@ const AppRoutes = () => {
         <Route path="/part-selection" element={<PartSelectionPage />} />
         <Route path="/inspection" element={<InspectionPage />} />
         <Route path="/part-details" element={<PlaceholderPage title="Part Details" />} />
-        <Route path="/add-part" element={<PlaceholderPage title="Add New Part" />} />
+
+        {/* Admin + superadmin only. The backend enforces this too
+            (parts_admin router) — this guard just keeps the page out of
+            an operator's navigation. */}
+        <Route
+          path="/add-part"
+          element={
+            <RequireAdmin>
+              <AddNewPartPage />
+            </RequireAdmin>
+          }
+        />
+
         <Route path="/health-check" element={<HealthCheckPage />} />
         <Route path="/device-settings" element={<DeviceSettingsPage />} />
+
+        <Route
+          path="/config"
+          element={
+            <RequireSuperAdmin>
+              <ConfigPage />
+            </RequireSuperAdmin>
+          }
+        />
         <Route path="/technical-support" element={<TechnicalSupport />} />
       </Route>
 

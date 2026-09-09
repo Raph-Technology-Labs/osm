@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.config_loader import DEFAULT_CONFIG_PATH
-from app.routers import actuators, auth, dashboard, health, inspection, parts
+from app.routers import actuators, auth, dashboard, health, inspection, parts, parts_admin
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -22,6 +22,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(inspection.router, prefix="/api/v1")
+app.include_router(parts_admin.router, prefix="/api/v1")
 app.include_router(parts.router, prefix="/api/v1")
 app.include_router(actuators.router, prefix="/api/v1")
 app.include_router(health.router, prefix="/api/v1")
@@ -78,4 +79,4 @@ def stop_inspection_demo():
 
 @app.get("/")
 def root():
-    return {"message": "SCM Backend Running"}
+    return {"message": "OSM Backend Running"}

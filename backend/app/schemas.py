@@ -16,4 +16,7 @@ class PartOut(BaseModel):
     part_name: str
     part_weight: Optional[float] = None
     dimensions: Optional[dict] = None
-    image: Optional[str] = None
+    # image: Optional[str] = None
+    # Served by GET /parts/{part_id}/image rather than inlined -- a category
+    # listing would otherwise carry every part's photo.
+    has_image: bool = False

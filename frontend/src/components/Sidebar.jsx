@@ -26,6 +26,7 @@ import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import AddCircleOutlinedIcon from "@mui/icons-material/AddCircleOutlined";
 import PlayCircleOutlinedIcon from "@mui/icons-material/PlayCircleOutlined";
+import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
 
 import { useAuth } from "../auth/AuthContext";
 import logo from "../assets/assets/logo/raph-logo.png";
@@ -40,7 +41,7 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
   const navigate = useNavigate();
 
   // real auth — user, role and logout all come from the login response
-  const { user, isAdmin, logout } = useAuth();
+  const { user, isAdmin, isSuperAdmin, logout } = useAuth();
 
   const isNarrow = useMediaQuery(theme.breakpoints.down("md"));
 
@@ -79,11 +80,18 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
     ? user.role.charAt(0).toUpperCase() + user.role.slice(1)
     : "";
 
+  // isAdmin is the "administrator" role alone; superadmin has to be
+  // included explicitly or the highest-privilege user loses the button.
+  const canAddPart = Boolean(isAdmin || isSuperAdmin);
+
   const menuItems = [
     { name: "Dashboard", path: "/", icon: <DashboardIcon /> },
     { name: "Part Details", path: "/part-details", icon: <CategoryIcon /> },
     { name: "Health Check", path: "/health-check", icon: <DevicesOutlinedIcon /> },
     { name: "Device Settings", path: "/device-settings", icon: <SettingsIcon /> },
+    ...(isSuperAdmin
+      ? [{ name: "Configuration", path: "/config", icon: <TuneOutlinedIcon /> }]
+      : []),
   ];
 
   const bottomItems = [
@@ -248,24 +256,36 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
           </Button>
         )}
 
-        {/* Add part — admin only */}
+        {/* Add part — administrator and superadministrator only.
+            The <span> wrappers exist so the tooltip still fires: a disabled
+            MUI button emits no mouse events, so an operator would otherwise
+            get a dead grey button with no reason given. */}
         {collapsed ? (
           <Tooltip
-            title={isAdmin ? "Add part" : "Administrator access required"}
+            title={
+              canAddPart
+                ? sessionActive
+                  ? "Stop the running session first"
+                  : "Add part"
+                : "Administrator access required"
+            }
             placement="right"
           >
             <span>
               <IconButton
-                disabled={!isAdmin || sessionActive}
+                disabled={!canAddPart || sessionActive}
                 onClick={() => goTo("/add-part")}
                 sx={{
                   width: "100%",
                   borderRadius: "5px",
                   mb: 3,
-                  bgcolor: "grey.100",
-                  color: "text.primary",
-                  "&:hover": { bgcolor: "grey.200" },
-                  "&.Mui-disabled": { color: "grey.400" },
+                  bgcolor: "common.black",
+                  color: "common.white",
+                  "&:hover": { bgcolor: "grey.800" },
+                  "&.Mui-disabled": {
+                    bgcolor: "grey.100",
+                    color: "grey.400",
+                  },
                 }}
               >
                 <AddCircleOutlinedIcon />
@@ -273,24 +293,40 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
             </span>
           </Tooltip>
         ) : (
-          <Button
-            fullWidth
-            disabled={!isAdmin || sessionActive}
-            onClick={() => goTo("/add-part")}
-            sx={{
-              bgcolor: "grey.100",
-              color: "text.primary",
-              borderRadius: "5px",
-              py: 1,
-              mb: 3,
-              textTransform: "none",
-              fontWeight: 600,
-              "&:hover": { bgcolor: "grey.200" },
-              "&.Mui-disabled": { color: "grey.400" },
-            }}
+          <Tooltip
+            title={
+              canAddPart
+                ? sessionActive
+                  ? "Stop the running session first"
+                  : ""
+                : "Administrator access required"
+            }
+            placement="right"
           >
-            + Add Part
-          </Button>
+            <span style={{ display: "block" }}>
+              <Button
+                fullWidth
+                disabled={!canAddPart || sessionActive}
+                onClick={() => goTo("/add-part")}
+                sx={{
+                  bgcolor: "common.black",
+                  color: "common.white",
+                  borderRadius: "5px",
+                  py: 1,
+                  mb: 3,
+                  textTransform: "none",
+                  fontWeight: 600,
+                  "&:hover": { bgcolor: "grey.800" },
+                  "&.Mui-disabled": {
+                    bgcolor: "grey.100",
+                    color: "grey.400",
+                  },
+                }}
+              >
+                + Add Part
+              </Button>
+            </span>
+          </Tooltip>
         )}
 
         <Divider sx={{ mb: 2 }} />
