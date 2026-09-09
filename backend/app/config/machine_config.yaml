@@ -6,8 +6,8 @@ machine:
 # controller program (per CLAUDE.md's "ask, don't invent" rule). Validated
 # only against the simulator (backend/services/plc_sim), not real hardware.
 indexer:
-  diameter_mm: 500.0 # CONFIRMED -- real indexer disc diameter (per explicit instruction, 2026-09-08)
-  part_size_mm: 20.0 # CONFIRMED -- real part size (per explicit instruction, 2026-09-08)
+  diameter_mm: 450.0 # CONFIRMED -- real indexer disc diameter (per explicit instruction, 2026-09-08)
+  part_size_mm: 18.0 # CONFIRMED -- real part size (per explicit instruction, 2026-09-08)
   # PLACEHOLDER -- set to 4 per explicit instruction, 2026-09-08. The prior
   # "15% -> 16%" comment here was stale: it was computed against an earlier
   # diameter_mm=450 assumption, not the CONFIRMED diameter_mm=500 above, and
@@ -31,7 +31,7 @@ indexer:
   entry_sensor_mid_offset_pulses: 40 # PLACEHOLDER -- see comment above
 
 plc:
-  ip: "192.168.6.40" # was .41 -- per instrumentation team's sheet
+  ip: "192.168.7.71" # was .41 -- per instrumentation team's sheet
   port: 502
   vendor: integra
   # Single top-level "is this machine running in simulation" switch --
@@ -55,7 +55,7 @@ plc:
     enabled: true
     host: "localhost"
     port: 5502
-    tick_interval_ms: 300 # replaces every station's old source.sim_interval_ms
+    tick_interval_ms: 1000 # replaces every station's old source.sim_interval_ms
     # Randomly seeds which physical slot INDICES are permanently unfed
     # (IndexerSlotTracker.seed_sim) -- raises at config-resolve time if
     # blank > n_slots (n_slots derives from indexer.* above).
@@ -166,7 +166,7 @@ stations:
 
     cameras:
       cam1:
-        ip: "192.168.5.41"
+        ip: "192.168.6.41"
         vendor: lucid # Lucid Arena SDK -- see app/camera/driver_registry.py for supported vendors
         resolution: { x: 1920, y: 1080 }
         fps: 30
@@ -175,7 +175,7 @@ stations:
         strobe_reg: 18 # fire-and-forget CMD, no ACK -- per-camera light, not global
         strobe_capture_delay_ms: 50 # PLACEHOLDER -- real light settle time not yet confirmed with the instrumentation team; not wired to an actual strobe write yet either (see CameraConfig.strobe_capture_delay_ms)
         sim:
-          enabled: true
+          enabled: false
           image_path: "/data/sim/circles/" # black circle on white bg -- contour-measured, not detected by the stock model
 
     pipeline:
@@ -187,24 +187,48 @@ stations:
       # model exists (same caveat as s2's defect model below). Own
       # model_path (not shared from a defect block -- s1 has none).
       measurement:
-        model_path: "/models/pt/yolo11n.pt"
-        model_type: yolo
+        # model_path/model_type commented out -- run_measurement_inference's
+        # AI-locator stage is disabled in code (see measurement.py), pure
+        # OpenCV caliper on the whole frame now. allowed_cameras/
+        # allowed_classes stay required fields on MeasurementConfig even
+        # with the model disabled: allowed_cameras is how
+        # inspection_session.py decides cam1 gets a measurement pipeline at
+        # all (uncommenting it out entirely breaks config load, and even if
+        # it didn't, cam1 would silently get no measurement pipeline).
+        # allowed_classes is otherwise unused while the model stage is off.
+        # model_path: "/models/pt/osm.pt"
+        # model_type: yolo
         allowed_cameras: [cam1]
-        allowed_classes: [rubber_part]
+        allowed_classes: ['Air_5044','Thard_5044','Rim_Cut_5044','Bar_defect_5044']
         method: caliper
         parameters:
           diameter_mm:
-            calibration_factor: 10.5
-            # PLACEHOLDER demo tolerance -- without these, run_measurement_inference()
-            # always defaults passed=True (no upper/lower_limit to check
-            # against), so cam1 could never show NOK. Calibrated against
-            # the actual sim images in data/sim/circles/: circle1/2/3
-            # measure 9.44-10.38mm (pass), the added circle4/5 measure
-            # 12.86mm/6.20mm (fail) -- verified by running the real
-            # measurement pipeline against each file, not guessed.
-            nominal_value: 10.0
-            upper_limit: 10.6
-            lower_limit: 9.2
+            # mm-per-pixel, NOT px-per-mm -- measurement.py does
+            # diameter_mm = diameter_px * calibration_factor (multiply).
+            # Measured against a real cam1 capture of a confirmed-OK part
+            # (2026-09-09, after the camera was repositioned/lowered):
+            # largest contour's caliper diameter = 443.0px, part_size_mm =
+            # 18.0mm (CONFIRMED) -> 18.0/443.0 = 0.040632. NOT fully trusted
+            # yet -- that capture's focus score (variance of Laplacian) was
+            # 110.3 and visibly soft; re-run this calibration once focus is
+            # confirmed sharp, since any blur here directly skews every
+            # diameter_mm reading downstream.
+            calibration_factor: 0.040632
+            # upper_limit/lower_limit are tolerances (+/- from nominal_value),
+            # not absolute bounds -- pass window here is nominal_value -
+            # lower_limit to nominal_value + upper_limit, i.e. 17.5-18.5mm.
+            # nominal_value matches the CONFIRMED real part_size_mm
+            # (indexer.part_size_mm above, 2026-09-08).
+            nominal_value: 18.0
+            upper_limit: 0.5
+            lower_limit: 0.5
+            # PLACEHOLDER -- not a real roundness spec, just set above the
+            # ~0.2mm noise floor measured against the clean data/sim/circles/
+            # images (JPEG/antialiasing edge jitter on an otherwise-perfect
+            # circle already produces ~0.19mm here) so it doesn't false-fail
+            # on that noise alone. Confirm the real max allowed ovality_mm
+            # for this part before trusting this gate on real captures.
+            max_ovality: 0.3
             unit: mm
 
       result:
@@ -229,21 +253,21 @@ stations:
         strobe_capture_delay_ms: 50 # PLACEHOLDER -- see cam1's note above
         sim:
           enabled: true
-          image_path: "/data/sim/cats/" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
+          image_path: "/home/snehal-dev/osm/osm_5044_rimcut_thard_air" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
           # -> OK -- synthetic (no internet access to source a real dog photo), just
           # needs to not trigger the stock model's "cat" class, verified it doesn't.
 
     pipeline:
       defect:
-        model_path: "/models/pt/yolo11n.pt" # stock COCO-pretrained yolo11n -- stand-in until a
+        model_path: "/models/pt/osm.pt" # stock COCO-pretrained yolo11n -- stand-in until a
         # real defect-trained model exists; "cat" is a real COCO class so this
         # is a working detector, not a stub. Swap for the trained defect
         # model when available.
         model_type: yolo
         conf_thresh: 0.3
         allowed_cameras: [cam2]
-        detect_classes: [cat] # everything this model outputs
-        allowed_defects: [cat] # ok/nok decided ONLY on these
+        detect_classes: ['Air_5044','Thard_5044','Rim_Cut_5044','Bar_defect_5044'] # everything this model outputs
+        allowed_defects: ['Air_5044','Thard_5044','Rim_Cut_5044','Bar_defect_5044'] # ok/nok decided ONLY on these
 
       result:
         pass_if: all_cameras_pass

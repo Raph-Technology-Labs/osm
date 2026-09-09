@@ -23,10 +23,20 @@ class DefectConfig(BaseModel):
 
 
 class MeasurementParamConfig(BaseModel):
-    calibration_factor: float = 10.0
+    # mm-per-pixel: measurement.run_measurement_inference does
+    # diameter_mm = diameter_px * calibration_factor. Derive from a real
+    # capture as (known_mm / measured_px), not the other way round.
+    calibration_factor: float = 0.1
     nominal_value: Optional[float] = None
     upper_limit: Optional[float] = None
     lower_limit: Optional[float] = None
+    # Informational only, NOT a pass/fail gate -- pass/fail is size
+    # (nominal_value +/- upper/lower_limit) only. ovality_mm (centroid-radial
+    # spread, see measurement.measure_diameter_px) is still computed and
+    # surfaced in measurement_data/the UI against this value for
+    # diagnostics; real camera edge-jitter noise made an ovality-based gate
+    # reject in-spec parts, so it was removed from passed.
+    max_ovality: Optional[float] = None
     unit: str = "mm"
 
 

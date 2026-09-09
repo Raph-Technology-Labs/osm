@@ -77,10 +77,25 @@ const CameraPlaceholder = ({ cameraId, frame, result }) => {
               </Typography>
             )}
           </Typography>
-          {(measurement.lower_limit != null || measurement.upper_limit != null) && (
-            <Typography variant="caption" sx={{ color: theme.palette.text.secondary }}>
-              tolerance {measurement.lower_limit ?? "—"}–{measurement.upper_limit ?? "—"} {measurement.unit || "mm"} —{" "}
+          {(measurement.resolved_lower != null || measurement.resolved_upper != null) && (
+            <Typography variant="caption" sx={{ color: theme.palette.text.secondary, display: "block" }}>
+              size {measurement.resolved_lower ?? "—"}–{measurement.resolved_upper ?? "—"} {measurement.unit || "mm"} —{" "}
               {measurement.passed ? "within tolerance" : "out of tolerance"}
+            </Typography>
+          )}
+          {measurement.ovality_measured != null && (
+            <Typography
+              variant="caption"
+              sx={{
+                display: "block",
+                color:
+                  measurement.max_ovality != null && measurement.ovality_measured > measurement.max_ovality
+                    ? theme.palette.error.main
+                    : theme.palette.text.secondary,
+              }}
+            >
+              ovality {measurement.ovality_measured.toFixed(2)} {measurement.unit || "mm"}
+              {measurement.max_ovality != null && ` (max ${measurement.max_ovality})`}
             </Typography>
           )}
         </Box>

@@ -156,14 +156,30 @@ def _run_pipeline(
         # param lookup -- not generalizing to other param names here since
         # the pipeline itself doesn't calibrate/check any others yet.
         param = measurement_config.parameters.get("diameter_mm")
+        # upper_limit/lower_limit are tolerances (+/- from nominal), not
+        # absolute bounds -- resolved_upper/resolved_lower are the actual
+        # pass-window edges (nominal +/- them), sent alongside the raw
+        # tolerance values so the UI can show a real "17.5-18.5mm" range
+        # instead of the confusing raw "0.5-0.5mm" deltas. ovality/
+        # max_ovality sent too so a size-in-spec-but-still-NOK part (failed
+        # on roundness, not size) is visible on the Inspection page instead
+        # of just an unexplained NOK badge.
+        resolved_upper = resolved_lower = None
+        if param and param.nominal_value is not None and param.upper_limit is not None and param.lower_limit is not None:
+            resolved_upper = param.nominal_value + param.upper_limit
+            resolved_lower = param.nominal_value - param.lower_limit
         measurement_data = {
             "diameter_mm": {
                 "nominal": param.nominal_value if param else None,
                 "upper_limit": param.upper_limit if param else None,
                 "lower_limit": param.lower_limit if param else None,
+                "resolved_upper": resolved_upper,
+                "resolved_lower": resolved_lower,
                 "measured": result.diameter_mm,
                 "unit": param.unit if param else "mm",
                 "passed": result.passed,
+                "ovality_measured": result.ovality_mm,
+                "max_ovality": param.max_ovality if param else None,
             }
         }
         if defect_result is not None:
@@ -243,7 +259,19 @@ def sim_frame_provider(
             forced_verdict = None
             if sim_verdict_enabled and indexer_tracker is not None and slot_id is not None and defect_config is not None:
                 forced_verdict = indexer_tracker.get_slot(slot_id).forced_verdict
-            return _run_pipeline(frame, defect_config, measurement_config, draw_result, forced_verdict=forced_verdict)
+            try:
+                return _run_pipeline(frame, defect_config, measurement_config, draw_result, forced_verdict=forced_verdict)
+            except Exception:
+                # CLAUDE.md Sec. 15: an uncaught pipeline exception must not
+                # kill this capture thread silently -- on_result (ring
+                # bookkeeping + ZMQ publish) still has to run, defaulting to
+                # NOK, or the slot never gets a result and stays pending
+                # forever.
+                log.error(
+                    f"{camera_id}: pipeline step raised unexpectedly -- defaulting to NOK",
+                    exc_info=True,
+                )
+                return CapturedFrame(frame=frame, is_defect=True, defect_label="pipeline_error")
 
         return provide
 
@@ -295,7 +323,20 @@ def real_frame_provider(
         # here (unlike sim_frame_provider) so a real camera's verdict can
         # never be overridden by sim config, even by accident.
         frame = driver.read_frame()
-        return _run_pipeline(frame, defect_config, measurement_config, draw_result)
+        try:
+            return _run_pipeline(frame, defect_config, measurement_config, draw_result)
+        except Exception:
+            # CLAUDE.md Sec. 15: an uncaught pipeline exception must not
+            # kill this capture thread silently -- on_result (ring
+            # bookkeeping + ZMQ publish) still has to run, defaulting to
+            # NOK, or the slot never gets a result and stays pending
+            # forever. Seen in practice on a BLANK (unfed) slot: no part in
+            # frame -> no fittable contour -> measure_diameter_px raises.
+            log.error(
+                f"{camera_id}: pipeline step raised unexpectedly -- defaulting to NOK",
+                exc_info=True,
+            )
+            return CapturedFrame(frame=frame, is_defect=True, defect_label="pipeline_error")
 
     return provide, driver
 
@@ -358,7 +399,21 @@ class CameraStation:
         self.last_capture_ts = time.time()
         self.last_capture_ok = True
         if self.on_result:
-            self.on_result(self.camera_id, captured, slot_id, part_id)
+            try:
+                self.on_result(self.camera_id, captured, slot_id, part_id)
+            except Exception:
+                # CLAUDE.md Sec. 15: on_result does ring bookkeeping (already
+                # applied by this point, so slot state itself is fine) then
+                # ZMQ publish + DB enqueue -- an exception in the latter
+                # (e.g. an unserializable field) must not silently kill this
+                # thread, or the frontend/DB never hear about this capture's
+                # result at all even though the ring already moved on.
+                log.error(
+                    f"{self.camera_id}: on_result raised unexpectedly (station={self.station_id}, "
+                    f"slot_id={slot_id}, part_id={part_id}) -- result may not have reached the "
+                    f"UI/DB for this capture",
+                    exc_info=True,
+                )
         return captured
 
 

@@ -92,6 +92,17 @@ class LucidCamera(CameraDriver):
             ]
         )
 
+        # Zero the offsets before touching Width/Height: GenICam clamps
+        # Width/Height's writable max to (WidthMax/HeightMax - current
+        # offset), so a nonzero offset left over from a previous session
+        # silently shrinks the max we can set below the sensor's true max
+        # (confirmed against a real TRT023S-M: OffsetY=200 left Height's
+        # max at 1000 instead of HeightMax=1200, so setting Height=1080
+        # failed with SC_ERR_ERROR -1001). Apply the configured ROI offsets
+        # after Width/Height are set to their final values.
+        nodes["OffsetX"].value = 0
+        nodes["OffsetY"].value = 0
+
         nodes["Width"].value = min(self.config.resolution.x, nodes["WidthMax"].value)
         nodes["Height"].value = min(self.config.resolution.y, nodes["HeightMax"].value)
         nodes["OffsetX"].value = self.config.roi.x1
