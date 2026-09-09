@@ -22,22 +22,34 @@ implemented here; this is a tracking doc only, per explicit instruction.
    system will ever support.
 
 2. **Multi-reject-station real-mode firing shares one `reject_cmd`
-   register.** spec11 Part 2 (dual reject routing) added support for
-   multiple `type: reject` stations, each independently armed/fired
-   (`StationDispatcher._arm_reject_targets`/`_fire_crossed_reject_targets`
-   in `app/indexer/dispatcher.py`). `RegisterMapConfig.reject_cmd` is a
-   single, ring-wide register, so every reject station's physical fire
-   command writes the SAME register today. This is a real limitation for
-   a machine with genuinely separate physical actuators per reject
-   station -- deliberately not addressed now, since spec11's own scope
-   explicitly excludes real reject-actuator wiring ("Out of scope: Real
-   reject-actuator wiring (REJECT_CMD/40009) -- still unwired"), and
-   nothing exercised today (sim mode, or real mode against a single
-   physical actuator) needs more than one register. Would need a
-   per-reject-station command register (e.g. `reject_cmd` becoming a
-   `Dict[str, int]` keyed by reject station id, or an explicit
-   `cmd_reg` field on `RejectStation` itself) if/when real multi-actuator
-   hardware is wired up.
+   register -- design note, not a defect.** spec11 Part 2 (dual reject
+   routing) added support for multiple `type: reject` stations, each
+   independently armed/fired (`StationDispatcher._arm_reject_targets`/
+   `_fire_crossed_reject_targets` in `app/indexer/dispatcher.py`).
+   `RegisterMapConfig.reject_cmd` is a single, ring-wide register, and
+   every reject station's physical fire command writing that same
+   register today is **correct and intentional**: every real machine
+   this app talks to has exactly one physical reject actuator, regardless
+   of how many *logical* reject stations a part config declares (e.g.
+   med_3_station's r1/r2 are two software routing decisions against the
+   same one physical blower). This only becomes real work once a config
+   with multiple reject stations actually gets a second physical actuator
+   wired in.
+
+   **Groundwork added now (2026-09-09), since the cost is low today and
+   higher later:** `RejectStation.actuator_reg: Optional[int] = None`.
+   Unset (every existing part config -- rubber_big, rubber_small,
+   med_3_station, continuous_part) keeps writing the shared `reject_cmd`
+   register, unchanged; `_fire_crossed_reject_targets` reads
+   `armed_by.actuator_reg` first, falling back to `registers.reject_cmd`.
+   Confirmed via `test_actuator_reg_unset_uses_the_shared_reject_cmd_register`/
+   `test_actuator_reg_set_routes_firing_to_that_specific_register`
+   (`test_dispatcher_real_mode.py`) and the config-level
+   `test_actuator_reg_defaults_to_none_meaning_use_the_shared_register`/
+   `test_actuator_reg_can_be_set_per_reject_station`
+   (`test_config_loader.py`). When a second physical actuator eventually
+   arrives, wiring it in is a one-line config change (set `actuator_reg`
+   on that reject station), not a schema migration.
 
 3. **`part_sensor`/`pulse_count` are two separate Modbus reads per
    real-mode tick, not batched.** Found in spec12's code review
@@ -53,6 +65,10 @@ implemented here; this is a tracking doc only, per explicit instruction.
    for anything exercised today (sim mode never calls this path at all).
 
 ## Do not
-- Do not implement any of the above as part of landing this doc. This is
-  tracking only, same as spec13's list was before it was picked up as its
-  own follow-up pass.
+- Items #1 and #3 are tracking only -- do not implement them as part of
+  landing this doc, same as spec13's list was before it was picked up as
+  its own follow-up pass.
+- Item #2's groundwork (`actuator_reg`) is implemented, per explicit
+  instruction (2026-09-09) that the cost is low now and higher later.
+  Wiring a second real physical actuator to it is still future work, not
+  done here -- no config sets `actuator_reg` today.

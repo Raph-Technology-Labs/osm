@@ -531,13 +531,14 @@ class StationDispatcher:
         leaving a freed-in-the-real-world part still marked in-flight in
         the tracker.
 
-        reject_cmd is a single, ring-wide register (RegisterMapConfig) --
-        every reject station currently shares it (spec11's own scope
-        explicitly excludes real reject-actuator wiring). A machine with
-        genuinely separate physical actuators per reject station would
-        need per-station command registers; tracked as a follow-up, not
-        needed for anything exercised today (sim mode, or real mode
-        against a single physical actuator)."""
+        Register choice (spec14 followup #2 groundwork): armed_by
+        .actuator_reg if that reject station set one, else the shared,
+        ring-wide RegisterMapConfig.reject_cmd -- correct and intentional
+        as the default, since every real machine this app talks to has
+        exactly one physical reject actuator today regardless of how many
+        logical reject stations spec11 Part 2 lets a config declare.
+        Every existing part config omits actuator_reg and keeps writing
+        reject_cmd, unchanged."""
         crossed = [
             slot_id for slot_id, target in self._pending_reject_targets.items()
             if self._real_accumulated_pulses >= target
@@ -545,8 +546,9 @@ class StationDispatcher:
         for slot_id in crossed:
             del self._pending_reject_targets[slot_id]
             armed_by = self._pending_reject_armed_by.pop(slot_id)
-            self.plc_client.write_register(registers.reject_cmd, 1)
-            self.plc_client.write_register(registers.reject_cmd, 0)
+            reject_reg = armed_by.actuator_reg if armed_by.actuator_reg is not None else registers.reject_cmd
+            self.plc_client.write_register(reject_reg, 1)
+            self.plc_client.write_register(reject_reg, 0)
             self.tracker.transition_reject(slot_id, armed_by)
 
     def stop(self) -> None:

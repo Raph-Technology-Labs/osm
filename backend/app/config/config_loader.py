@@ -188,12 +188,12 @@ class ExitStation(BaseModel):
 
 class RejectStation(BaseModel):
     """The reject decision checkpoint (CLAUDE.md Rule 3: evaluated at the
-    reject station itself, never at Exit). Deliberately has NO cmd_reg/
-    ack_reg yet -- unlike the inert app/config/machine_config.example.yaml
-    sketch, this build has no wired reject actuator (REJECT_CMD, register
-    40009, stays unwired). Real PLC actuation + ACK/timeout escalation
-    (Rule 4) is separate future work; today this only mutates ring state
-    (IndexerSlotTracker.transition_reject), nothing physical happens yet.
+    reject station itself, never at Exit). Deliberately has NO ack_reg
+    yet -- unlike the inert app/config/machine_config.example.yaml
+    sketch, this build has no wired REJECT_ACK. Real PLC actuation +
+    ACK/timeout escalation (Rule 4) is separate future work; today this
+    only mutates ring state (IndexerSlotTracker.transition_reject),
+    nothing physical happens yet.
 
     enabled=False is commissioning mode: NOK parts ride through this
     station untouched and get resolved at Exit instead -- Exit's
@@ -208,13 +208,27 @@ class RejectStation(BaseModel):
     change. A part failing a station NOT in this reject station's watches
     rides through it untouched and is caught by whichever later reject
     station (if any) does watch that station, or falls through to Exit's
-    own any_station_nok() fallback if none does."""
+    own any_station_nok() fallback if none does.
+
+    actuator_reg (spec14 followup #2 groundwork): the register this
+    specific station's physical reject actuator writes to. None (the
+    default) means "use the machine-wide RegisterMapConfig.reject_cmd" --
+    correct and intentional today, since every real machine this app
+    talks to has exactly one physical reject actuator regardless of how
+    many logical reject stations spec11 Part 2 lets a part config
+    declare. Only becomes relevant once a config with multiple reject
+    stations (e.g. med_3_station) actually gets a second physical
+    actuator wired in -- at that point it's a one-line config change
+    (set actuator_reg on that station), not a schema migration. Every
+    existing part config omits this and keeps writing to the shared
+    reject_cmd register, unchanged."""
     id: str
     name: str
     type: Literal["reject"] = "reject"
     station_offset_pulses: int
     enabled: bool = True
     watches: Optional[List[str]] = None
+    actuator_reg: Optional[int] = None
 
 
 class VirtualExitStation(BaseModel):

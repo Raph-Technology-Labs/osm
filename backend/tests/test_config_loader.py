@@ -238,3 +238,21 @@ def test_reject_before_exit_skips_entirely_for_virtual_exit_only_config():
         {"id": "vexit1", "name": "V1", "type": "virtual_exit", "station_offset_pulses": 50},
     ])
     assert config.reject_stations()[0].id == "r1"
+
+
+# --- spec14 followup #2 groundwork: RejectStation.actuator_reg ---
+
+def test_actuator_reg_defaults_to_none_meaning_use_the_shared_register():
+    config = make_config(reject_offset=50, exit_offset=100)
+    assert config.reject_stations()[0].actuator_reg is None
+
+
+def test_actuator_reg_can_be_set_per_reject_station():
+    config = make_config(
+        reject_stations=[{
+            "id": "r1", "name": "R1", "type": "reject",
+            "station_offset_pulses": 50, "enabled": True, "actuator_reg": 50123,
+        }],
+        exit_offset=100,
+    )
+    assert config.reject_stations()[0].actuator_reg == 50123

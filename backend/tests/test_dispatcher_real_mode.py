@@ -59,6 +59,7 @@ class FakeRejectStation:
     enabled: bool = True
     station_offset_pulses: int = 0
     watches: Optional[List[str]] = None  # spec11 Part 2 -- None means "watch every inspection station"
+    actuator_reg: Optional[int] = None  # spec14 followup #2 -- None means "use the shared reject_cmd register"
 
 
 @dataclass
@@ -290,6 +291,52 @@ def test_fire_and_immediately_clear_not_hold_then_clear():
 
     # Fire-and-immediately-clear: exactly one 1-then-0 pair, no other writes.
     assert plc.writes == [(REJECT_CMD_REG, 1), (REJECT_CMD_REG, 0)]
+
+
+def test_actuator_reg_unset_uses_the_shared_reject_cmd_register():
+    # spec14 followup #2 groundwork -- omitting actuator_reg (every
+    # existing part config does) must preserve today's shared-register
+    # behavior exactly, unchanged.
+    reject = FakeRejectStation(station_offset_pulses=0)  # actuator_reg left at its None default
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100, reject_station=reject)
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    plc.queue(PULSE_COUNT_REG, [5])
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert plc.writes == [(REJECT_CMD_REG, 1), (REJECT_CMD_REG, 0)]
+
+
+def test_actuator_reg_set_routes_firing_to_that_specific_register():
+    # A reject station with its own actuator_reg must fire THAT register,
+    # not the shared reject_cmd -- the one-line config change that makes
+    # wiring in a second physical actuator possible later.
+    dedicated_reg = 50123
+    reject = FakeRejectStation(station_offset_pulses=0, actuator_reg=dedicated_reg)
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100, reject_station=reject)
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    plc.queue(PULSE_COUNT_REG, [5])
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert plc.writes == [(dedicated_reg, 1), (dedicated_reg, 0)]
+    assert (REJECT_CMD_REG, 1) not in plc.writes  # never touches the shared register
+    assert tracker.get_slot(0).assign_part_id is None  # still fires/transitions correctly
+    assert tracker.reject_removed == 1
 
 
 def test_already_passed_target_is_skipped_not_misfired(caplog):
