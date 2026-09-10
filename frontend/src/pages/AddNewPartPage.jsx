@@ -3,10 +3,8 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Chip,
   Divider,
-  FormControlLabel,
   IconButton,
   MenuItem,
   Snackbar,
@@ -16,7 +14,6 @@ import {
 } from "@mui/material";
 import Autocomplete from "@mui/material/Autocomplete";
 import { useTheme } from "@mui/material/styles";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 
 import api from "../api/axios";
@@ -34,25 +31,23 @@ const EP = {
   bulkTemplate: "/parts/bulk-upload-template",
 };
 
-const SEVERITIES = ["critical", "major", "minor"];
 const UNIT_OPTIONS = ["mm", "cm", "um", "deg", "mm2", ""];
 
-// Part.defects  → { class_name: { conf_thresh, severity, notes } }
-const emptyDefect = () => ({
-  class_name: "",
-  conf_thresh: "",
-  severity: "critical",
-  notes: "",
-});
+// Part.defects → { <defect name>: { conf_thresh } }
+// The name is typed free-hand: a fixed list would imply the machine only
+// ever checks for those defects, when the real list is whatever the
+// detection model was trained on for this part.
+const emptyDefect = () => ({ defect_name: "", conf_thresh: "" });
 
-// Part.dimensions → { param_name: { nominal, upper_limit, lower_limit, unit, notes } }
+// Part.dimensions → { <parameter name>: { nominal, lower_limit, upper_limit,
+//                                          unit, calibration_factor } }
 const emptyDimension = () => ({
   param_name: "",
   nominal: "",
-  upper_limit: "",
   lower_limit: "",
+  upper_limit: "",
   unit: "mm",
-  notes: "",
+  calibration_factor: "",
 });
 
 const numeric = (v) => v === "" || /^-?[0-9]*\.?[0-9]*$/.test(v);
@@ -79,9 +74,7 @@ const persistentPrimary = (theme) => ({
 const cardSx = {
   bgcolor: "background.paper",
   borderRadius: 2,
-  p: { xs: 2, sm: 3, md: 4 },
-  border: "1px solid",
-  borderColor: "divider",
+  boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
 };
 
 const Section = ({ title, subtitle, children }) => (
@@ -127,12 +120,10 @@ const AddNewPartPage = () => {
   const [partName, setPartName] = useState("");
   const [partCode, setPartCode] = useState("");
   const [notes, setNotes] = useState("");
-  const [partWeight, setPartWeight] = useState("");
+  const [weight, setWeight] = useState("");
   const [imageFile, setImageFile] = useState(null);
 
-  // ── Optional config blocks ───────────────────────────────────
-  const [wantDefects, setWantDefects] = useState(false);
-  const [wantDimensions, setWantDimensions] = useState(false);
+  // ── Parameter tables — both optional, filled in as needed ────
   const [defects, setDefects] = useState([emptyDefect()]);
   const [dimensions, setDimensions] = useState([emptyDimension()]);
 
@@ -170,7 +161,7 @@ const AddNewPartPage = () => {
   // ── Category creation ────────────────────────────────────────
   const handleAddCategory = async () => {
     const clean = newCategory.trim();
-    if (!clean) return notify("error", "Type a category name first.");
+    if (!clean) return notify("error", "Please type a category name.");
 
     setAddingCategory(true);
     try {
@@ -194,94 +185,95 @@ const AddNewPartPage = () => {
     }
   };
 
-  // ── Defect rows ──────────────────────────────────────────────
+  // ── Defects ──────────────────────────────────────────────────
   const addDefect = () => setDefects((d) => [...d, emptyDefect()]);
-  const removeDefect = (i) =>
-    setDefects((d) => (d.length === 1 ? d : d.filter((_, idx) => idx !== i)));
-  const updateDefect = (i, field, value) =>
+  const removeDefect = (idx) =>
+    setDefects((d) => (idx === 0 ? d : d.filter((_, i) => i !== idx)));
+  const updateDefect = (idx, field, value) =>
     setDefects((d) =>
-      d.map((row, idx) => (idx === i ? { ...row, [field]: value } : row)),
+      d.map((item, i) => (i === idx ? { ...item, [field]: value } : item)),
     );
 
-  // ── Dimension rows ───────────────────────────────────────────
+  // ── Dimensions ───────────────────────────────────────────────
   const addDimension = () => setDimensions((d) => [...d, emptyDimension()]);
-  const removeDimension = (i) =>
-    setDimensions((d) => (d.length === 1 ? d : d.filter((_, idx) => idx !== i)));
-  const updateDimension = (i, field, value) =>
+  const removeDimension = (idx) =>
+    setDimensions((d) => (idx === 0 ? d : d.filter((_, i) => i !== idx)));
+  const updateDimension = (idx, field, value) =>
     setDimensions((d) =>
-      d.map((row, idx) => (idx === i ? { ...row, [field]: value } : row)),
+      d.map((item, i) => (i === idx ? { ...item, [field]: value } : item)),
     );
 
-  // ── Payload builders — exactly the JSON shapes in models.py ───
-  const buildDefects = () => {
+  // ── Payload builders — the JSON shapes in models.py ──────────
+  const buildDefectPayload = () => {
     const out = {};
-    for (const d of defects) {
-      const key = d.class_name.trim();
-      if (!key) continue;
+    defects.forEach((d) => {
+      const key = d.defect_name.trim();
+      if (!key) return;
       out[key] = {
-        conf_thresh: d.conf_thresh === "" ? null : Number(d.conf_thresh),
-        severity: d.severity,
-        notes: d.notes.trim(),
+        ...(d.conf_thresh !== "" && { conf_thresh: Number(d.conf_thresh) }),
       };
-    }
+    });
     return out;
   };
 
-  const buildDimensions = () => {
+  const buildDimensionPayload = () => {
     const out = {};
-    for (const d of dimensions) {
+    dimensions.forEach((d) => {
       const key = d.param_name.trim();
-      if (!key) continue;
+      if (!key) return;
       out[key] = {
-        nominal: d.nominal === "" ? null : Number(d.nominal),
-        upper_limit: d.upper_limit === "" ? null : Number(d.upper_limit),
-        lower_limit: d.lower_limit === "" ? null : Number(d.lower_limit),
-        unit: d.unit,
-        notes: d.notes.trim(),
+        ...(d.nominal !== "" && { nominal: Number(d.nominal) }),
+        ...(d.lower_limit !== "" && { lower_limit: Number(d.lower_limit) }),
+        ...(d.upper_limit !== "" && { upper_limit: Number(d.upper_limit) }),
+        ...(d.unit && { unit: d.unit }),
+        ...(d.calibration_factor !== "" && {
+          calibration_factor: Number(d.calibration_factor),
+        }),
       };
-    }
+    });
     return out;
   };
 
   // ── Validation ───────────────────────────────────────────────
+  // Both tables are optional; only rows with a name are checked, and blank
+  // rows are ignored entirely.
   const validate = () => {
-    if (!partName.trim()) return "Part Name is required.";
-    if (!partCode.trim()) return "Part Code is required.";
-    if (!selectedCategory) return "Select a category (or add a new one).";
+    if (!partName.trim() || !partCode.trim() || !selectedCategory)
+      return "Please fill Part Name, Part Code and select or add a Category.";
 
-    if (wantDefects) {
-      const named = defects.filter((d) => d.class_name.trim());
-      if (named.length === 0)
-        return "Add at least one defect class, or untick Defect inspection.";
-      const keys = named.map((d) => d.class_name.trim());
-      const dupe = keys.find((k, i) => keys.indexOf(k) !== i);
-      if (dupe) return `Duplicate defect class "${dupe}".`;
-      for (const d of named) {
-        if (d.conf_thresh !== "") {
-          const v = Number(d.conf_thresh);
-          if (v < 0 || v > 1)
-            return `${d.class_name}: confidence threshold must be between 0 and 1.`;
-        }
+    const namedDefects = defects.filter((d) => d.defect_name.trim());
+    const defectKeys = namedDefects.map((d) => d.defect_name.trim());
+    const dupeDefect = defectKeys.find((k, i) => defectKeys.indexOf(k) !== i);
+    if (dupeDefect) return `Duplicate defect "${dupeDefect}".`;
+
+    for (const d of namedDefects) {
+      if (d.conf_thresh !== "") {
+        const v = Number(d.conf_thresh);
+        if (v < 0 || v > 1)
+          return `${d.defect_name}: confidence threshold must be between 0 and 1.`;
       }
     }
 
-    if (wantDimensions) {
-      const named = dimensions.filter((d) => d.param_name.trim());
-      if (named.length === 0)
-        return "Add at least one dimension, or untick Measurement.";
-      const keys = named.map((d) => d.param_name.trim());
-      const dupe = keys.find((k, i) => keys.indexOf(k) !== i);
-      if (dupe) return `Duplicate dimension "${dupe}".`;
-      for (const d of named) {
-        const { lower_limit: lo, upper_limit: hi, nominal: nom } = d;
-        if (lo !== "" && hi !== "" && Number(lo) > Number(hi))
-          return `${d.param_name}: lower limit is above the upper limit.`;
-        if (nom !== "" && lo !== "" && Number(nom) < Number(lo))
-          return `${d.param_name}: nominal is below the lower limit.`;
-        if (nom !== "" && hi !== "" && Number(nom) > Number(hi))
-          return `${d.param_name}: nominal is above the upper limit.`;
-      }
+    const namedDims = dimensions.filter((d) => d.param_name.trim());
+    const dimKeys = namedDims.map((d) => d.param_name.trim());
+    const dupeDim = dimKeys.find((k, i) => dimKeys.indexOf(k) !== i);
+    if (dupeDim) return `Duplicate parameter "${dupeDim}".`;
+
+    for (const d of namedDims) {
+      const { lower_limit: lo, upper_limit: hi, nominal: nom } = d;
+      if (lo === "" && hi === "")
+        return `${d.param_name}: set at least a lower or upper tolerance — a parameter with no limits can never fail.`;
+      if (lo !== "" && hi !== "" && Number(lo) > Number(hi))
+        return `${d.param_name}: lower tolerance cannot be greater than upper.`;
+      if (nom !== "" && lo !== "" && Number(nom) < Number(lo))
+        return `${d.param_name}: nominal is below the lower tolerance.`;
+      if (nom !== "" && hi !== "" && Number(nom) > Number(hi))
+        return `${d.param_name}: nominal is above the upper tolerance.`;
+      // A zero factor would zero out every measurement for this parameter.
+      if (d.calibration_factor !== "" && Number(d.calibration_factor) <= 0)
+        return `${d.param_name}: calibration factor must be greater than 0.`;
     }
+
     return null;
   };
 
@@ -289,19 +281,17 @@ const AddNewPartPage = () => {
     setPartName("");
     setPartCode("");
     setNotes("");
-    setPartWeight("");
-    setImageFile(null);
-    setSelectedCategory(null);
-    setNewCategory("");
-    setWantDefects(false);
-    setWantDimensions(false);
+    setWeight("");
     setDefects([emptyDefect()]);
     setDimensions([emptyDimension()]);
-    const el = document.getElementById("osm-part-image-input");
+    setSelectedCategory(null);
+    setNewCategory("");
+    setImageFile(null);
+    const el = document.getElementById("single-image-input");
     if (el) el.value = null;
   };
 
-  const handleSubmit = async () => {
+  const handleAddPart = async () => {
     const err = validate();
     if (err) return notify("error", err);
 
@@ -310,13 +300,18 @@ const AddNewPartPage = () => {
     fd.append("part_code", partCode.trim());
     fd.append("category_id", selectedCategory.category_id);
     if (notes.trim()) fd.append("notes", notes.trim());
-    if (partWeight !== "") fd.append("part_weight", Number(partWeight));
+    if (weight !== "" && !isNaN(Number(weight))) fd.append("part_weight", weight);
 
     // has_defect_pipeline / has_measurement_pipeline are intentionally NOT
     // sent — the backend sets them when a PartConfig is saved from the
     // pipeline builder. This form only supplies the parameter tables.
-    if (wantDefects) fd.append("defects", JSON.stringify(buildDefects()));
-    if (wantDimensions) fd.append("dimensions", JSON.stringify(buildDimensions()));
+    const defectPayload = buildDefectPayload();
+    if (Object.keys(defectPayload).length)
+      fd.append("defects", JSON.stringify(defectPayload));
+
+    const dimensionPayload = buildDimensionPayload();
+    if (Object.keys(dimensionPayload).length)
+      fd.append("dimensions", JSON.stringify(dimensionPayload));
 
     if (imageFile) fd.append("image", imageFile);
 
@@ -325,30 +320,28 @@ const AddNewPartPage = () => {
       const { data } = await api.post(EP.addPart, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      notify(
-        "success",
-        `Part created — ${partCode.trim()}${data?.part_id ? ` (id ${data.part_id})` : ""}. Build its pipeline next.`,
-      );
+      notify("success", `Part added! ID: ${data.part_id}`);
       resetForm();
       fetchCategories();
     } catch (e) {
-      notify("error", e?.response?.data?.detail || "Failed to create part.");
+      notify("error", e?.response?.data?.detail || "Failed to add part.");
     } finally {
       setSubmitting(false);
     }
   };
 
-  // ── Bulk upload handlers ─────────────────────────────────────
+  // ── Bulk upload ──────────────────────────────────────────────
   const clearUploadFile = () => {
     setUploadFile(null);
-    const el = document.getElementById("osm-bulk-file-input");
+    const el = document.getElementById("bulk-file-input");
     if (el) el.value = null;
   };
 
   const handleBulkUpload = async () => {
-    if (!uploadFile) return notify("error", "Select a CSV or Excel file first.");
+    if (!uploadFile)
+      return notify("error", "Please select a CSV or Excel file first.");
     if (!/\.(csv|xlsx)$/i.test(uploadFile.name))
-      return notify("error", "Only .csv and .xlsx files are supported.");
+      return notify("error", "Please upload only CSV or Excel files.");
 
     setUploading(true);
     setUploadResult(null);
@@ -367,8 +360,8 @@ const AddNewPartPage = () => {
       const errCount = data?.errors?.length ?? 0;
       notify(
         errCount ? "warning" : "success",
-        `Imported ${created} part${created === 1 ? "" : "s"}` +
-          (errCount ? ` — ${errCount} issue${errCount === 1 ? "" : "s"} to review.` : "."),
+        `Uploaded ✅ parts: ${created}` +
+          (errCount ? `, issues: ${errCount}` : ""),
       );
     } catch (e) {
       notify("error", e?.response?.data?.detail || "Bulk upload failed.");
@@ -377,7 +370,7 @@ const AddNewPartPage = () => {
     }
   };
 
-  const handleTemplateDownload = async () => {
+  const startTemplateDownload = async () => {
     setDownloadingTemplate(true);
     try {
       const res = await api.get(EP.bulkTemplate, { responseType: "blob" });
@@ -390,11 +383,15 @@ const AddNewPartPage = () => {
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
     } catch {
-      notify("error", "Failed to download the template.");
+      notify("error", "Failed to download template.");
     } finally {
       setDownloadingTemplate(false);
     }
   };
+
+  const newCategoryActive = newCategory.trim().length > 0;
+  const dropdownDisabled = !canEdit || newCategoryActive;
+  const newCategoryDisabled = !canEdit || !!selectedCategory;
 
   return (
     <Box
@@ -407,7 +404,7 @@ const AddNewPartPage = () => {
     >
       <Box
         sx={{
-          maxWidth: 1100,
+          maxWidth: 1200,
           mx: "auto",
           px: { xs: 1.5, sm: 3, md: 4 },
           py: { xs: 2, md: 3 },
@@ -421,8 +418,8 @@ const AddNewPartPage = () => {
           </Alert>
         )}
 
-        {/* ════════ BULK UPLOAD ════════════════════════════════ */}
-        <Box sx={{ ...cardSx, mb: 3 }}>
+        {/* ===== Bulk Upload ===== */}
+        <Box sx={{ ...cardSx, p: { xs: 2, sm: 3 }, mb: 3 }}>
           <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
             <UploadFileIcon color="primary" />
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
@@ -430,10 +427,12 @@ const AddNewPartPage = () => {
             </Typography>
           </Stack>
           <Typography variant="body2" sx={{ color: "text.secondary", mb: 2 }}>
-            The template has three sheets. <b>Parts</b> carries one row per part;{" "}
-            <b>Dimensions</b> and <b>Defects</b> carry one row per parameter,
-            joined back by <code>part_code</code>. A CSV imports the Parts sheet
-            only — parameters need the workbook.
+            One row per part. Defects go in <code>d1_name</code> /{" "}
+            <code>d1_threshold</code>, measurement parameters in{" "}
+            <code>p1_name</code> / <code>p1_nominal</code> / <code>p1_min</code> /{" "}
+            <code>p1_max</code> / <code>p1_unit</code> / <code>p1_cal</code>. The
+            template has two slots of each — add <code>d3_*</code> or{" "}
+            <code>p3_*</code> columns yourself for parts that need more.
           </Typography>
 
           <Box
@@ -455,7 +454,7 @@ const AddNewPartPage = () => {
               >
                 Select File
                 <input
-                  id="osm-bulk-file-input"
+                  id="bulk-file-input"
                   type="file"
                   accept=".xlsx,.csv"
                   hidden
@@ -470,15 +469,15 @@ const AddNewPartPage = () => {
                 disabled={!canEdit || uploading || !uploadFile}
                 sx={persistentPrimary(theme)}
               >
-                {uploading ? "Uploading…" : "Import File"}
+                {uploading ? "Uploading..." : "Submit File"}
               </Button>
               <Button
                 variant="outlined"
                 color="primary"
-                onClick={handleTemplateDownload}
+                onClick={startTemplateDownload}
                 disabled={downloadingTemplate}
               >
-                {downloadingTemplate ? "Preparing…" : "Download Template"}
+                {downloadingTemplate ? "Preparing..." : "Download Template"}
               </Button>
             </Stack>
 
@@ -501,34 +500,20 @@ const AddNewPartPage = () => {
                   bgcolor: "background.default",
                 }}
               >
-                <Typography sx={{ fontWeight: 700, mb: 0.75 }}>
+                <Typography sx={{ fontWeight: 700, mb: 0.5 }}>
                   Import finished
                 </Typography>
-                <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", gap: 1 }}>
-                  <Chip
-                    size="small"
-                    color="success"
-                    label={`Created: ${uploadResult.created_parts ?? 0}`}
-                  />
-                  <Chip
-                    size="small"
-                    label={`With dimensions: ${uploadResult.with_dimensions ?? 0}`}
-                  />
-                  <Chip
-                    size="small"
-                    label={`With defects: ${uploadResult.with_defects ?? 0}`}
-                  />
-                  {uploadResult.errors?.length > 0 && (
-                    <Chip
-                      size="small"
-                      color="error"
-                      label={`Issues: ${uploadResult.errors.length}`}
-                    />
-                  )}
-                </Stack>
-
+                <Typography variant="body2">
+                  Created parts: {uploadResult.created_parts ?? 0}
+                </Typography>
+                <Typography variant="body2">
+                  With dimensions: {uploadResult.with_dimensions ?? 0}
+                </Typography>
+                <Typography variant="body2">
+                  With defects: {uploadResult.with_defects ?? 0}
+                </Typography>
                 {uploadResult.errors?.length > 0 && (
-                  <Box sx={{ mt: 1.5, maxHeight: 180, overflowY: "auto", pr: 1 }}>
+                  <Box sx={{ mt: 1, maxHeight: 180, overflowY: "auto", pr: 1 }}>
                     {uploadResult.errors.map((msg, i) => (
                       <Typography
                         key={i}
@@ -546,14 +531,15 @@ const AddNewPartPage = () => {
           </Box>
         </Box>
 
-        {/* ════════ SINGLE PART ════════════════════════════════ */}
-        <Box sx={cardSx}>
+        {/* ===== Add Single Part ===== */}
+        <Box sx={{ ...cardSx, p: { xs: 2, sm: 3, md: 4 } }}>
           <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
-            Add Single Part
+            ➕ Add Single Part
           </Typography>
-          <Typography variant="body2" sx={{ color: "text.secondary", mb: 2.5 }}>
-            Fields marked * are required. Defect and measurement parameters are
-            optional here — the pipeline builder activates them later.
+          <Typography variant="body2" sx={{ color: "text.secondary", mb: 3 }}>
+            Fields marked * are required. Add the defects this part is checked
+            for, the dimensions it is measured on, or both — leave a table blank
+            if it does not apply.
           </Typography>
 
           <Box
@@ -561,27 +547,25 @@ const AddNewPartPage = () => {
             disabled={!canEdit || submitting}
             sx={{ border: 0, p: 0, m: 0, minWidth: 0 }}
           >
-            {/* ── Basic information ─────────────────────────────── */}
             <Section title="Basic Information">
               <Stack spacing={2}>
                 <Autocomplete
-                  fullWidth
                   options={categories}
                   value={selectedCategory}
+                  disabled={dropdownDisabled}
                   getOptionLabel={(o) => o?.category_name || ""}
                   isOptionEqualToValue={(o, v) => o?.category_id === v?.category_id}
                   onChange={(e, v) => setSelectedCategory(v)}
-                  disabled={!canEdit || !!newCategory.trim()}
                   renderInput={(p) => (
                     <TextField
                       {...p}
-                      label="Category *"
-                      sx={inputSx}
+                      label="Select Category *"
                       helperText={
-                        newCategory.trim()
+                        newCategoryActive
                           ? "Clear the new-category field to use the dropdown"
                           : " "
                       }
+                      sx={inputSx}
                     />
                   )}
                 />
@@ -589,13 +573,13 @@ const AddNewPartPage = () => {
                 <Stack
                   direction={{ xs: "column", sm: "row" }}
                   spacing={1.5}
-                  alignItems="flex-start"
+                  alignItems={{ sm: "flex-start" }}
                 >
                   <TextField
                     fullWidth
                     label="Add New Category"
                     value={newCategory}
-                    disabled={!canEdit || !!selectedCategory}
+                    disabled={newCategoryDisabled}
                     onChange={(e) => setNewCategory(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleAddCategory()}
                     helperText={
@@ -610,10 +594,7 @@ const AddNewPartPage = () => {
                     color="primary"
                     onClick={handleAddCategory}
                     disabled={
-                      !canEdit ||
-                      !!selectedCategory ||
-                      !newCategory.trim() ||
-                      addingCategory
+                      newCategoryDisabled || !newCategory.trim() || addingCategory
                     }
                     sx={{
                       whiteSpace: "nowrap",
@@ -621,7 +602,7 @@ const AddNewPartPage = () => {
                       ...persistentPrimary(theme),
                     }}
                   >
-                    {addingCategory ? "Adding…" : "Add Category"}
+                    {addingCategory ? "Adding..." : "Add Category"}
                   </Button>
                 </Stack>
 
@@ -630,269 +611,200 @@ const AddNewPartPage = () => {
                     fullWidth
                     label="Part Name *"
                     value={partName}
-                    onChange={(e) => setPartName(e.target.value)}
                     sx={inputSx}
+                    onChange={(e) => setPartName(e.target.value)}
                   />
                   <TextField
                     fullWidth
                     label="Part Code *"
                     value={partCode}
-                    onChange={(e) => setPartCode(e.target.value)}
+                    sx={inputSx}
                     inputProps={{ maxLength: 50 }}
                     helperText="Unique, max 50 characters — this is what the barcode scanner reads."
-                    sx={inputSx}
+                    onChange={(e) => setPartCode(e.target.value)}
                   />
                 </Stack>
 
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                  <TextField
-                    label="Part Weight (g)"
-                    value={partWeight}
-                    onChange={(e) =>
-                      nonNegative(e.target.value) && setPartWeight(e.target.value)
-                    }
-                    inputProps={{ inputMode: "decimal" }}
-                    sx={{ ...inputSx, maxWidth: { sm: 260 }, width: "100%" }}
-                  />
-                  <TextField
-                    fullWidth
-                    label="Notes (optional)"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    sx={inputSx}
-                  />
-                </Stack>
+                <TextField
+                  fullWidth
+                  label="Notes (optional)"
+                  value={notes}
+                  sx={inputSx}
+                  onChange={(e) => setNotes(e.target.value)}
+                />
               </Stack>
             </Section>
 
             <Divider sx={{ mb: 3 }} />
 
-            {/* ── What this part is inspected for ───────────────── */}
-            <Section
-              title="Inspection Parameters"
-              subtitle="Tick what this part needs. The pipeline flags themselves are set by the backend when you save a pipeline config for this part."
-            >
-              <Box sx={{ display: "flex", flexWrap: "wrap", gap: { xs: 1, sm: 3 } }}>
-                <FormControlLabel
-                  label="Defect inspection"
-                  control={
-                    <Checkbox
-                      color="primary"
-                      checked={wantDefects}
-                      onChange={(e) => setWantDefects(e.target.checked)}
-                    />
-                  }
-                />
-                <FormControlLabel
-                  label="Measurement"
-                  control={
-                    <Checkbox
-                      color="primary"
-                      checked={wantDimensions}
-                      onChange={(e) => setWantDimensions(e.target.checked)}
-                    />
-                  }
-                />
-              </Box>
+            {/* ----- Weight ----- */}
+            <Section title="Weight">
+              <TextField
+                label="Weight (g)"
+                value={weight}
+                sx={{ ...inputSx, maxWidth: 260 }}
+                inputProps={{ inputMode: "decimal" }}
+                onChange={(e) =>
+                  nonNegative(e.target.value) && setWeight(e.target.value)
+                }
+              />
             </Section>
-
-            {/* ── Defects ───────────────────────────────────────── */}
-            {wantDefects && (
-              <>
-                <Divider sx={{ mb: 3 }} />
-                <Section
-                  title="Defect Classes"
-                  subtitle="The class name is the dictionary key in Part.defects and must match the detection model's class name exactly (e.g. rust, crack, scratch)."
-                >
-                  {defects.map((d, i) => (
-                    <Box
-                      key={i}
-                      sx={{
-                        display: "grid",
-                        gridTemplateColumns: {
-                          xs: "1fr",
-                          md: "1.2fr 0.8fr 0.9fr 1.4fr auto",
-                        },
-                        gap: 1,
-                        mb: 1.5,
-                        alignItems: "center",
-                      }}
-                    >
-                      <TextField
-                        label="Class name *"
-                        value={d.class_name}
-                        onChange={(e) => updateDefect(i, "class_name", e.target.value)}
-                        sx={inputSx}
-                      />
-                      <TextField
-                        label="Conf. threshold"
-                        value={d.conf_thresh}
-                        placeholder="0.70"
-                        inputProps={{ inputMode: "decimal" }}
-                        onChange={(e) =>
-                          nonNegative(e.target.value) &&
-                          updateDefect(i, "conf_thresh", e.target.value)
-                        }
-                        sx={inputSx}
-                      />
-                      <TextField
-                        select
-                        label="Severity"
-                        value={d.severity}
-                        onChange={(e) => updateDefect(i, "severity", e.target.value)}
-                        sx={inputSx}
-                      >
-                        {SEVERITIES.map((s) => (
-                          <MenuItem key={s} value={s}>
-                            {s}
-                          </MenuItem>
-                        ))}
-                      </TextField>
-                      <TextField
-                        label="Notes"
-                        value={d.notes}
-                        onChange={(e) => updateDefect(i, "notes", e.target.value)}
-                        sx={inputSx}
-                      />
-                      <IconButton
-                        size="small"
-                        disabled={defects.length === 1}
-                        onClick={() => removeDefect(i)}
-                      >
-                        <DeleteOutlineIcon fontSize="small" />
-                      </IconButton>
-                    </Box>
-                  ))}
-                  <Button size="small" color="primary" onClick={addDefect}>
-                    + Add another defect class
-                  </Button>
-                </Section>
-              </>
-            )}
-
-            {/* ── Dimensions ────────────────────────────────────── */}
-            {wantDimensions && (
-              <>
-                <Divider sx={{ mb: 3 }} />
-                <Section
-                  title="Measurement Parameters"
-                  subtitle="The parameter name is the dictionary key in Part.dimensions — use the same name the measurement step emits (e.g. diameter_mm, length_mm)."
-                >
-                  {dimensions.map((d, i) => (
-                    <Box
-                      key={i}
-                      sx={{
-                        border: 1,
-                        borderColor: "divider",
-                        borderRadius: 1.5,
-                        p: 2,
-                        mb: 2,
-                      }}
-                    >
-                      <Stack
-                        direction="row"
-                        justifyContent="space-between"
-                        alignItems="center"
-                        sx={{ mb: 1.5 }}
-                      >
-                        <Chip
-                          size="small"
-                          label={d.param_name.trim() || `parameter ${i + 1}`}
-                          sx={{ fontWeight: 600 }}
-                        />
-                        <IconButton
-                          size="small"
-                          disabled={dimensions.length === 1}
-                          onClick={() => removeDimension(i)}
-                        >
-                          <DeleteOutlineIcon fontSize="small" />
-                        </IconButton>
-                      </Stack>
-
-                      <Box
-                        sx={{
-                          display: "grid",
-                          gridTemplateColumns: {
-                            xs: "1fr",
-                            sm: "1fr 1fr",
-                            md: "1.4fr 0.8fr 0.8fr 0.8fr 0.7fr",
-                          },
-                          gap: 1,
-                        }}
-                      >
-                        <TextField
-                          label="Parameter name *"
-                          value={d.param_name}
-                          placeholder="diameter_mm"
-                          onChange={(e) =>
-                            updateDimension(i, "param_name", e.target.value)
-                          }
-                          sx={inputSx}
-                        />
-                        <TextField
-                          label="Nominal"
-                          value={d.nominal}
-                          inputProps={{ inputMode: "decimal" }}
-                          onChange={(e) =>
-                            numeric(e.target.value) &&
-                            updateDimension(i, "nominal", e.target.value)
-                          }
-                          sx={inputSx}
-                        />
-                        <TextField
-                          label="Lower limit"
-                          value={d.lower_limit}
-                          inputProps={{ inputMode: "decimal" }}
-                          onChange={(e) =>
-                            numeric(e.target.value) &&
-                            updateDimension(i, "lower_limit", e.target.value)
-                          }
-                          sx={inputSx}
-                        />
-                        <TextField
-                          label="Upper limit"
-                          value={d.upper_limit}
-                          inputProps={{ inputMode: "decimal" }}
-                          onChange={(e) =>
-                            numeric(e.target.value) &&
-                            updateDimension(i, "upper_limit", e.target.value)
-                          }
-                          sx={inputSx}
-                        />
-                        <TextField
-                          select
-                          label="Unit"
-                          value={d.unit}
-                          onChange={(e) => updateDimension(i, "unit", e.target.value)}
-                          sx={inputSx}
-                        >
-                          {UNIT_OPTIONS.map((u) => (
-                            <MenuItem key={u || "none"} value={u}>
-                              {u || "— none —"}
-                            </MenuItem>
-                          ))}
-                        </TextField>
-                      </Box>
-
-                      <TextField
-                        fullWidth
-                        label="Notes"
-                        value={d.notes}
-                        onChange={(e) => updateDimension(i, "notes", e.target.value)}
-                        sx={{ ...inputSx, mt: 1 }}
-                      />
-                    </Box>
-                  ))}
-                  <Button size="small" color="primary" onClick={addDimension}>
-                    + Add another parameter
-                  </Button>
-                </Section>
-              </>
-            )}
 
             <Divider sx={{ mb: 3 }} />
 
-            {/* ── Image ─────────────────────────────────────────── */}
+            {/* ----- Defects ----- */}
+            <Section
+              title="Defects"
+              subtitle="Add each defect this part should be checked for, with an optional confidence threshold. The name must match the detection model's class name exactly."
+            >
+              {defects.map((d, i) => (
+                <Box
+                  key={i}
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "auto 1fr 1fr auto",
+                    gap: 1,
+                    mb: 1,
+                    alignItems: "center",
+                  }}
+                >
+                  <Typography
+                    variant="caption"
+                    sx={{ color: "text.secondary", minWidth: 30 }}
+                  >
+                    d{i + 1}
+                  </Typography>
+                  <TextField
+                    label="Defect name"
+                    value={d.defect_name}
+                    sx={inputSx}
+                    onChange={(e) => updateDefect(i, "defect_name", e.target.value)}
+                  />
+                  <TextField
+                    label="Confidence threshold"
+                    value={d.conf_thresh}
+                    sx={inputSx}
+                    inputProps={{ inputMode: "decimal" }}
+                    onChange={(e) =>
+                      nonNegative(e.target.value) &&
+                      updateDefect(i, "conf_thresh", e.target.value)
+                    }
+                  />
+                  {i > 0 && (
+                    <IconButton size="small" onClick={() => removeDefect(i)}>
+                      ✕
+                    </IconButton>
+                  )}
+                </Box>
+              ))}
+              <Button size="small" color="primary" onClick={addDefect}>
+                + Add another defect
+              </Button>
+            </Section>
+
+            <Divider sx={{ mb: 3 }} />
+
+            {/* ----- Measurement parameters ----- */}
+            <Section
+              title="Part Parameters"
+              subtitle="Add each dimension this part is measured on. The parameter name must match what the measurement step emits. The calibration factor scales the raw measurement before it is compared against the tolerances — leave it blank for no correction."
+            >
+              {dimensions.map((d, i) => (
+                <Box
+                  key={i}
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: {
+                      xs: "1fr",
+                      md: "auto 1.4fr 1fr 1fr 1fr 0.8fr 0.9fr auto",
+                    },
+                    gap: 1,
+                    mb: 1,
+                    alignItems: "center",
+                  }}
+                >
+                  <Typography
+                    variant="caption"
+                    sx={{ color: "text.secondary", minWidth: 30 }}
+                  >
+                    p{i + 1}
+                  </Typography>
+                  <TextField
+                    label="Parameter name"
+                    value={d.param_name}
+                    sx={inputSx}
+                    onChange={(e) =>
+                      updateDimension(i, "param_name", e.target.value)
+                    }
+                  />
+                  <TextField
+                    label="Nominal"
+                    value={d.nominal}
+                    sx={inputSx}
+                    inputProps={{ inputMode: "decimal" }}
+                    onChange={(e) =>
+                      numeric(e.target.value) &&
+                      updateDimension(i, "nominal", e.target.value)
+                    }
+                  />
+                  <TextField
+                    label="Lower tolerance"
+                    value={d.lower_limit}
+                    sx={inputSx}
+                    inputProps={{ inputMode: "decimal" }}
+                    onChange={(e) =>
+                      numeric(e.target.value) &&
+                      updateDimension(i, "lower_limit", e.target.value)
+                    }
+                  />
+                  <TextField
+                    label="Upper tolerance"
+                    value={d.upper_limit}
+                    sx={inputSx}
+                    inputProps={{ inputMode: "decimal" }}
+                    onChange={(e) =>
+                      numeric(e.target.value) &&
+                      updateDimension(i, "upper_limit", e.target.value)
+                    }
+                  />
+                  <TextField
+                    select
+                    label="Unit"
+                    value={d.unit}
+                    sx={inputSx}
+                    onChange={(e) => updateDimension(i, "unit", e.target.value)}
+                  >
+                    {UNIT_OPTIONS.map((u) => (
+                      <MenuItem key={u || "none"} value={u}>
+                        {u || "— none —"}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                  <TextField
+                    label="Cal. factor"
+                    value={d.calibration_factor}
+                    placeholder="1.000"
+                    sx={inputSx}
+                    inputProps={{ inputMode: "decimal" }}
+                    onChange={(e) =>
+                      nonNegative(e.target.value) &&
+                      updateDimension(i, "calibration_factor", e.target.value)
+                    }
+                  />
+                  {i > 0 && (
+                    <IconButton size="small" onClick={() => removeDimension(i)}>
+                      ✕
+                    </IconButton>
+                  )}
+                </Box>
+              ))}
+              <Button size="small" color="primary" onClick={addDimension}>
+                + Add another parameter
+              </Button>
+            </Section>
+
+            <Divider sx={{ mb: 3 }} />
+
             <Section title="Part Image">
               <Button
                 variant="outlined"
@@ -902,7 +814,7 @@ const AddNewPartPage = () => {
               >
                 Upload Image (PNG / JPEG)
                 <input
-                  id="osm-part-image-input"
+                  id="single-image-input"
                   type="file"
                   accept="image/png,image/jpeg"
                   hidden
@@ -911,12 +823,7 @@ const AddNewPartPage = () => {
                 />
               </Button>
               {imageFile && (
-                <Stack
-                  direction="row"
-                  spacing={1.5}
-                  alignItems="center"
-                  sx={{ mt: 1.5 }}
-                >
+                <Box sx={{ mt: 1.5 }}>
                   <img
                     src={imagePreview}
                     alt="preview"
@@ -925,12 +832,10 @@ const AddNewPartPage = () => {
                       height: 110,
                       objectFit: "cover",
                       borderRadius: 8,
-                      border: "1px solid",
-                      borderColor: theme.palette.divider,
+                      border: "1px solid #E5E7EB",
                     }}
                   />
-                  <Chip label={imageFile.name} onDelete={() => setImageFile(null)} />
-                </Stack>
+                </Box>
               )}
             </Section>
 
@@ -939,7 +844,7 @@ const AddNewPartPage = () => {
                 display: "flex",
                 justifyContent: "flex-end",
                 gap: 2,
-                pt: 2,
+                pt: 1,
                 borderTop: 1,
                 borderColor: "divider",
               }}
@@ -949,6 +854,7 @@ const AddNewPartPage = () => {
                 color="secondary"
                 onClick={resetForm}
                 disabled={!canEdit}
+                sx={{ mt: 2 }}
               >
                 Reset
               </Button>
@@ -956,11 +862,11 @@ const AddNewPartPage = () => {
                 variant="contained"
                 color="primary"
                 size="large"
-                onClick={handleSubmit}
+                onClick={handleAddPart}
                 disabled={!canEdit || submitting}
-                sx={{ px: 4, ...persistentPrimary(theme) }}
+                sx={{ mt: 2, px: 4, ...persistentPrimary(theme) }}
               >
-                {submitting ? "Saving…" : "Save Part"}
+                {submitting ? "Saving..." : "Submit Part"}
               </Button>
             </Box>
           </Box>

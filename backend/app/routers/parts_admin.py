@@ -38,8 +38,6 @@ router = APIRouter(
     dependencies=[Depends(require_role("administrator"))],
 )
 
-VALID_SEVERITIES = {"critical", "major", "minor"}
-DEFAULT_SEVERITY = "critical"
 MAX_PART_CODE_LEN = 50
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg"}
@@ -85,7 +83,7 @@ def _opt_number(entry: dict, key: str, ctx: str) -> Optional[float]:
 def _validate_defects(raw: Optional[dict]) -> Optional[dict[str, Any]]:
     """Normalize to the Part.defects contract:
 
-        { class_name: { conf_thresh, severity, notes } }
+        { class_name: { conf_thresh, notes } }
 
     Keys must match the detection model's class names -- nothing here can
     verify that, so only the shape is enforced.
@@ -108,16 +106,8 @@ def _validate_defects(raw: Optional[dict]) -> Optional[dict[str, Any]]:
                 status_code=400, detail=f"{ctx}: conf_thresh must be between 0 and 1"
             )
 
-        severity = str(entry.get("severity") or DEFAULT_SEVERITY).strip().lower()
-        if severity not in VALID_SEVERITIES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{ctx}: severity must be one of {', '.join(sorted(VALID_SEVERITIES))}",
-            )
-
         out[key] = {
             "conf_thresh": conf,
-            "severity": severity,
             "notes": str(entry.get("notes") or "").strip(),
         }
 
@@ -127,7 +117,12 @@ def _validate_defects(raw: Optional[dict]) -> Optional[dict[str, Any]]:
 def _validate_dimensions(raw: Optional[dict]) -> Optional[dict[str, Any]]:
     """Normalize to the Part.dimensions contract:
 
-        { param_name: { nominal, upper_limit, lower_limit, unit, notes } }
+        { param_name: { nominal, upper_limit, lower_limit, unit,
+                        calibration_factor, notes } }
+
+    calibration_factor scales the raw measurement before it is compared
+    against the limits (see CameraResult.measurement_data). Defaults to
+    None, which the pipeline treats as 1.0.
     """
     if not raw:
         return None
@@ -144,6 +139,14 @@ def _validate_dimensions(raw: Optional[dict]) -> Optional[dict[str, Any]]:
         nominal = _opt_number(entry, "nominal", ctx)
         upper = _opt_number(entry, "upper_limit", ctx)
         lower = _opt_number(entry, "lower_limit", ctx)
+        cal = _opt_number(entry, "calibration_factor", ctx)
+
+        # A zero or negative factor would silently zero out or invert every
+        # measurement for this parameter, so it is rejected outright.
+        if cal is not None and cal <= 0:
+            raise HTTPException(
+                status_code=400, detail=f"{ctx}: calibration_factor must be greater than 0"
+            )
 
         if lower is not None and upper is not None and lower > upper:
             raise HTTPException(status_code=400, detail=f"{ctx}: lower_limit is above upper_limit")
@@ -157,6 +160,7 @@ def _validate_dimensions(raw: Optional[dict]) -> Optional[dict[str, Any]]:
             "upper_limit": upper,
             "lower_limit": lower,
             "unit": str(entry.get("unit") or "").strip(),
+            "calibration_factor": cal,
             "notes": str(entry.get("notes") or "").strip(),
         }
 
