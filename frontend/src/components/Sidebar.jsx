@@ -7,11 +7,15 @@ import {
   IconButton,
   List,
   Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
   useTheme,
+  useMediaQuery,
 } from "@mui/material";
 import { useLocation, useNavigate } from "react-router-dom";
 
-// ✅ Icons
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import SettingsIcon from "@mui/icons-material/Settings";
 import CategoryIcon from "@mui/icons-material/Category";
@@ -20,20 +24,28 @@ import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import DevicesOutlinedIcon from "@mui/icons-material/DevicesOutlined";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import AddIcon from "@mui/icons-material/Add";
-import PlaylistAddIcon from "@mui/icons-material/PlaylistAdd";
+import AddCircleOutlinedIcon from "@mui/icons-material/AddCircleOutlined";
+import PlayCircleOutlinedIcon from "@mui/icons-material/PlayCircleOutlined";
+import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
 
-// ✅ Logo
+import { useAuth } from "../auth/AuthContext";
 import logo from "../assets/assets/logo/raph-logo.png";
 
 const SIDEBAR_COLLAPSED_KEY = "sidebarCollapsed";
+const COLLAPSED_W = 74;
+const EXPANDED_W = 260;
 
-const Sidebar = ({ loginData, onNavigate }) => {
+const Sidebar = ({ onNavigate, sessionActive = false }) => {
   const theme = useTheme();
   const location = useLocation();
   const navigate = useNavigate();
 
-  const [collapsed, setCollapsed] = useState(() => {
+  // real auth — user, role and logout all come from the login response
+  const { user, isAdmin, isSuperAdmin, logout } = useAuth();
+
+  const isNarrow = useMediaQuery(theme.breakpoints.down("md"));
+
+  const [stored, setStored] = useState(() => {
     try {
       return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
     } catch {
@@ -41,37 +53,45 @@ const Sidebar = ({ loginData, onNavigate }) => {
     }
   });
 
+  const collapsed = isNarrow || stored;
+  const [confirmLogout, setConfirmLogout] = useState(false);
+
   const toggleCollapsed = () => {
-    setCollapsed((prev) => {
+    setStored((prev) => {
       const next = !prev;
       try {
         localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
       } catch {
-        // localStorage unavailable -- collapse state just won't persist
+        /* collapse state just won't persist */
       }
       return next;
     });
   };
 
-  const isAdmin = loginData && loginData.role === "administrator";
-  const isSuperAdmin = loginData && loginData.role === "superadministrator";
-
-  // fall back to react-router's navigate if no onNavigate prop is passed
   const goTo = (path) => (onNavigate ? onNavigate(path) : navigate(path));
+
+  const handleLogout = () => {
+    setConfirmLogout(false);
+    logout();
+    navigate("/login", { replace: true });
+  };
+
+  const roleLabel = user?.role
+    ? user.role.charAt(0).toUpperCase() + user.role.slice(1)
+    : "";
+
+  // isAdmin is the "administrator" role alone; superadmin has to be
+  // included explicitly or the highest-privilege user loses the button.
+  const canAddPart = Boolean(isAdmin || isSuperAdmin);
 
   const menuItems = [
     { name: "Dashboard", path: "/", icon: <DashboardIcon /> },
     { name: "Part Details", path: "/part-details", icon: <CategoryIcon /> },
-    {
-      name: "Health Check",
-      path: "/health-check",
-      icon: <DevicesOutlinedIcon />,
-    },
-    {
-      name: "Device Settings",
-      path: "/device-settings",
-      icon: <SettingsIcon />,
-    },
+    { name: "Health Check", path: "/health-check", icon: <DevicesOutlinedIcon /> },
+    { name: "Device Settings", path: "/device-settings", icon: <SettingsIcon /> },
+    ...(isSuperAdmin
+      ? [{ name: "Configuration", path: "/config", icon: <TuneOutlinedIcon /> }]
+      : []),
   ];
 
   const bottomItems = [
@@ -82,243 +102,341 @@ const Sidebar = ({ loginData, onNavigate }) => {
     },
   ];
 
-  const collapsedWidth = 72;
-  const expandedWidth = 260;
-
-  // Icon-only when collapsed (with a tooltip for the label), full
-  // label+icon button when expanded -- shared by both nav lists.
-  const NavButton = ({ item, isActive = false }) => {
-    const button = (
+  const NavButton = ({ item }) => {
+    const active = location.pathname === item.path;
+    const btn = (
       <Button
         onClick={() => goTo(item.path)}
-        fullWidth={!collapsed}
-        startIcon={collapsed ? undefined : item.icon}
+        fullWidth
+        startIcon={collapsed ? null : item.icon}
         sx={{
           justifyContent: collapsed ? "center" : "flex-start",
-          minWidth: 0,
-          px: collapsed ? 0 : undefined,
           textTransform: "none",
+          minWidth: 0,
+          px: collapsed ? 0 : 2,
           mb: 1,
-          fontWeight: isActive ? 600 : 500,
+          fontWeight: active ? 600 : 500,
           fontSize: "15px",
-          color: isActive ? theme.palette.primary.main : theme.palette.text.primary,
-          background: isActive ? theme.palette.gradients.peach : "transparent",
+          color: active ? "primary.main" : "text.primary",
+          background: active ? theme.palette.gradients.peach : "transparent",
           borderRadius: "5px",
-          "&:hover": { bgcolor: theme.palette.grey[100] },
+          "&:hover": {
+            background: active
+              ? theme.palette.gradients.peach
+              : theme.palette.grey[100],
+          },
         }}
       >
         {collapsed ? item.icon : item.name}
       </Button>
     );
+
     return collapsed ? (
       <Tooltip title={item.name} placement="right">
-        <Box>{button}</Box>
+        <Box>{btn}</Box>
       </Tooltip>
     ) : (
-      button
+      btn
     );
   };
 
   return (
     <Box
       sx={{
-        width: collapsed ? collapsedWidth : expandedWidth,
+        width: { xs: "100%", md: collapsed ? COLLAPSED_W : EXPANDED_W },
+        height: { xs: "auto", md: "100%" },
         flexShrink: 0,
-        bgcolor: theme.palette.background.paper,
-        color: theme.palette.text.primary,
+        bgcolor: "background.paper",
+        color: "text.primary",
         display: "flex",
         flexDirection: "column",
         justifyContent: "space-between",
-        height: "100vh",
-        borderRight: `1px solid ${theme.palette.divider}`,
+        borderRight: { xs: "none", md: `1px solid ${theme.palette.divider}` },
+        borderBottom: { xs: `1px solid ${theme.palette.divider}`, md: "none" },
         overflowY: "auto",
         overflowX: "hidden",
-        position: "sticky",
-        top: 0,
         transition: "width 0.2s ease",
+        userSelect: "none",
       }}
     >
-      {/* 🔝 TOP SECTION */}
+      {/* TOP */}
       <Box sx={{ p: collapsed ? 1 : 2 }}>
-        {/* Logo + collapse toggle */}
         <Box
           sx={{
             display: "flex",
             justifyContent: collapsed ? "center" : "space-between",
             alignItems: "center",
-            mb: 1,
-            py: 2,
-            borderRadius: "8px",
+            mb: 2,
+            py: 1,
           }}
         >
           {!collapsed && (
-            <img
+            <Box
+              component="img"
               src={logo}
               alt="Raph Technology Labs"
-              style={{ width: 140, height: "auto" }}
+              sx={{ width: 140, height: "auto" }}
               onError={(e) => (e.target.style.display = "none")}
             />
           )}
-          <Tooltip title={collapsed ? "Expand sidebar" : "Collapse sidebar"} placement="right">
-            <IconButton
-              size="small"
-              onClick={toggleCollapsed}
-              sx={{
-                color: theme.palette.text.primary,
-                "&:hover": { color: theme.palette.primary.main },
-              }}
+
+          {!isNarrow && (
+            <Tooltip
+              title={collapsed ? "Expand menu" : "Hide menu"}
+              placement="right"
             >
-              {collapsed ? <ChevronRightIcon fontSize="small" /> : <ChevronLeftIcon fontSize="small" />}
-            </IconButton>
-          </Tooltip>
+              <IconButton
+                size="small"
+                onClick={toggleCollapsed}
+                sx={{
+                  color: "text.secondary",
+                  "&:hover": { color: "primary.main" },
+                }}
+              >
+                {collapsed ? (
+                  <ChevronRightIcon fontSize="small" />
+                ) : (
+                  <ChevronLeftIcon fontSize="small" />
+                )}
+              </IconButton>
+            </Tooltip>
+          )}
         </Box>
 
-        {/* Action Buttons */}
+        {/* New session */}
         {collapsed ? (
-          <>
-            <Tooltip title="New Session" placement="right">
+          <Tooltip
+            title={
+              sessionActive ? "Stop the running session first" : "New session"
+            }
+            placement="right"
+          >
+            <span>
               <IconButton
+                disabled={sessionActive}
                 onClick={() => goTo("/part-selection")}
                 sx={{
                   width: "100%",
                   borderRadius: "5px",
                   mb: 1,
                   background: theme.palette.gradients.primary,
-                  color: theme.palette.primary.contrastText,
+                  color: "primary.contrastText",
                   "&:hover": { background: theme.palette.gradients.dark },
+                  "&.Mui-disabled": {
+                    background: theme.palette.grey[100],
+                    color: theme.palette.grey[400],
+                  },
                 }}
               >
-                <PlaylistAddIcon fontSize="small" />
+                <PlayCircleOutlinedIcon />
               </IconButton>
-            </Tooltip>
-            <Tooltip title="Add Item" placement="right">
-              <span>
-                <IconButton
-                  disabled={!(isAdmin || isSuperAdmin)}
-                  onClick={() => goTo("/add-part")}
-                  sx={{
-                    width: "100%",
-                    borderRadius: "5px",
-                    mb: 3,
-                    bgcolor: theme.palette.grey[100],
-                    color: theme.palette.text.primary,
-                    "&:hover": { bgcolor: theme.palette.grey[200] },
-                  }}
-                >
-                  <AddIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
-          </>
+            </span>
+          </Tooltip>
         ) : (
-          <>
-            <Button
-              fullWidth
-              onClick={() => goTo("/part-selection")}
-              sx={{
-                background: theme.palette.gradients.primary,
-                color: theme.palette.primary.contrastText,
-                borderRadius: "5px",
-                py: 1,
-                mb: 1,
-                textTransform: "none",
-                fontWeight: 500,
-                "&:hover": {
-                  background: theme.palette.gradients.dark,
-                },
-              }}
-            >
-              + New Session
-            </Button>
+          <Button
+            fullWidth
+            disabled={sessionActive}
+            onClick={() => goTo("/part-selection")}
+            sx={{
+              background: theme.palette.gradients.primary,
+              color: "primary.contrastText",
+              borderRadius: "5px",
+              py: 1,
+              mb: 1,
+              textTransform: "none",
+              fontWeight: 600,
+              "&:hover": { background: theme.palette.gradients.dark },
+              "&.Mui-disabled": {
+                background: theme.palette.grey[100],
+                color: theme.palette.grey[400],
+              },
+            }}
+          >
+            + New Session
+          </Button>
+        )}
 
-            <Button
-              fullWidth
-              disabled={!(isAdmin || isSuperAdmin)}
-              onClick={() => goTo("/add-part")}
-              sx={{
-                bgcolor: theme.palette.grey[100],
-                color: theme.palette.text.primary,
-                borderRadius: "5px",
-                py: 1,
-                mb: 3,
-                textTransform: "none",
-                fontWeight: 500,
-                "&:hover": { bgcolor: theme.palette.grey[200] },
-                "&.Mui-disabled": {
-                  color: theme.palette.grey[400],
-                },
-              }}
-            >
-              + Add Item
-            </Button>
-          </>
+        {/* Add part — administrator and superadministrator only.
+            The <span> wrappers exist so the tooltip still fires: a disabled
+            MUI button emits no mouse events, so an operator would otherwise
+            get a dead grey button with no reason given. */}
+        {collapsed ? (
+          <Tooltip
+            title={
+              canAddPart
+                ? sessionActive
+                  ? "Stop the running session first"
+                  : "Add part"
+                : "Administrator access required"
+            }
+            placement="right"
+          >
+            <span>
+              <IconButton
+                disabled={!canAddPart || sessionActive}
+                onClick={() => goTo("/add-part")}
+                sx={{
+                  width: "100%",
+                  borderRadius: "5px",
+                  mb: 3,
+                  bgcolor: "common.black",
+                  color: "common.white",
+                  "&:hover": { bgcolor: "grey.800" },
+                  "&.Mui-disabled": {
+                    bgcolor: "grey.100",
+                    color: "grey.400",
+                  },
+                }}
+              >
+                <AddCircleOutlinedIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
+        ) : (
+          <Tooltip
+            title={
+              canAddPart
+                ? sessionActive
+                  ? "Stop the running session first"
+                  : ""
+                : "Administrator access required"
+            }
+            placement="right"
+          >
+            <span style={{ display: "block" }}>
+              <Button
+                fullWidth
+                disabled={!canAddPart || sessionActive}
+                onClick={() => goTo("/add-part")}
+                sx={{
+                  bgcolor: "common.black",
+                  color: "common.white",
+                  borderRadius: "5px",
+                  py: 1,
+                  mb: 3,
+                  textTransform: "none",
+                  fontWeight: 600,
+                  "&:hover": { bgcolor: "grey.800" },
+                  "&.Mui-disabled": {
+                    bgcolor: "grey.100",
+                    color: "grey.400",
+                  },
+                }}
+              >
+                + Add Part
+              </Button>
+            </span>
+          </Tooltip>
         )}
 
         <Divider sx={{ mb: 2 }} />
 
-        {/* 🧭 Main Navigation */}
         <List disablePadding>
           {menuItems.map((item) => (
-            <NavButton key={item.path} item={item} isActive={location.pathname === item.path} />
+            <NavButton key={item.path} item={item} />
           ))}
         </List>
       </Box>
 
-      {/* ⬇️ BOTTOM SECTION */}
+      {/* BOTTOM */}
       <Box
         sx={{
           p: collapsed ? 1 : 2,
           borderTop: `1px solid ${theme.palette.divider}`,
           mt: "auto",
-          bgcolor: theme.palette.background.paper,
         }}
       >
         {bottomItems.map((item) => (
-          <NavButton key={item.path} item={item} isActive={location.pathname === item.path} />
+          <NavButton key={item.path} item={item} />
         ))}
 
         <Divider sx={{ my: 1 }} />
 
-        {/* 👤 User Info + Logout */}
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: collapsed ? "center" : "space-between",
-            mt: 1,
-          }}
-        >
-          {!collapsed && (
-            <Box>
-              <Typography
-                variant="body2"
-                sx={{ fontWeight: 600, color: theme.palette.text.primary }}
-              >
-                User
-              </Typography>
-              <Typography
-                variant="body2"
-                sx={{ color: theme.palette.text.secondary, fontSize: "13px" }}
-              >
-                {loginData ? loginData.user_name : "Not logged in"}
-              </Typography>
-            </Box>
-          )}
-
-          <Tooltip title={collapsed ? (loginData ? loginData.user_name : "Not logged in") : ""} placement="right">
+        {collapsed ? (
+          <Tooltip
+            title={user ? `${user.user_name} — sign out` : "Sign out"}
+            placement="right"
+          >
             <IconButton
-              size="small"
-              onClick={() => goTo("/signout")}
+              onClick={() => setConfirmLogout(true)}
               sx={{
-                color: theme.palette.text.primary,
-                "&:hover": { color: theme.palette.primary.main },
+                width: "100%",
+                color: "text.secondary",
+                "&:hover": { color: "primary.main", bgcolor: "grey.100" },
               }}
             >
               <LogoutOutlinedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
-        </Box>
+        ) : (
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              mt: 1,
+              gap: 1,
+            }}
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                variant="body2"
+                noWrap
+                sx={{ fontWeight: 600, color: "text.primary" }}
+              >
+                {user?.user_name || "Not signed in"}
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={{ color: "text.secondary", fontSize: "12px" }}
+              >
+                {roleLabel}
+              </Typography>
+            </Box>
+
+            <Tooltip title="Sign out">
+              <IconButton
+                size="small"
+                onClick={() => setConfirmLogout(true)}
+                sx={{
+                  color: "text.secondary",
+                  "&:hover": { color: "primary.main", bgcolor: "grey.100" },
+                }}
+              >
+                <LogoutOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        )}
       </Box>
+
+      {/* Logout confirmation */}
+      <Dialog open={confirmLogout} onClose={() => setConfirmLogout(false)}>
+        <DialogTitle sx={{ fontWeight: 700 }}>Sign out?</DialogTitle>
+        {sessionActive && (
+          <DialogContent>
+            <Typography variant="body2" sx={{ color: "error.main" }}>
+              An inspection session is running. Stop it before signing out.
+            </Typography>
+          </DialogContent>
+        )}
+        <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+          <Button
+            onClick={() => setConfirmLogout(false)}
+            sx={{ color: "text.secondary", textTransform: "none" }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            sx={{ textTransform: "none" }}
+            onClick={handleLogout}
+          >
+            Sign out
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

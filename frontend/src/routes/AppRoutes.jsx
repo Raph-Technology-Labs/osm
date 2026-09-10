@@ -1,37 +1,68 @@
-import { Routes, Route } from "react-router-dom";
-import DashboardPage from "../pages/DashboardPage";
-import PlaceholderPage from "../pages/PlaceholderPage";
-import InspectionPage from "../pages/InspectionPage";
-import PartSelectionPage from "../pages/PartSelectionPage";
-import DeviceSettingsPage from "../pages/DeviceSettingsPage";
-import HealthCheckPage from "../pages/HealthCheckPage";
-import TechnicalSupport from "../pages/TechinicalSupport";
-import LoginPage from "../pages/LoginPage";
-import SignOutPage from "../pages/SignOutPage";
+import { Routes, Route, Navigate } from "react-router-dom";
+
 import RequireAuth from "../components/RequireAuth";
+import MainLayout from "../layouts/MainLayout";
+
+import LoginPage from "../pages/LoginPage";
+import DashboardPage from "../pages/DashboardPage";
+import PartSelectionPage from "../pages/PartSelectionPage";
+import InspectionPage from "../pages/InspectionPage";
+import HealthCheckPage from "../pages/HealthCheckPage";
+import DeviceSettingsPage from "../pages/DeviceSettingsPage";
+import TechnicalSupport from "../pages/TechinicalSupport";
+import PlaceholderPage from "../pages/PlaceholderPage";
+import AddNewPartPage from "../pages/AddNewPartPage";
+import RequireSuperAdmin from "../auth/RequireSuperAdmin";
+import RequireAdmin from "../auth/RequireAdmin";
+import ConfigPage from "../pages/ConfigPage";
 
 const AppRoutes = () => {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/signout" element={<SignOutPage />} />
 
-      <Route path="/" element={<RequireAuth><DashboardPage /></RequireAuth>} />
-      <Route path="/inspection" element={<RequireAuth><InspectionPage /></RequireAuth>} />
-      <Route path="/add-part" element={<RequireAuth><PlaceholderPage title="Add New Part" /></RequireAuth>} />
-      <Route path="/part-details" element={<RequireAuth><PlaceholderPage title="Part Details" /></RequireAuth>} />
-      <Route path="/part-selection" element={<RequireAuth><PartSelectionPage /></RequireAuth>} />
-      <Route path="/counting/:sessionId" element={<RequireAuth><PlaceholderPage title="Counting" /></RequireAuth>} />
-      <Route path="/health-check" element={<RequireAuth><HealthCheckPage /></RequireAuth>} />
-      <Route path="/batching" element={<RequireAuth><PlaceholderPage title="Batching Mode" /></RequireAuth>} />
-      <Route path="/batching/:sessionId" element={<RequireAuth><PlaceholderPage title="Batching Mode" /></RequireAuth>} />
-      <Route path="/device-settings" element={<RequireAuth><DeviceSettingsPage /></RequireAuth>} />
-      <Route path="/technical-support" element={<RequireAuth><TechnicalSupport /></RequireAuth>} />
+      {/* everything below renders inside MainLayout, which mounts once */}
+      <Route
+        element={
+          <RequireAuth>
+            <MainLayout />
+          </RequireAuth>
+        }
+      >
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/part-selection" element={<PartSelectionPage />} />
+        <Route path="/inspection" element={<InspectionPage />} />
+        <Route path="/part-details" element={<PlaceholderPage title="Part Details" />} />
 
-      <Route path="*" element={<PlaceholderPage title="404 — Not Found" />} />
+        {/* Admin + superadmin only. The backend enforces this too
+            (parts_admin router) — this guard just keeps the page out of
+            an operator's navigation. */}
+        <Route
+          path="/add-part"
+          element={
+            <RequireAdmin>
+              <AddNewPartPage />
+            </RequireAdmin>
+          }
+        />
+
+        <Route path="/health-check" element={<HealthCheckPage />} />
+        <Route path="/device-settings" element={<DeviceSettingsPage />} />
+
+        <Route
+          path="/config"
+          element={
+            <RequireSuperAdmin>
+              <ConfigPage />
+            </RequireSuperAdmin>
+          }
+        />
+        <Route path="/technical-support" element={<TechnicalSupport />} />
+      </Route>
+
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
-
 };
 
 export default AppRoutes;

@@ -1,12 +1,14 @@
-import { Typography } from "@mui/material";
-import MainLayout from "../layouts/MainLayout";
+import { Box, Typography } from "@mui/material";
 
 const PlaceholderPage = ({ title }) => (
-  <MainLayout title={title}>
+  <Box>
+    <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+      {title}
+    </Typography>
     <Typography variant="body1" color="text.secondary">
       {title} page — coming soon.
     </Typography>
-  </MainLayout>
+  </Box>
 );
 
 export default PlaceholderPage;

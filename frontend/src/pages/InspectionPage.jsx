@@ -4,7 +4,6 @@ import { Box, Typography, Button, Stack, useTheme } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 import api from "../api/axios";
-import MainLayout from "../layouts/MainLayout";
 import useLiveEvents from "../hooks/useLiveEvents";
 import DigitalTwin from "../components/inspection/DigitalTwin";
 import PageTabs from "../components/inspection/PageTabs";
@@ -128,7 +127,11 @@ const InspectionPage = () => {
   const currentStations = pages[activePage] || [];
 
   return (
-    <MainLayout title="Live Inspection" noScroll>
+    <>
+      <Typography variant="h5" sx={{ fontWeight: 700, mb: 1.5, flexShrink: 0 }}>
+        Live Inspection
+      </Typography>
+
       {/* Top control bar -- Start/Stop, RPM, totals. Fixed height, never scrolls. */}
       <Stack direction="row" spacing={3} alignItems="flex-start" flexWrap="wrap" sx={{ mb: 1.5, flexShrink: 0 }}>
         <Stack direction="row" spacing={1}>
@@ -226,7 +229,7 @@ const InspectionPage = () => {
           />
         </Box>
       </Box>
-    </MainLayout>
+    </>
   );
 };
 
