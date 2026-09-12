@@ -10,11 +10,14 @@ import {
   Snackbar,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import Autocomplete from "@mui/material/Autocomplete";
 import { useTheme } from "@mui/material/styles";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import { useNavigate } from "react-router-dom";
 
 import api from "../api/axios";
 import { useAuth } from "../auth/AuthContext";
@@ -99,6 +102,7 @@ const Section = ({ title, subtitle, children }) => (
 
 const AddNewPartPage = () => {
   const theme = useTheme();
+  const navigate = useNavigate();
 
   // Read the context rather than take a prop: the route renders this
   // component with no props, so a loginData prop is always undefined and
@@ -128,6 +132,10 @@ const AddNewPartPage = () => {
   const [dimensions, setDimensions] = useState([emptyDimension()]);
 
   const [submitting, setSubmitting] = useState(false);
+
+  // The part just created, so we can offer its config next. A new part
+  // cannot run a session until it has one.
+  const [createdPart, setCreatedPart] = useState(null); // { id, code }
 
   // ── Bulk upload ──────────────────────────────────────────────
   const [uploadFile, setUploadFile] = useState(null);
@@ -295,16 +303,17 @@ const AddNewPartPage = () => {
     const err = validate();
     if (err) return notify("error", err);
 
+    const code = partCode.trim();
     const fd = new FormData();
     fd.append("part_name", partName.trim());
-    fd.append("part_code", partCode.trim());
+    fd.append("part_code", code);
     fd.append("category_id", selectedCategory.category_id);
     if (notes.trim()) fd.append("notes", notes.trim());
     if (weight !== "" && !isNaN(Number(weight))) fd.append("part_weight", weight);
 
     // has_defect_pipeline / has_measurement_pipeline are intentionally NOT
-    // sent — the backend sets them when a PartConfig is saved from the
-    // pipeline builder. This form only supplies the parameter tables.
+    // sent — the backend sets them when the machine config is saved. This
+    // form only supplies the parameter tables.
     const defectPayload = buildDefectPayload();
     if (Object.keys(defectPayload).length)
       fd.append("defects", JSON.stringify(defectPayload));
@@ -321,6 +330,7 @@ const AddNewPartPage = () => {
         headers: { "Content-Type": "multipart/form-data" },
       });
       notify("success", `Part added! ID: ${data.part_id}`);
+      setCreatedPart({ id: data.part_id, code });
       resetForm();
       fetchCategories();
     } catch (e) {
@@ -360,8 +370,7 @@ const AddNewPartPage = () => {
       const errCount = data?.errors?.length ?? 0;
       notify(
         errCount ? "warning" : "success",
-        `Uploaded ✅ parts: ${created}` +
-          (errCount ? `, issues: ${errCount}` : ""),
+        `Uploaded ✅ parts: ${created}` + (errCount ? `, issues: ${errCount}` : ""),
       );
     } catch (e) {
       notify("error", e?.response?.data?.detail || "Bulk upload failed.");
@@ -410,11 +419,81 @@ const AddNewPartPage = () => {
           py: { xs: 2, md: 3 },
         }}
       >
+        {/* Page header. Both admin roles reach the config page from here —
+            what differs is what they may do once there: a superadministrator
+            creates a config for a part that has none, an administrator only
+            edits one that already exists. The label says which. */}
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1.5}
+          alignItems={{ xs: "flex-start", sm: "center" }}
+          justifyContent="space-between"
+          sx={{ mb: 3 }}
+        >
+          <Box>
+            <Typography variant="h5" sx={{ fontWeight: 700 }}>
+              Parts
+            </Typography>
+            <Typography variant="body2" sx={{ color: "text.secondary" }}>
+              Add parts individually or in bulk, and configure the machine for
+              each one.
+            </Typography>
+          </Box>
+
+                    {canEdit && (
+            <Tooltip
+              title={
+                isSuperAdmin
+                  ? "Create a config for a new part, or edit an existing one"
+                  : "Edit an existing part's machine config — only a superadministrator can create one"
+              }
+            >
+              <Button
+                variant="contained"
+                startIcon={<SettingsOutlinedIcon />}
+                onClick={() => navigate("/part-config")}
+                sx={{
+                  whiteSpace: "nowrap",
+                  bgcolor: "common.black",
+                  color: "common.white",
+                  "&:hover": { bgcolor: "grey.800" },
+                }}
+              >
+                Machine Config
+              </Button>
+            </Tooltip>
+          )}
+        </Stack>
+
         {/* Only reachable if this page is ever rendered outside RequireAdmin. */}
         {!canEdit && (
           <Alert severity="warning" sx={{ mb: 3 }}>
             Creating parts requires administrator rights. You are signed in as{" "}
             <b>{role || "an operator"}</b>.
+          </Alert>
+        )}
+
+        {/* A part with no machine config cannot run a session, so the next
+            step is offered here rather than left for the operator to
+            discover at Start Session. */}
+        {createdPart && (
+          <Alert
+            severity="success"
+            sx={{ mb: 3 }}
+            onClose={() => setCreatedPart(null)}
+            action={
+              <Button
+                color="inherit"
+                size="small"
+                onClick={() => navigate(`/part-config/${createdPart.id}`)}
+              >
+                MACHINE CONFIG
+              </Button>
+            }
+          >
+            <b>{createdPart.code}</b> created. It needs a machine config before a
+            session can run
+            {!isSuperAdmin && " — a superadministrator has to create that"}.
           </Alert>
         )}
 
@@ -512,6 +591,13 @@ const AddNewPartPage = () => {
                 <Typography variant="body2">
                   With defects: {uploadResult.with_defects ?? 0}
                 </Typography>
+                {/* Bulk-imported parts have no machine config either. */}
+                {(uploadResult.created_parts ?? 0) > 0 && (
+                  <Typography variant="body2" sx={{ mt: 1, fontStyle: "italic" }}>
+                    Each imported part still needs a machine config before it can
+                    run a session.
+                  </Typography>
+                )}
                 {uploadResult.errors?.length > 0 && (
                   <Box sx={{ mt: 1, maxHeight: 180, overflowY: "auto", pr: 1 }}>
                     {uploadResult.errors.map((msg, i) => (
@@ -733,9 +819,7 @@ const AddNewPartPage = () => {
                     label="Parameter name"
                     value={d.param_name}
                     sx={inputSx}
-                    onChange={(e) =>
-                      updateDimension(i, "param_name", e.target.value)
-                    }
+                    onChange={(e) => updateDimension(i, "param_name", e.target.value)}
                   />
                   <TextField
                     label="Nominal"
