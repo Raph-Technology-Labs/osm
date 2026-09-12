@@ -87,7 +87,7 @@ plc:
   # coarse for real rising-edge/pulse-precise work). PLACEHOLDER -- matches
   # app/plc/poller.py's existing poll_hz=20.0 order of magnitude, not a
   # measured number.
-  real_poll_interval_ms: 40.0 # PLACEHOLDER
+  real_poll_interval_ms: 35.0 # PLACEHOLDER
   # Config-driven motor speed, written to the speed_setpoint register once
   # at session start (CLAUDE.md Rule 5: config-driven, never hardcoded).
   speed_setpoint_rpm: 65.0 # PLACEHOLDER
@@ -304,7 +304,7 @@ stations:
   - id: r1
     name: "Reject Station 1"
     type: reject
-    station_offset_pulses: 2400 # PLACEHOLDER -- between s2 (1080) and exit1 (1800); real value
+    station_offset_pulses: 2500 # PLACEHOLDER -- between s2 (1080) and exit1 (1800); real value
                                  # needs the actual reject-station time-of-flight (CLAUDE.md Rule 7)
     enabled: true # false = commissioning mode, no rejection actuator wired yet -- NOK parts
                   # ride through untouched and get resolved at exit1 instead
