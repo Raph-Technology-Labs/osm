@@ -6,7 +6,6 @@ import StopIcon from "@mui/icons-material/Stop";
 import api from "../api/axios";
 import useLiveEvents from "../hooks/useLiveEvents";
 import DigitalTwin from "../components/inspection/DigitalTwin";
-import DispatcherLogPanel from "../components/inspection/DispatcherLogPanel";
 import PageTabs from "../components/inspection/PageTabs";
 import StationCell from "../components/inspection/StationCell";
 import RpmControl from "../components/inspection/RpmControl";
@@ -39,7 +38,7 @@ const InspectionPage = () => {
   const [sessionStatus, setSessionStatus] = useState(null); // { type, text }
 
   const cameraIds = useMemo(() => Object.values(camerasByStation).flat(), [camerasByStation]);
-  const { frames, results, ringState, dispatcherLog, hasIpc } = useLiveEvents(cameraIds);
+  const { frames, results, ringState, hasIpc } = useLiveEvents(cameraIds);
 
   const fetchConfig = () => {
     api
@@ -220,19 +219,14 @@ const InspectionPage = () => {
           </Box>
         </Box>
 
-        <Box sx={{ width: 300, flexShrink: 0, height: "100%", display: "flex", flexDirection: "column", gap: 2 }}>
-          <Box sx={{ flex: "1 1 55%", minHeight: 0 }}>
-            <DigitalTwin
-              nSlots={nSlots}
-              stations={stations}
-              ringState={ringState}
-              revolutions={ringState ? ringState.revolutions : revolutions}
-              running={motorRunning}
-            />
-          </Box>
-          <Box sx={{ flex: "1 1 45%", minHeight: 0 }}>
-            <DispatcherLogPanel events={dispatcherLog} />
-          </Box>
+        <Box sx={{ width: 300, flexShrink: 0, height: "100%" }}>
+          <DigitalTwin
+            nSlots={nSlots}
+            stations={stations}
+            ringState={ringState}
+            revolutions={ringState ? ringState.revolutions : revolutions}
+            running={motorRunning}
+          />
         </Box>
       </Box>
     </>

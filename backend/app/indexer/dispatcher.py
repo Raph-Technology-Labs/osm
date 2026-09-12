@@ -446,9 +446,6 @@ class StationDispatcher:
                     "Home calibrated at presence sensor: raw_pulse=%d, "
                     "home_offset_pulses=%d", raw_pulse, self.home_offset_pulses,
                 )
-                zeromq.publish_dispatcher_event(
-                    "home_calibrated", raw_pulse=raw_pulse, home_offset_pulses=self.home_offset_pulses,
-                )
             self._on_part_sensor_edge(raw_pulse)
         self._last_part_sensor_state = sensor_state
 
@@ -499,10 +496,6 @@ class StationDispatcher:
                     "Part %r reached exit station %s (slot %d), home_relative_pulses=%d",
                     record.assign_part_id, station.id, slot_id, self._home_relative_pulses,
                 )
-                zeromq.publish_dispatcher_event(
-                    "exit", station_id=station.id, slot_id=slot_id, part_id=record.assign_part_id,
-                    home_relative_pulses=self._home_relative_pulses,
-                )
                 self._check_exit_ack(registers, slot_id)
                 self.tracker.transition_exit(slot_id)
             elif station.type == "virtual_exit":
@@ -510,19 +503,11 @@ class StationDispatcher:
                     "Part %r reached virtual_exit station %s (slot %d), home_relative_pulses=%d",
                     record.assign_part_id, station.id, slot_id, self._home_relative_pulses,
                 )
-                zeromq.publish_dispatcher_event(
-                    "virtual_exit", station_id=station.id, slot_id=slot_id, part_id=record.assign_part_id,
-                    home_relative_pulses=self._home_relative_pulses,
-                )
                 self.tracker.transition_virtual_exit(slot_id)  # spec11 Part 3 -- see _tick_sim's comment
             else:
                 log.info(
                     "Part %r fired at inspection station %s (slot %d), home_relative_pulses=%d",
                     record.assign_part_id, station.id, slot_id, self._home_relative_pulses,
-                )
-                zeromq.publish_dispatcher_event(
-                    "station_fired", station_id=station.id, slot_id=slot_id, part_id=record.assign_part_id,
-                    home_relative_pulses=self._home_relative_pulses,
                 )
                 self.tracker.mark_pending(slot_id, station.id)
                 self.station_registry.fire_station(station.id, slot_id=slot_id, part_id=record.assign_part_id)
@@ -595,10 +580,6 @@ class StationDispatcher:
         part_id = self._next_part_id
         self._next_part_id += 1
         self.tracker.on_part_entered(pulse_count_at_detection, part_id)
-        zeromq.publish_dispatcher_event(
-            "part_admitted", slot_id=slot_index, part_id=part_id,
-            pulse_count_at_detection=pulse_count_at_detection,
-        )
 
     def _arm_reject_targets(self, reject_station) -> None:
         """Computes target_fire_pulse once per slot, the instant a station
@@ -705,11 +686,6 @@ class StationDispatcher:
                 target_fire_pulse, self._home_relative_pulses,
                 target_fire_pulse - self._home_relative_pulses,
             )
-            zeromq.publish_dispatcher_event(
-                "reject_armed", station_id=reject_station.id, slot_id=slot_id, part_id=record.assign_part_id,
-                pulse_count_at_detection=record.pulse_count_at_detection, corrected_detection=corrected_detection,
-                target_fire_pulse=target_fire_pulse, home_relative_pulses=self._home_relative_pulses,
-            )
 
     def _fire_crossed_reject_targets(self, registers) -> None:
         """Fires reject_cmd for every pending target the ring has now
@@ -753,11 +729,6 @@ class StationDispatcher:
                 "target_fire_pulse=%d, home_relative_pulses=%d (%d pulses late)",
                 armed_by.id, slot_id, self.tracker.get_slot(slot_id).assign_part_id, reject_reg,
                 target, self._home_relative_pulses, self._home_relative_pulses - target,
-            )
-            zeromq.publish_dispatcher_event(
-                "reject_fired", station_id=armed_by.id, slot_id=slot_id,
-                part_id=self.tracker.get_slot(slot_id).assign_part_id, target_fire_pulse=target,
-                home_relative_pulses=self._home_relative_pulses,
             )
             self._check_reject_ack(registers, armed_by.id, slot_id)
             self.tracker.transition_reject(slot_id, armed_by)

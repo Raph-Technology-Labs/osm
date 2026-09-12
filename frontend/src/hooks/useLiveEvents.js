@@ -16,12 +16,6 @@ export default function useLiveEvents(cameraIds) {
   // slot.status, replacing its old client-side reconstruction from
   // lastEvent.
   const [ringState, setRingState] = useState(null);
-  // Verbose debug trail (MessageType.DispatcherLog) -- home calibration,
-  // presence-sensor admits, station fires, reject arm/fire, each carrying
-  // the pulse math behind it. Capped so a long-running session's log panel
-  // doesn't grow unbounded; newest first for the panel to render directly.
-  const MAX_DISPATCHER_LOG = 300;
-  const [dispatcherLog, setDispatcherLog] = useState([]);
 
   useEffect(() => {
     if (!window.ipc || cameraIds.length === 0) return;
@@ -45,11 +39,7 @@ export default function useLiveEvents(cameraIds) {
     window.ipc.handleRingStateMessages((state) => {
       setRingState(state);
     });
-
-    window.ipc.handleDispatcherLogMessages((event) => {
-      setDispatcherLog((prev) => [event, ...prev].slice(0, MAX_DISPATCHER_LOG));
-    });
   }, [cameraIds]);
 
-  return { frames, results, totals, setTotals, lastEvent, ringState, dispatcherLog, hasIpc: Boolean(window.ipc) };
+  return { frames, results, totals, setTotals, lastEvent, ringState, hasIpc: Boolean(window.ipc) };
 }

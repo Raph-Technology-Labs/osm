@@ -9,6 +9,4 @@ contextBridge.exposeInMainWorld("ipc", {
     ipcRenderer.on("MessageType.InspectionResult", (_event, value) => callback(value)),
   handleRingStateMessages: (callback) =>
     ipcRenderer.on("MessageType.RingState", (_event, value) => callback(value)),
-  handleDispatcherLogMessages: (callback) =>
-    ipcRenderer.on("MessageType.DispatcherLog", (_event, value) => callback(value)),
 });
