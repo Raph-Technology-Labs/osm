@@ -22,6 +22,15 @@ indexer:
   tolerance_pct: 4 # PLACEHOLDER -- extra clearance added to part_size_mm per slot
   # n_slots is DERIVED, not set here: floor(pi * diameter_mm / (part_size_mm * (1 + tolerance_pct/100)))
   encoder_cpr: 4800 # CONFIRMED -- real encoder CPR (per instrumentation team, 2026-09-08)
+  # CONFIRMED against real hardware, 2026-09-12: plc.registers.encoder_indexer_ppr
+  # (40002, "Reset to 0 at Indexer Revolution") is the register that actually
+  # tracks indexer-revolution position -- resets once per full indexer
+  # revolution, at encoder_cpr (4800), exactly matching both its own sheet
+  # label and CLAUDE.md Rule 2. StationDispatcher._tick_real() reads it for
+  # slot/position math -- see its own comment for the two other registers
+  # ruled out first (pulse_count: raw MOTOR-shaft count, resets at half this;
+  # encoder_count: genuinely monotonic, a read-noise dip on it once fired a
+  # reject ~4491 pulses late).
   # spec12 (pulse-precise reject timing) -- part_sensor is mounted mid-slot
   # by design, not at the slot boundary. PLACEHOLDER -- written here as
   # pulses_per_slot/2 (=40 at the current 80 pulses/slot) purely as an inert
@@ -78,10 +87,10 @@ plc:
   # coarse for real rising-edge/pulse-precise work). PLACEHOLDER -- matches
   # app/plc/poller.py's existing poll_hz=20.0 order of magnitude, not a
   # measured number.
-  real_poll_interval_ms: 50.0 # PLACEHOLDER
+  real_poll_interval_ms: 40.0 # PLACEHOLDER
   # Config-driven motor speed, written to the speed_setpoint register once
   # at session start (CLAUDE.md Rule 5: config-driven, never hardcoded).
-  speed_setpoint_rpm: 50.0 # PLACEHOLDER
+  speed_setpoint_rpm: 65.0 # PLACEHOLDER
   # PLACEHOLDER -- app/plc/watchdog.py's heartbeat-staleness timeout before
   # escalating to STOP_CMD. Not tuned yet; real value once indexer/PLC
   # hardware is actually connected.
@@ -101,12 +110,23 @@ plc:
   # point of use -- not done here, config stores the literal number.
   registers:
     pulse_count: 40001              # PLC->PC, int -- "Encoder actual pulse"
+    # CONFIRMED live, 2026-09-12: pulse_count is the raw MOTOR-shaft encoder
+    # count, not the indexer's own revolution position -- resets at raw≈2400
+    # (half of encoder_cpr=4800, per the 2:1 encoder-to-indexer gear ratio).
+    # NOT used for slot-math/wrap-corrected position tracking.
     encoder_indexer_ppr: 40002      # PLC->PC, int -- "Reset to 0 at Indexer Revolution"
-    # UNCONFIRMED: both pulse_count and encoder_indexer_ppr are described as
-    # resetting per revolution -- which one actually feeds the wrap-corrected
-    # slot-math accumulator (indexer-ring-math skill) is not yet determined.
-    # Not wired into poller.py's control flow yet.
-    encoder_count: 40003             # PLC->PC, long -- "Total pulses from machine start to stop"
+    # CONFIRMED live, 2026-09-12 -- this is the one. Resets once per full
+    # indexer revolution, at encoder_cpr (4800), exactly matching its own
+    # sheet label. This is the register StationDispatcher._tick_real() reads
+    # for wrap-corrected slot/position tracking (after pulse_count and
+    # encoder_count below were each tried and ruled out first -- see
+    # dispatcher.py's module-level comment for the full history).
+    encoder_count: 40003             # PLC->PC, long -- sheet says "Total pulses from machine
+    # start to stop" -- CONFIRMED live, 2026-09-12, to actually be exactly
+    # that: genuinely monotonic, never resets. Tried briefly as the
+    # slot-tracking register instead of pulse_count; ruled out same day when
+    # an ordinary 2-count read-noise dip got misread as a full revolution
+    # reset and fired one reject ~4491 pulses late. Not used for slot-math.
     part_sensor: 40004                # PLC->PC, bool -- "part detection at entry"
     heartbeat: 40005                   # PLC->PC -- per-slot heartbeat tick count (1,2,3...)
     indexing_pulse: 40006               # PLC->PC, bool -- "0,1 after sending reset bit"
@@ -246,7 +266,7 @@ stations:
   - id: s2
     name: "Station 2 - Defect Detection"
     type: inspection
-    station_offset_pulses: 1080 # PLACEHOLDER
+    station_offset_pulses: 1066 # PLACEHOLDER
 
     cameras:
       cam2:
@@ -284,7 +304,7 @@ stations:
   - id: r1
     name: "Reject Station 1"
     type: reject
-    station_offset_pulses: 1440 # PLACEHOLDER -- between s2 (1080) and exit1 (1800); real value
+    station_offset_pulses: 2800 # PLACEHOLDER -- between s2 (1080) and exit1 (1800); real value
                                  # needs the actual reject-station time-of-flight (CLAUDE.md Rule 7)
     enabled: true # false = commissioning mode, no rejection actuator wired yet -- NOK parts
                   # ride through untouched and get resolved at exit1 instead
@@ -294,7 +314,7 @@ stations:
   - id: exit1
     name: "Exit Station - Result Check"
     type: exit
-    station_offset_pulses: 1800 # PLACEHOLDER -- point where OK/NOK is evaluated
+    station_offset_pulses: 3000 # PLACEHOLDER -- point where OK/NOK is evaluated
     pass_if: all_stations_pass
     result_write:
       part_id_reg: 100

@@ -394,6 +394,13 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     # this now correctly raises NoTickSourceConfiguredError (caught as a
     # 400 by routers/inspection.py) instead of silently constructing a
     # dispatcher with no way to ever tick.
+    # IndexerSlotTracker is a boot-lifetime singleton (created once in
+    # load_machine()), unlike StationDispatcher below which is rebuilt fresh
+    # every session -- without this, revolutions/ok_total/nok_total/
+    # reject_removed would carry stale state from whatever ran before into
+    # this session (see IndexerSlotTracker.reset_session_counters).
+    app.state.indexer_tracker.reset_session_counters()
+
     dispatcher = StationDispatcher(
         resolved, registry, app.state.indexer_tracker, plc_client=getattr(app.state, "plc_client", None)
     )

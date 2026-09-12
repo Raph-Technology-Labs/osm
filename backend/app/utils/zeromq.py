@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+import time
 
 import cv2
 import zmq
@@ -73,6 +74,24 @@ def publish_inspection_result(
         "part_id": part_id,
     })
     broadcast("MessageType.InspectionResult", payload)
+
+
+def publish_dispatcher_event(event: str, **fields) -> None:
+    """Verbose, human-debuggable ring events (home calibrated, part admitted
+    at the presence sensor, a station firing/marking a slot, reject
+    armed/fired) -- for the Inspection page's live debug log panel, NOT for
+    any ring-state rendering (that stays RingState/DigitalTwin's job). Each
+    call mirrors a log.info/.warning already emitted server-side (see
+    app/indexer/dispatcher.py) so the same event is visible both in the
+    backend logs and live in the UI, without needing to tail a log file
+    during commissioning. Best-effort: same fail-open behavior as
+    publish_ring_state -- a bad event must never take down dispatch."""
+    try:
+        payload = json.dumps({"ts": time.time(), "event": event, **fields})
+    except (TypeError, ValueError):
+        log.error("publish_dispatcher_event: failed to serialize event %r -- skipping", event, exc_info=True)
+        return
+    broadcast("MessageType.DispatcherLog", payload)
 
 
 def publish_ring_state(tracker, revolutions: int) -> None:

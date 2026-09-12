@@ -15,9 +15,19 @@ deterministic and don't need real sleeps or timing margins.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from app.indexer.dispatcher import PULSE_COUNT_REGISTER_WRAP, StationDispatcher
+from app.indexer.dispatcher import StationDispatcher
 from app.indexer.tracker import IndexerSlotTracker
 
+# Kept as "PULSE_COUNT_REG" for minimal diff across this file's many call
+# sites, but this is now the register StationDispatcher._tick_real() reads
+# for slot/position tracking -- registers.encoder_indexer_ppr (40002 on the
+# real sheet, confirmed 2026-09-12 to reset once per revolution at
+# encoder_cpr), NOT registers.pulse_count (40001, the raw motor-encoder
+# count) or registers.encoder_count (40003, genuinely monotonic) -- see
+# dispatcher.py's own module-level comment for the full history. The
+# literal address value doesn't matter for these unit tests against a
+# FakePlcClient, only that FakeRegisters.encoder_indexer_ppr below matches
+# what every plc.queue(PULSE_COUNT_REG, ...) call populates.
 PULSE_COUNT_REG = 40001
 PART_SENSOR_REG = 40004
 REJECT_CMD_REG = 40009
@@ -27,7 +37,9 @@ EXIT_ACK_REG = 40014  # test-only address -- no real register exists yet (see Re
 
 @dataclass
 class FakeRegisters:
-    pulse_count: int = PULSE_COUNT_REG
+    pulse_count: int = 40099  # unused by dispatcher.py any more -- distinct dummy address
+    encoder_count: int = 40098  # unused by dispatcher.py any more -- distinct dummy address
+    encoder_indexer_ppr: int = PULSE_COUNT_REG  # what _tick_real() actually reads -- see comment above
     part_sensor: int = PART_SENSOR_REG
     reject_cmd: int = REJECT_CMD_REG
     reject_ack: Optional[int] = None
@@ -120,6 +132,15 @@ class FakePlcClient:
     def read_register(self, reg: int) -> int:
         q = self.queues[reg]
         return int(q.pop(0))
+
+    def read_registers(self, start_reg: int, count: int) -> list:
+        # Mirrors ModbusPLCClient.read_registers' batched-read shape, but
+        # pulls from the same per-register queues read_register() uses --
+        # tests still queue values per register number, independent of
+        # dispatcher.py's internal batching, so a register with nothing
+        # queued (not part of this test's setup) reads as 0 rather than
+        # KeyError.
+        return [int(self.queues[reg].pop(0)) if self.queues.get(reg) else 0 for reg in range(start_reg, start_reg + count)]
 
     def write_register(self, reg: int, value: int) -> None:
         self.writes.append((reg, value))
@@ -283,13 +304,16 @@ def test_target_fire_pulse_reflects_actual_detected_offset_not_nominal_slot():
 
 
 def test_wraparound_crossing_between_detection_and_fire():
-    # pulse_count wraps (65535 -> 0-ish) between when a target is armed and
-    # when it's actually reached -- the monotonic accumulator must keep
-    # counting up through the wrap, not corrupt/reset the pending target.
+    # pulse_count wraps (resets to 0 every revolution, at encoder_cpr --
+    # CLAUDE.md Rule 2, confirmed against real hardware 2026-09-12) between
+    # when a target is armed and when it's actually reached -- the
+    # monotonic accumulator must keep counting up through the wrap, not
+    # corrupt/reset the pending target.
     reject = FakeRejectStation(station_offset_pulses=10)
-    dispatcher, tracker, plc = make_real_dispatcher(n_slots=1000, encoder_cpr=100000, reject_station=reject)
+    encoder_cpr = 100000
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=1000, encoder_cpr=encoder_cpr, reject_station=reject)
 
-    near_wrap = PULSE_COUNT_REGISTER_WRAP - 5
+    near_wrap = encoder_cpr - 5
     plc.queue(PULSE_COUNT_REG, [near_wrap, near_wrap, 3, 20])  # wraps between samples 2 and 3
     plc.queue(PART_SENSOR_REG, [False, True, False, False])
 
@@ -301,7 +325,7 @@ def test_wraparound_crossing_between_detection_and_fire():
     tracker.mark_pending(slot_index, "s1")
     tracker.apply_station_result(slot_index, "s1", passed=False)
 
-    dispatcher._tick_real()  # crosses the 65536 boundary: gap = (65536-65531)+3 = 8
+    dispatcher._tick_real()  # crosses the encoder_cpr boundary: gap = (100000-99995)+3 = 8
     assert dispatcher._real_accumulated_pulses == 8  # monotonic, kept counting through the wrap
 
     target = dispatcher._pending_reject_targets[slot_index]
@@ -672,6 +696,7 @@ def test_exit_ack_read_and_recorded_when_register_configured():
     dispatcher, tracker, plc = make_real_dispatcher(
         n_slots=10, encoder_cpr=100, inspection_ids=(), exit_station=FakeExitStation(), plc=plc_cfg
     )
+    dispatcher.home_offset_pulses = 0  # exit_ack is under test here, not homing -- precalibrate
     tracker.on_part_entered(0, part_id=1)  # a part already sitting at slot 0 == exit's offset
 
     plc.queue(PULSE_COUNT_REG, [0])
@@ -687,6 +712,7 @@ def test_exit_ack_unconfigured_is_a_noop():
     dispatcher, tracker, plc = make_real_dispatcher(
         n_slots=10, encoder_cpr=100, inspection_ids=(), exit_station=FakeExitStation()
     )
+    dispatcher.home_offset_pulses = 0  # exit_ack is under test here, not homing -- precalibrate
     tracker.on_part_entered(0, part_id=1)
 
     plc.queue(PULSE_COUNT_REG, [0])

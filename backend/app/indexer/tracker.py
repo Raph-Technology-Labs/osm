@@ -172,6 +172,27 @@ class IndexerSlotTracker:
         # apply_defect_result/record_camera_result) -- see module docstring.
         self._lock = threading.Lock()
 
+    def reset_session_counters(self) -> None:
+        """Called once per start_session() (see inspection_session.py), right
+        where a fresh StationDispatcher/home_offset_pulses is built for the
+        new session. IndexerSlotTracker itself is a boot-lifetime singleton
+        (created once in load_machine()), NOT recreated per session -- so
+        without this, _accumulated_pulses/_last_raw_pulse (revolutions) and
+        ok_total/nok_total/reject_removed silently carried leftover state
+        from whatever ran before into the new session, desyncing the digital
+        twin's REV/OK/NOK readouts from what this session has actually done
+        (found via a real repro: REV reading 2 at this session's very first
+        homing edge, from a previous run's leftover pulses). Deliberately
+        does NOT touch self.slots -- physical parts already on the ring at
+        session-start time are real and must not be wiped, only virtual
+        bookkeeping (pulse accumulator, ring-wide verdict totals) resets."""
+        self._accumulated_pulses = 0
+        self._last_raw_pulse = 0
+        self._entry_slot_id = 0
+        self.ok_total = 0
+        self.nok_total = 0
+        self.reject_removed = 0
+
     def on_pulse_update(self, raw_pulse_count: int) -> None:
         """Feed the latest raw PULSE_COUNT register value. Wrap-corrected --
         PULSE_COUNT resets to 0 every revolution, so we never divide the raw

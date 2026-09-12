@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config.config_loader import DEFAULT_CONFIG_PATH
 from app.routers import actuators, auth, dashboard, health, inspection, parts, parts_admin
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 app = FastAPI()
 

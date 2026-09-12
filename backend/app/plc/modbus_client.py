@@ -94,6 +94,20 @@ class ModbusPLCClient:
             raise PLCConnectionError(f"register {reg} read failed: {rr}")
         return rr.registers[0]
 
+    def read_registers(self, start_reg: int, count: int) -> list[int]:
+        """Batched read -- CLAUDE.md Throughput Design Requirement 1: one
+        read_holding_registers(start, count) round trip for contiguous,
+        frequently-co-read registers (e.g. pulse_count + part_sensor, both
+        read every StationDispatcher._tick_real() tick) instead of N
+        separate ones -- each round trip is ~5-20ms over TCP, which
+        compounds fast at the 900 PPM / 15 events-sec target. `start_reg`
+        is a literal Modicon register number (e.g. 40001), not a protocol
+        address -- converted here, same as read_register()."""
+        rr = self._client.read_holding_registers(_protocol_address(start_reg), count=count)
+        if rr.isError():
+            raise PLCConnectionError(f"batched register read failed (start={start_reg}, count={count}): {rr}")
+        return rr.registers
+
     def write_register(self, reg: int, value: int) -> None:
         rr = self._client.write_register(_protocol_address(reg), value)
         if rr.isError():

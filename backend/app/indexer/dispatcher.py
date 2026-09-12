@@ -84,13 +84,34 @@ MIN_INTERVAL_S = 0.05
 # inventing them.
 ENTRY_INTERVAL_TICKS = 2
 
-# spec12 -- pulse_count (40001) is read as a single Modbus holding register
-# (app/plc/poller.py reads it with count=1), so ASSUMED to wrap at 2**16 as
-# a plain uint16. Flagged assumption, not confirmed with instrumentation --
-# only matters at the raw-register-unwrap step in _tick_real(); everything
-# downstream (slot math, target_fire_pulse, the crossing check) works in
-# the already-unwrapped monotonic pulse space and never uses this directly.
-PULSE_COUNT_REGISTER_WRAP = 1 << 16
+# spec12 -- registers.encoder_indexer_ppr (40002, "Reset to 0 at Indexer
+# Revolution") is what _tick_real() unwraps for slot/position math. Landed
+# on this after ruling out two other registers live, 2026-09-12:
+#   1. pulse_count (40001, "Encoder actual pulse") -- assumed to free-run to
+#      2**16 before wrapping; wrong (real_accumulated_pulses hit ~262k after
+#      barely 1-1.5 real revolutions, every genuine reset unwrapped as a
+#      65536-wide wrap, adding ~60,736 phantom pulses each time). Then
+#      confirmed it resets at raw≈2400, HALF of encoder_cpr=4800 (it's the
+#      raw MOTOR-shaft encoder count, 2:1 gear ratio to the indexer) -- this
+#      alone would still have worked with the right wrap width, but...
+#   2. encoder_count (40003, sheet-labeled "Total pulses from machine start
+#      to stop") -- tried as the "real" per-revolution register instead;
+#      turned out to be genuinely monotonic (climbed past 26000 with no
+#      reset), and an ordinary 2-count read-noise dip (27703 -> 27701, not a
+#      real wrap) got misread as a full revolution reset, injecting a
+#      ~4800-pulse phantom jump and firing one reject ~4491 pulses late.
+# encoder_indexer_ppr's own sheet label is the direct, literal match for
+# what this code needs -- CONFIRMED against real hardware, 2026-09-12, to
+# reset once per full indexer revolution, at encoder_cpr (4800), exactly per
+# CLAUDE.md Rule 2, with no read-noise false-wrap issue seen. _tick_real()
+# below unwraps it against encoder_cpr directly -- see machine_config.yaml's
+# register-map comment for the same history.
+#
+# The wrap-detection's blanket "any decrease means a full revolution
+# wrapped" assumption is still a real gap worth hardening someday (it can't
+# currently distinguish a genuine wrap from a few counts of read noise --
+# e.g. only treat a decrease as a wrap if it's close to a full encoder_cpr's
+# worth), but isn't urgent now that the register itself doesn't glitch.
 
 
 class NoTickSourceConfiguredError(ValueError):
@@ -206,6 +227,23 @@ class StationDispatcher:
             self._last_rate_sample_ts_ms: Optional[float] = None
             self._last_rate_sample_pulses: Optional[int] = None
             self._pulses_per_ms: float = 0.0
+            # CLAUDE.md Throughput Design Requirement 1 (Section 5):
+            # encoder_indexer_ppr and part_sensor are read every single tick
+            # and sit adjacent in the register map (40002/40004 on the
+            # current sheet) -- pull both in one
+            # read_holding_registers(start, count) round trip instead of two
+            # separate ones. Computed once here (not per tick) since the
+            # register map never changes after construction; works for
+            # either register-number ordering, not just encoder_indexer_ppr <
+            # part_sensor, so a future register-map reshuffle doesn't
+            # silently break this. encoder_indexer_ppr, NOT pulse_count or
+            # encoder_count -- see the module-level comment above this class
+            # for why.
+            registers = resolved_config.plc.registers
+            self._pulse_sensor_read_start = min(registers.encoder_indexer_ppr, registers.part_sensor)
+            self._pulse_sensor_read_count = abs(registers.part_sensor - registers.encoder_indexer_ppr) + 1
+            self._pulse_offset_in_batch = registers.encoder_indexer_ppr - self._pulse_sensor_read_start
+            self._sensor_offset_in_batch = registers.part_sensor - self._pulse_sensor_read_start
 
     def start(self) -> None:
         """Idempotent -- a no-op if already running. Now that motor start is
@@ -319,32 +357,56 @@ class StationDispatcher:
           (not the slot-changed dispatch inspection/exit stations still use,
           in BOTH modes -- untouched below, same as _tick_sim's).
 
-        Wraparound: pulse_count is read as a raw, wrapping hardware register
-        (PULSE_COUNT_REGISTER_WRAP) and unwrapped ONCE into
-        self._real_accumulated_pulses, a monotonic count that never wraps
-        within a session. Every downstream calculation (slot math, entry
-        detection, target_fire_pulse, the crossing check) works in that
-        already-unwrapped space with plain arithmetic -- this is also how
-        tracker.on_pulse_update()'s own revolution-reset assumption (CLAUDE.md
-        Rule 2) is kept satisfied without touching it: we feed it the
-        revolution-relative projection of our monotonic count
-        (accumulated % encoder_cpr), which looks exactly like the
-        resets-every-revolution signal it already expects, regardless of
-        whether the real register itself resets or free-runs.
+        Wraparound: encoder_indexer_ppr (NOT pulse_count or encoder_count --
+        see the module-level comment above this class) resets to 0 every
+        indexer revolution, at encoder_cpr (CLAUDE.md Rule 2, confirmed
+        against real hardware 2026-09-12). Unwrapped into self._real_accumulated_pulses, a
+        monotonic count that never wraps within a session. Every downstream
+        calculation (slot math, entry detection, target_fire_pulse, the
+        crossing check) works in that already-unwrapped space with plain
+        arithmetic -- this is also how tracker.on_pulse_update()'s own
+        revolution-reset assumption (CLAUDE.md Rule 2) is kept satisfied
+        without touching it: we feed it the revolution-relative projection
+        of our monotonic count (accumulated % encoder_cpr), the same signal
+        shape the raw register itself produces.
         """
         if self._stopped:
             return
 
         registers = self.resolved_config.plc.registers
 
-        # -- 1. Unwrap the raw (wrapping) register into a monotonic count.
-        raw_pulse = self.plc_client.read_register(registers.pulse_count)
+        # encoder_indexer_ppr + part_sensor in one round trip (CLAUDE.md
+        # Throughput Design Requirement 1) -- both are read every tick
+        # regardless of ring state, so this is the single biggest fixed
+        # per-tick Modbus cost to cut. Span/offsets computed once in
+        # __init__, not here.
+        pulse_sensor_batch = self.plc_client.read_registers(
+            self._pulse_sensor_read_start, self._pulse_sensor_read_count,
+        )
+
+        # -- 1. Unwrap the raw (per-revolution-resetting) register into a
+        # monotonic count. Wrap point is this dispatcher's own tracker's
+        # encoder_cpr -- config-driven per machine (CLAUDE.md Rule 5), never
+        # a fixed hardware-register-width constant. NOTE: reads
+        # encoder_indexer_ppr (40002), not pulse_count (40001) or
+        # encoder_count (40003) -- see the module-level comment above this
+        # class for why.
+        raw_pulse = pulse_sensor_batch[self._pulse_offset_in_batch]
         if self._last_raw_pulse_count is None:
             gap = 0
         elif raw_pulse < self._last_raw_pulse_count:
-            gap = (PULSE_COUNT_REGISTER_WRAP - self._last_raw_pulse_count) + raw_pulse
+            gap = (self.tracker.encoder_cpr - self._last_raw_pulse_count) + raw_pulse
+            log.info(
+                "encoder_indexer_ppr revolution wrap: last_raw=%d, raw_pulse=%d, "
+                "encoder_cpr=%d, computed_gap=%d",
+                self._last_raw_pulse_count, raw_pulse, self.tracker.encoder_cpr, gap,
+            )
         else:
             gap = raw_pulse - self._last_raw_pulse_count
+        log.debug(
+            "encoder_indexer_ppr tick: raw_pulse=%d, gap=%d, real_accumulated_pulses=%d",
+            raw_pulse, gap, self._real_accumulated_pulses + gap,
+        )
         self._real_accumulated_pulses += gap
         self._last_raw_pulse_count = raw_pulse
         self._update_pulse_rate_sample()
@@ -365,7 +427,7 @@ class StationDispatcher:
         # detection at some arbitrary pre-existing offset. Every pulse
         # read after this point goes through _home_relative_pulses, never
         # _real_accumulated_pulses directly.
-        sensor_state = bool(self.plc_client.read_register(registers.part_sensor))
+        sensor_state = bool(pulse_sensor_batch[self._sensor_offset_in_batch])
         if self._last_part_sensor_state is None:
             # First-ever poll this session -- establish baseline only, no
             # edge fires. See __init__'s comment: an already-HIGH first
@@ -384,8 +446,27 @@ class StationDispatcher:
                     "Home calibrated at presence sensor: raw_pulse=%d, "
                     "home_offset_pulses=%d", raw_pulse, self.home_offset_pulses,
                 )
+                zeromq.publish_dispatcher_event(
+                    "home_calibrated", raw_pulse=raw_pulse, home_offset_pulses=self.home_offset_pulses,
+                )
             self._on_part_sensor_edge(raw_pulse)
         self._last_part_sensor_state = sensor_state
+
+        # Not yet homed this session: there's no physical reference yet (see
+        # _home_relative_pulses docstring -- "nothing meaningful has happened
+        # yet at that point anyway, no part has reached the ring"). Feeding
+        # the tracker/twin raw pre-calibration pulses here was the cause of
+        # a real digital-twin desync: the ring would free-run off the raw,
+        # arbitrary power-on encoder value for however many ticks preceded
+        # the first presence-sensor edge, then visibly jerk/jump the instant
+        # home_offset_pulses got set and _home_relative_pulses collapsed to
+        # 0 -- indistinguishable, to the frontend's rotation accumulator,
+        # from a huge backward spin. Publish the tracker's untouched idle
+        # state instead (entry_slot_id=0, 0 revolutions) and wait for homing.
+        if self.home_offset_pulses is None:
+            zeromq.publish_ring_state(self.tracker, revolutions=self.tracker.revolutions)
+            self._schedule_tick()
+            return
 
         # Feed the tracker's existing (revolution-bounded) API so camera/
         # station dispatch below is byte-for-byte the same mechanism as sim
@@ -414,12 +495,35 @@ class StationDispatcher:
                 continue
 
             if station.type == "exit":
-                log.info("Part %r reached exit station %s (slot %d)", record.assign_part_id, station.id, slot_id)
+                log.info(
+                    "Part %r reached exit station %s (slot %d), home_relative_pulses=%d",
+                    record.assign_part_id, station.id, slot_id, self._home_relative_pulses,
+                )
+                zeromq.publish_dispatcher_event(
+                    "exit", station_id=station.id, slot_id=slot_id, part_id=record.assign_part_id,
+                    home_relative_pulses=self._home_relative_pulses,
+                )
                 self._check_exit_ack(registers, slot_id)
                 self.tracker.transition_exit(slot_id)
             elif station.type == "virtual_exit":
+                log.info(
+                    "Part %r reached virtual_exit station %s (slot %d), home_relative_pulses=%d",
+                    record.assign_part_id, station.id, slot_id, self._home_relative_pulses,
+                )
+                zeromq.publish_dispatcher_event(
+                    "virtual_exit", station_id=station.id, slot_id=slot_id, part_id=record.assign_part_id,
+                    home_relative_pulses=self._home_relative_pulses,
+                )
                 self.tracker.transition_virtual_exit(slot_id)  # spec11 Part 3 -- see _tick_sim's comment
             else:
+                log.info(
+                    "Part %r fired at inspection station %s (slot %d), home_relative_pulses=%d",
+                    record.assign_part_id, station.id, slot_id, self._home_relative_pulses,
+                )
+                zeromq.publish_dispatcher_event(
+                    "station_fired", station_id=station.id, slot_id=slot_id, part_id=record.assign_part_id,
+                    home_relative_pulses=self._home_relative_pulses,
+                )
                 self.tracker.mark_pending(slot_id, station.id)
                 self.station_registry.fire_station(station.id, slot_id=slot_id, part_id=record.assign_part_id)
 
@@ -491,6 +595,10 @@ class StationDispatcher:
         part_id = self._next_part_id
         self._next_part_id += 1
         self.tracker.on_part_entered(pulse_count_at_detection, part_id)
+        zeromq.publish_dispatcher_event(
+            "part_admitted", slot_id=slot_index, part_id=part_id,
+            pulse_count_at_detection=pulse_count_at_detection,
+        )
 
     def _arm_reject_targets(self, reject_station) -> None:
         """Computes target_fire_pulse once per slot, the instant a station
@@ -587,6 +695,21 @@ class StationDispatcher:
 
             self._pending_reject_targets[slot_id] = target_fire_pulse
             self._pending_reject_armed_by[slot_id] = reject_station
+            log.info(
+                "reject station %s ARMED for slot %d (part %r): "
+                "pulse_count_at_detection=%d, corrected_detection=%d, "
+                "target_fire_pulse=%d, current home_relative_pulses=%d "
+                "(%d pulses to go)",
+                reject_station.id, slot_id, record.assign_part_id,
+                record.pulse_count_at_detection, corrected_detection,
+                target_fire_pulse, self._home_relative_pulses,
+                target_fire_pulse - self._home_relative_pulses,
+            )
+            zeromq.publish_dispatcher_event(
+                "reject_armed", station_id=reject_station.id, slot_id=slot_id, part_id=record.assign_part_id,
+                pulse_count_at_detection=record.pulse_count_at_detection, corrected_detection=corrected_detection,
+                target_fire_pulse=target_fire_pulse, home_relative_pulses=self._home_relative_pulses,
+            )
 
     def _fire_crossed_reject_targets(self, registers) -> None:
         """Fires reject_cmd for every pending target the ring has now
@@ -620,14 +743,21 @@ class StationDispatcher:
             if self._home_relative_pulses >= target
         ]
         for slot_id in crossed:
-            del self._pending_reject_targets[slot_id]
+            target = self._pending_reject_targets.pop(slot_id)
             armed_by = self._pending_reject_armed_by.pop(slot_id)
             reject_reg = armed_by.actuator_reg if armed_by.actuator_reg is not None else registers.reject_cmd
             self.plc_client.write_register(reject_reg, 1)
             self.plc_client.write_register(reject_reg, 0)
             log.info(
-                "reject_cmd fired: station=%s, slot=%d, part=%r, register=%d",
+                "reject_cmd fired: station=%s, slot=%d, part=%r, register=%d, "
+                "target_fire_pulse=%d, home_relative_pulses=%d (%d pulses late)",
                 armed_by.id, slot_id, self.tracker.get_slot(slot_id).assign_part_id, reject_reg,
+                target, self._home_relative_pulses, self._home_relative_pulses - target,
+            )
+            zeromq.publish_dispatcher_event(
+                "reject_fired", station_id=armed_by.id, slot_id=slot_id,
+                part_id=self.tracker.get_slot(slot_id).assign_part_id, target_fire_pulse=target,
+                home_relative_pulses=self._home_relative_pulses,
             )
             self._check_reject_ack(registers, armed_by.id, slot_id)
             self.tracker.transition_reject(slot_id, armed_by)
