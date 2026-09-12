@@ -304,7 +304,7 @@ stations:
   - id: r1
     name: "Reject Station 1"
     type: reject
-    station_offset_pulses: 2800 # PLACEHOLDER -- between s2 (1080) and exit1 (1800); real value
+    station_offset_pulses: 2400 # PLACEHOLDER -- between s2 (1080) and exit1 (1800); real value
                                  # needs the actual reject-station time-of-flight (CLAUDE.md Rule 7)
     enabled: true # false = commissioning mode, no rejection actuator wired yet -- NOK parts
                   # ride through untouched and get resolved at exit1 instead
