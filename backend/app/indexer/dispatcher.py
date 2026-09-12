@@ -415,6 +415,7 @@ class StationDispatcher:
 
             if station.type == "exit":
                 log.info("Part %r reached exit station %s (slot %d)", record.assign_part_id, station.id, slot_id)
+                self._check_exit_ack(registers, slot_id)
                 self.tracker.transition_exit(slot_id)
             elif station.type == "virtual_exit":
                 self.tracker.transition_virtual_exit(slot_id)  # spec11 Part 3 -- see _tick_sim's comment
@@ -624,7 +625,54 @@ class StationDispatcher:
             reject_reg = armed_by.actuator_reg if armed_by.actuator_reg is not None else registers.reject_cmd
             self.plc_client.write_register(reject_reg, 1)
             self.plc_client.write_register(reject_reg, 0)
+            log.info(
+                "reject_cmd fired: station=%s, slot=%d, part=%r, register=%d",
+                armed_by.id, slot_id, self.tracker.get_slot(slot_id).assign_part_id, reject_reg,
+            )
+            self._check_reject_ack(registers, armed_by.id, slot_id)
             self.tracker.transition_reject(slot_id, armed_by)
+
+    def _check_reject_ack(self, registers, station_id: str, slot_id: int) -> None:
+        """One-shot presence check, NOT the full CLAUDE.md Rule 4 behavior
+        yet (missed REJECT_ACK escalating to STOP_COMMAND needs a
+        multi-tick timeout loop -- waiting for the PLC to actually latch
+        the ack takes more than one poll interval, so a single read taken
+        in the same tick as the write will usually read stale/low even on
+        a healthy PLC). This only reads registers.reject_ack once, right
+        after firing, and logs whatever it currently reads as -- a
+        stepping stone for visibility while that register doesn't exist on
+        the instrumentation sheet yet, not a safety interlock. Do not treat
+        a False here as a confirmed miss.
+
+        registers.reject_ack is None until a real register number is
+        added to machine_config.yaml (CLAUDE.md: ask the instrumentation
+        team, don't invent one) -- a no-op until then."""
+        reject_ack = getattr(registers, "reject_ack", None)
+        if reject_ack is None:
+            return
+        ack_value = bool(self.plc_client.read_register(reject_ack))
+        self.last_reject_ack = ack_value
+        log.info(
+            "reject_ack read: station=%s, slot=%d, register=%d, ack=%s",
+            station_id, slot_id, reject_ack, ack_value,
+        )
+
+    def _check_exit_ack(self, registers, slot_id: int) -> None:
+        """Same one-shot-presence-check caveat as _check_reject_ack: not
+        yet the timeout/escalation behavior CLAUDE.md Rule 4 describes for
+        a real _CMD/_ACK pair (missed OK_ACK -> FAULT_STATUS) -- exit today
+        has no _CMD register of its own (transition_exit is a pure
+        software event, the slot rotating past the exit position), so
+        exit_ack, once instrumented, is read as an independent
+        confirmation signal rather than a reply to something we wrote.
+        registers.exit_ack is None (no-op) until a real register number is
+        added -- don't invent one."""
+        exit_ack = getattr(registers, "exit_ack", None)
+        if exit_ack is None:
+            return
+        ack_value = bool(self.plc_client.read_register(exit_ack))
+        self.last_exit_ack = ack_value
+        log.info("exit_ack read: slot=%d, register=%d, ack=%s", slot_id, exit_ack, ack_value)
 
     def stop(self) -> None:
         """Stops AND drains (spec13 #6, found missing in spec12's code

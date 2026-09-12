@@ -364,6 +364,15 @@ class RegisterMapConfig(BaseModel):
     stop_cmd: int
     speed_setpoint: int
     fault: int
+    # CLAUDE.md Critical Rule 4 ("Every _CMD register gets a matching
+    # _ACK") -- neither exists on the instrumentation sheet yet (per
+    # explicit instruction, don't invent an address), so both default to
+    # None. StationDispatcher._check_reject_ack()/_check_exit_ack() no-op
+    # until real numbers land here -- today they're a one-shot presence
+    # read/log for visibility, NOT yet the full missed-ack timeout ->
+    # STOP_COMMAND/FAULT_STATUS escalation Rule 4 describes.
+    reject_ack: Optional[int] = None
+    exit_ack: Optional[int] = None
 
 
 class PLCSimConfig(BaseModel):

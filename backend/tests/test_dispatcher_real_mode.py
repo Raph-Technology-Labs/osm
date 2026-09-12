@@ -21,6 +21,8 @@ from app.indexer.tracker import IndexerSlotTracker
 PULSE_COUNT_REG = 40001
 PART_SENSOR_REG = 40004
 REJECT_CMD_REG = 40009
+REJECT_ACK_REG = 40013  # test-only address -- no real register exists yet (see RegisterMapConfig)
+EXIT_ACK_REG = 40014  # test-only address -- no real register exists yet (see RegisterMapConfig)
 
 
 @dataclass
@@ -28,6 +30,8 @@ class FakeRegisters:
     pulse_count: int = PULSE_COUNT_REG
     part_sensor: int = PART_SENSOR_REG
     reject_cmd: int = REJECT_CMD_REG
+    reject_ack: Optional[int] = None
+    exit_ack: Optional[int] = None
 
 
 @dataclass
@@ -66,6 +70,12 @@ class FakeRejectStation:
 class FakeInspectionStation:
     id: str
     type: str = "inspection"
+
+
+@dataclass
+class FakeExitStation:
+    id: str = "exit"
+    type: str = "exit"
 
 
 class FakeRealResolvedConfig:
@@ -123,6 +133,7 @@ def make_real_dispatcher(
     inspection_ids=("s1",),
     indexer: Optional[FakeIndexerConfig] = None,
     plc: Optional[FakeRealPlc] = None,
+    exit_station: Optional[FakeExitStation] = None,
 ):
     # reject_stations (plural, spec11 Part 2) takes precedence; reject_station
     # (singular) stays as sugar for the common single-reject-station case so
@@ -133,11 +144,13 @@ def make_real_dispatcher(
         rejects = [reject_station]
     else:
         rejects = []
+    exits = [exit_station] if exit_station is not None else []
 
-    stations = [FakeInspectionStation(id=sid) for sid in inspection_ids] + rejects
+    stations = [FakeInspectionStation(id=sid) for sid in inspection_ids] + rejects + exits
     config = FakeRealResolvedConfig(stations, indexer=indexer, plc=plc)
     offsets = {sid: 0 for sid in inspection_ids}
     offsets.update({r.id: 0 for r in rejects})
+    offsets.update({e.id: 0 for e in exits})
     tracker = IndexerSlotTracker(
         n_slots=n_slots,
         encoder_cpr=encoder_cpr,
@@ -600,3 +613,85 @@ def test_pulse_rate_measured_live_from_consecutive_ticks_not_speed_scale(monkeyp
 
     dispatcher.set_speed_scale(10.0)  # must not affect the measured real-mode rate at all
     assert dispatcher._pulses_per_ms == 2.0
+
+
+def test_reject_ack_read_and_recorded_when_register_configured():
+    # registers.reject_ack is None by default (no real address exists on
+    # the instrumentation sheet yet) -- when a test/config DOES set one,
+    # _check_reject_ack must read it right after firing and record the
+    # result on dispatcher.last_reject_ack.
+    reject = FakeRejectStation(station_offset_pulses=0)
+    plc_cfg = FakeRealPlc(registers=FakeRegisters(reject_ack=REJECT_ACK_REG))
+    dispatcher, tracker, plc = make_real_dispatcher(
+        n_slots=10, encoder_cpr=100, reject_station=reject, plc=plc_cfg
+    )
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    plc.queue(PULSE_COUNT_REG, [5])
+    plc.queue(PART_SENSOR_REG, [False])
+    plc.queue(REJECT_ACK_REG, [1])
+    dispatcher._tick_real()  # arms and immediately crosses -- fires, then checks reject_ack
+
+    assert plc.writes == [(REJECT_CMD_REG, 1), (REJECT_CMD_REG, 0)]
+    assert dispatcher.last_reject_ack is True
+
+
+def test_reject_ack_unconfigured_is_a_noop():
+    # Today's actual state (no real reject_ack address yet): firing must
+    # not attempt a read, and must not crash FakePlcClient's queue lookup
+    # for a register nobody queued anything for.
+    reject = FakeRejectStation(station_offset_pulses=0)
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100, reject_station=reject)
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    plc.queue(PULSE_COUNT_REG, [5])
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert plc.writes == [(REJECT_CMD_REG, 1), (REJECT_CMD_REG, 0)]
+    assert getattr(dispatcher, "last_reject_ack", None) is None
+
+
+def test_exit_ack_read_and_recorded_when_register_configured():
+    # No inspection stations here -- exit_ack is the only thing under
+    # test, so inspection_ids=() keeps s1's own mark_pending/fire_station
+    # dispatch out of the way entirely.
+    plc_cfg = FakeRealPlc(registers=FakeRegisters(exit_ack=EXIT_ACK_REG))
+    dispatcher, tracker, plc = make_real_dispatcher(
+        n_slots=10, encoder_cpr=100, inspection_ids=(), exit_station=FakeExitStation(), plc=plc_cfg
+    )
+    tracker.on_part_entered(0, part_id=1)  # a part already sitting at slot 0 == exit's offset
+
+    plc.queue(PULSE_COUNT_REG, [0])
+    plc.queue(PART_SENSOR_REG, [False])
+    plc.queue(EXIT_ACK_REG, [1])
+    dispatcher._tick_real()  # first-ever tick: _last_slot_ids starts empty, so exit reads as "changed"
+
+    assert dispatcher.last_exit_ack is True
+    assert tracker.get_slot(0).status.value == "EMPTY"  # transition_exit freed it
+
+
+def test_exit_ack_unconfigured_is_a_noop():
+    dispatcher, tracker, plc = make_real_dispatcher(
+        n_slots=10, encoder_cpr=100, inspection_ids=(), exit_station=FakeExitStation()
+    )
+    tracker.on_part_entered(0, part_id=1)
+
+    plc.queue(PULSE_COUNT_REG, [0])
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert getattr(dispatcher, "last_exit_ack", None) is None
+    assert tracker.get_slot(0).status.value == "EMPTY"
