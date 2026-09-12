@@ -31,7 +31,7 @@ indexer:
   entry_sensor_mid_offset_pulses: 40 # PLACEHOLDER -- see comment above
 
 plc:
-  ip: "192.168.7.71" # was .41 -- per instrumentation team's sheet
+  ip: "192.168.7.72" # was .41 -- per instrumentation team's sheet
   port: 502
   vendor: integra
   # Single top-level "is this machine running in simulation" switch --
@@ -52,7 +52,7 @@ plc:
   # real result decides. Only which slots are permanently unfed is a
   # sim-harness knob.
   sim:
-    enabled: true
+    enabled: false
     host: "localhost"
     port: 5502
     tick_interval_ms: 1000 # replaces every station's old source.sim_interval_ms
@@ -81,11 +81,18 @@ plc:
   real_poll_interval_ms: 50.0 # PLACEHOLDER
   # Config-driven motor speed, written to the speed_setpoint register once
   # at session start (CLAUDE.md Rule 5: config-driven, never hardcoded).
-  speed_setpoint_rpm: 45.0 # PLACEHOLDER
+  speed_setpoint_rpm: 50.0 # PLACEHOLDER
   # PLACEHOLDER -- app/plc/watchdog.py's heartbeat-staleness timeout before
   # escalating to STOP_CMD. Not tuned yet; real value once indexer/PLC
   # hardware is actually connected.
-  watchdog_timeout_ms: 3000.0 # PLACEHOLDER
+  watchdog_timeout_ms: 1000.0 # PLACEHOLDER
+  # Bypassed for h/w integration (2026-09-11): the instrumentation side
+  # isn't incrementing `heartbeat` (40005) yet, so the watchdog was firing
+  # STOP_CMD every ~1s and stopping the motor during commissioning even
+  # though the rest of the PLC link (pulse_count, part_sensor) is working
+  # fine. MUST be set back to true (or removed -- true is the default)
+  # before any real production run.
+  watchdog_enabled: false
 
   # Register map per the instrumentation team's sheet. Register numbers used
   # EXACTLY as given -- literal 40001-40012, no 0-based conversion. pymodbus
@@ -162,7 +169,7 @@ stations:
   - id: s1
     name: "Station 1 - Dimension Measurement"
     type: inspection
-    station_offset_pulses: 540 # PLACEHOLDER -- pulses from Entry to this station
+    station_offset_pulses: 267 # CONFIRMED -- measured 20deg from the presence sensor at encoder_cpr=4800 (per explicit instruction, 2026-09-11)
 
     cameras:
       cam1:
@@ -213,7 +220,7 @@ stations:
             # 110.3 and visibly soft; re-run this calibration once focus is
             # confirmed sharp, since any blur here directly skews every
             # diameter_mm reading downstream.
-            calibration_factor: 0.040632
+            calibration_factor: 0.0402
             # upper_limit/lower_limit are tolerances (+/- from nominal_value),
             # not absolute bounds -- pass window here is nominal_value -
             # lower_limit to nominal_value + upper_limit, i.e. 17.5-18.5mm.

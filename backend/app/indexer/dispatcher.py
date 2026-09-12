@@ -136,7 +136,34 @@ class StationDispatcher:
             # spec12 real-mode state -- see _tick_real()'s docstring.
             self._real_accumulated_pulses = 0
             self._last_raw_pulse_count: Optional[int] = None
-            self._last_part_sensor_state = False
+            # None (not False) -- there's no genuine prior reading on the
+            # first-ever poll this session, so we can't yet tell a real
+            # rising edge from a sensor that just happens to already read
+            # HIGH (stuck bit, idle-high default, wiring quirk). Defaulting
+            # this to False made the first poll indistinguishable from a
+            # real transition -- found via h/w integration testing
+            # 2026-09-11: with no part physically present, the first tick
+            # still admitted a phantom part AND calibrated home_offset_
+            # pulses off that same bogus reading. See _tick_real: None
+            # means "establish baseline only, don't treat as an edge,"
+            # mirroring how _last_raw_pulse_count's own first sample
+            # already means "0 delta, not movement" rather than motion.
+            self._last_part_sensor_state: Optional[bool] = None
+            # Home calibration (per explicit instruction, 2026-09-11): the
+            # raw encoder's own zero (pulse=0 mod encoder_cpr) has no
+            # guaranteed relationship to where the presence sensor is
+            # physically mounted -- that's just wherever the register last
+            # wrapped/was powered on. slot_id math (on_part_entered,
+            # tracker.tick()) needs pulse=0 to mean "at the presence
+            # sensor," so we capture a one-time offset the first time the
+            # sensor fires each session (see _tick_real's calibration
+            # check) and shift every downstream pulse read by it via
+            # _home_relative_pulses. None means "not yet calibrated this
+            # session" -- a fresh StationDispatcher is built on every
+            # start_session() call (inspection_session.py), so this
+            # naturally recalculates once per new inspection with no
+            # separate reset path needed.
+            self.home_offset_pulses: Optional[int] = None
             # slot_id -> target_fire_pulse (monotonic space), armed the
             # instant a watched inspection station reports nok for that
             # slot. Deliberately keyed by slot_id ALONE, shared across every
@@ -322,20 +349,50 @@ class StationDispatcher:
         self._last_raw_pulse_count = raw_pulse
         self._update_pulse_rate_sample()
 
-        # Feed the tracker's existing (revolution-bounded) API so camera/
-        # station dispatch below is byte-for-byte the same mechanism as sim
-        # mode -- "Do not touch" per spec12.
-        self.tracker.on_pulse_update(self._real_accumulated_pulses % self.tracker.encoder_cpr)
-
         # -- 2. Entry: real part_sensor rising-edge, one-shot latch.
         # ASSUMPTION (explicit instruction, 2026-09-08): part_sensor is a
         # clean one-shot edge, not a noisy level -- no multi-sample
         # debounce. If real hardware turns out to bounce, add confirmation
         # logic here; don't assume it's needed pre-emptively.
+        #
+        # Home calibration: an incremental encoder has no absolute
+        # reference of its own -- pulse=0 is just wherever it happened to
+        # be at last power-on/reset, not tied to any physical location.
+        # The presence sensor is the only real physical reference we have,
+        # so the FIRST edge each session (home_offset_pulses starts None
+        # on every freshly-built StationDispatcher -- see __init__) is
+        # captured as that reference rather than treated as a normal part
+        # detection at some arbitrary pre-existing offset. Every pulse
+        # read after this point goes through _home_relative_pulses, never
+        # _real_accumulated_pulses directly.
         sensor_state = bool(self.plc_client.read_register(registers.part_sensor))
-        if sensor_state and not self._last_part_sensor_state:
+        if self._last_part_sensor_state is None:
+            # First-ever poll this session -- establish baseline only, no
+            # edge fires. See __init__'s comment: an already-HIGH first
+            # reading is indistinguishable from a genuine transition, so
+            # treating it as one risks admitting a phantom part and
+            # miscalibrating home off a bogus reading with nothing
+            # physically at the sensor.
+            log.info(
+                "part_sensor baseline established: raw_pulse=%d, level=%s "
+                "-- no edge/calibration on this first read", raw_pulse, sensor_state,
+            )
+        elif sensor_state and not self._last_part_sensor_state:
+            if self.home_offset_pulses is None:
+                self.home_offset_pulses = self._real_accumulated_pulses
+                log.info(
+                    "Home calibrated at presence sensor: raw_pulse=%d, "
+                    "home_offset_pulses=%d", raw_pulse, self.home_offset_pulses,
+                )
             self._on_part_sensor_edge(raw_pulse)
         self._last_part_sensor_state = sensor_state
+
+        # Feed the tracker's existing (revolution-bounded) API so camera/
+        # station dispatch below is byte-for-byte the same mechanism as sim
+        # mode -- "Do not touch" per spec12. Home-relative, not raw, so
+        # entry_slot_id (station dispatch) and on_part_entered's slot_id
+        # (above) agree on where slot 0 physically is.
+        self.tracker.on_pulse_update(self._home_relative_pulses % self.tracker.encoder_cpr)
 
         # -- 3. Camera/inspection/exit dispatch: identical slot-changed
         # trigger as _tick_sim, in both modes -- spec12 "Do not touch".
@@ -400,8 +457,26 @@ class StationDispatcher:
             return 0
         return round(ms * self._pulses_per_ms)
 
+    @property
+    def _home_relative_pulses(self) -> int:
+        """self._real_accumulated_pulses, shifted so 0 lands at the
+        presence sensor's physical position rather than at the encoder's
+        own (arbitrary, power-on-dependent) zero. Every real-mode
+        consumer of pulse position -- tracker feed, entry slot math,
+        reject arm/fire comparisons -- must read through this, never
+        _real_accumulated_pulses directly, or home calibration would
+        silently apply to only some of them and desync slot math from
+        reject timing (they'd be shifted by different amounts). Returns
+        the raw accumulator, uncorrected, before the first sensor edge of
+        this session calibrates home_offset_pulses (see _tick_real) --
+        nothing meaningful has happened yet at that point anyway (no part
+        has reached the ring)."""
+        if self.home_offset_pulses is None:
+            return self._real_accumulated_pulses
+        return self._real_accumulated_pulses - self.home_offset_pulses
+
     def _on_part_sensor_edge(self, raw_pulse: int) -> None:
-        pulse_count_at_detection = self._real_accumulated_pulses
+        pulse_count_at_detection = self._home_relative_pulses
         slot_index = (pulse_count_at_detection // self.tracker.pulses_per_slot) % self.tracker.n_slots
         record = self.tracker.get_slot(slot_index)
         if record.assign_part_id is not None or record.blank:
@@ -476,7 +551,7 @@ class StationDispatcher:
                 - reject_actuator_response_delay_pulses
             )
 
-            if target_fire_pulse < self._real_accumulated_pulses:
+            if target_fire_pulse < self._home_relative_pulses:
                 # The nok verdict landed so late the physical part has
                 # already passed THIS reject station's nozzle -- arming it
                 # now would fire on whatever OTHER part currently sits
@@ -503,8 +578,8 @@ class StationDispatcher:
                     "failure (if any) still gets its own chance; otherwise the "
                     "part will still be tallied nok at exit.",
                     reject_station.id, slot_id, record.assign_part_id, target_fire_pulse,
-                    self._real_accumulated_pulses,
-                    self._real_accumulated_pulses - target_fire_pulse,
+                    self._home_relative_pulses,
+                    self._home_relative_pulses - target_fire_pulse,
                 )
                 self._reject_target_skipped[skip_key] = record.pulse_count_at_detection
                 continue
@@ -541,7 +616,7 @@ class StationDispatcher:
         reject_cmd, unchanged."""
         crossed = [
             slot_id for slot_id, target in self._pending_reject_targets.items()
-            if self._real_accumulated_pulses >= target
+            if self._home_relative_pulses >= target
         ]
         for slot_id in crossed:
             del self._pending_reject_targets[slot_id]

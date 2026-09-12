@@ -153,28 +153,78 @@ def make_real_dispatcher(
     return dispatcher, tracker, plc_client
 
 
-def test_rising_edge_derives_slot_index_and_stores_pulse_count_at_detection():
+def test_first_rising_edge_calibrates_home_and_derives_slot_index():
+    # An incremental encoder has no absolute reference of its own -- raw
+    # pulse=0 is just wherever it was at power-on, not tied to any
+    # physical location. So the FIRST part_sensor rising edge each
+    # session calibrates home_offset_pulses (see StationDispatcher
+    # .home_offset_pulses), and that same edge's own detection is
+    # necessarily home-relative pulse 0 -- it defines the zero, it can't
+    # be offset from it.
     dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100)
     plc.queue(PULSE_COUNT_REG, [55, 63])
     plc.queue(PART_SENSOR_REG, [False, True])
 
     dispatcher._tick_real()  # baseline reading, no edge
-    dispatcher._tick_real()  # rising edge: accumulated = 63-55 = 8
+    dispatcher._tick_real()  # rising edge: accumulated = 63-55 = 8, calibrates home
 
-    slot_index = (8 // tracker.pulses_per_slot) % tracker.n_slots
+    assert dispatcher.home_offset_pulses == 8
+    slot_index = 0  # home-relative pulse 0 at calibration -- always slot 0
     record = tracker.get_slot(slot_index)
     assert record.assign_part_id is not None
-    assert record.pulse_count_at_detection == 8
+    assert record.pulse_count_at_detection == 0
 
 
-def test_level_high_across_ticks_counts_once_not_per_tick():
-    # Edge, not level: the first True reading legitimately counts as a
-    # rising edge (no known prior state), but the sensor staying high on
-    # subsequent polls must not re-trigger -- one part in, not three.
+def test_second_rising_edge_is_home_relative_not_raw():
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100)
+    # ticks: baseline(55) -> edge(63, calibrates home=8) -> no edge(70) ->
+    # edge(75) -- second part detected 12 raw pulses after calibration.
+    plc.queue(PULSE_COUNT_REG, [55, 63, 70, 75])
+    plc.queue(PART_SENSOR_REG, [False, True, False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()  # calibrates home_offset_pulses = 8
+    dispatcher._tick_real()
+    dispatcher._tick_real()  # second edge: accumulated = 75-55 = 20, home-relative = 20-8 = 12
+
+    assert dispatcher.home_offset_pulses == 8
+    slot_index = (12 // tracker.pulses_per_slot) % tracker.n_slots
+    record = tracker.get_slot(slot_index)
+    assert record.assign_part_id is not None
+    assert record.pulse_count_at_detection == 12
+
+
+def test_already_high_on_first_poll_is_baseline_not_a_phantom_edge():
+    # Found via h/w integration testing 2026-09-11: with no part physically
+    # present, part_sensor happened to already read HIGH on the very first
+    # poll (stuck bit / idle-high default / wiring quirk). There's no
+    # genuine prior reading on tick 1 to compare against, so this must be
+    # treated as establishing a baseline, never as a rising edge -- doing
+    # otherwise silently admits a phantom part AND miscalibrates home off a
+    # bogus reading. Sensor staying High across further ticks (no real
+    # transition ever happens) must never admit anything either.
     dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100)
     plc.queue(PULSE_COUNT_REG, [10, 20, 30])
     plc.queue(PART_SENSOR_REG, [True, True, True])
 
+    dispatcher._tick_real()  # first-ever poll: True -- baseline only, no edge
+    dispatcher._tick_real()  # still True: no transition, no edge
+    dispatcher._tick_real()  # still True: no transition, no edge
+
+    assert tracker.in_flight_count == 0
+    assert dispatcher.home_offset_pulses is None
+
+
+def test_level_high_across_ticks_counts_once_not_per_tick():
+    # A genuine False -> True transition (real edge, after baseline is
+    # already established) admits exactly one part; the sensor staying
+    # True on subsequent polls must not re-trigger -- one part in, not
+    # three.
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100)
+    plc.queue(PULSE_COUNT_REG, [10, 10, 20, 30])
+    plc.queue(PART_SENSOR_REG, [False, True, True, True])
+
+    dispatcher._tick_real()  # baseline: False
     dispatcher._tick_real()  # rising edge (False -> True): one part enters
     dispatcher._tick_real()  # still True: no re-trigger
     dispatcher._tick_real()  # still True: no re-trigger

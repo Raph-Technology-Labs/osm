@@ -83,9 +83,16 @@ def load_machine(app: FastAPI) -> None:
         plc_client.read_heartbeat()
         app.state.plc_client = plc_client
 
-        watchdog = PLCWatchdog(plc_client, timeout_ms=resolved.plc.watchdog_timeout_ms)
-        watchdog.start()
-        app.state.plc_watchdog = watchdog
+        if resolved.plc.watchdog_enabled:
+            watchdog = PLCWatchdog(plc_client, timeout_ms=resolved.plc.watchdog_timeout_ms)
+            watchdog.start()
+            app.state.plc_watchdog = watchdog
+        else:
+            log.warning(
+                "PLC watchdog DISABLED via plc.watchdog_enabled=false -- heartbeat "
+                "staleness will NOT trigger STOP_CMD. h/w integration/commissioning "
+                "use only -- re-enable before any real production run."
+            )
     except PLCConnectionError:
         # Keep the app running without PLC access so the health state can report the failure.
         log.warning("PLC connect failed during machine load -- continuing without it.", exc_info=True)
@@ -113,6 +120,42 @@ def _seed_sim_if_enabled(app: FastAPI, resolved: ResolvedMachineConfig) -> None:
         "other slot runs real inference, no forced verdict",
         counts.blank, resolved.indexer.n_slots,
     )
+
+
+def _prewarm_models(resolved: ResolvedMachineConfig) -> None:
+    """Loads + warms up (model_registry.get_model()'s own throwaway
+    .predict() call) every distinct yolo model this part's stations use,
+    synchronously, before the dispatcher/motor can start.
+
+    Found via h/w integration testing 2026-09-11: a freshly-loaded model's
+    first LIVE .predict() call pays for CUDA context init + cuDNN kernel
+    autotuning (800-1500ms here, vs. 30-75ms every call after) -- on a real
+    ring that's already rotating, that's long enough for the part to have
+    physically passed the reject station before its verdict comes back
+    (dropped as stale, see tracker.apply_station_result). Motor start is a
+    separate, explicit operator action after session start (see the
+    dispatcher-construction comment below), so paying this cost here, once,
+    while nothing is moving, means the ring's actual first live part is
+    already running against a warm model.
+
+    Only model_type == "yolo" -- model_registry.get_model() itself only
+    supports that today (nanodet/onnx/tensorrt/torchvision configs, if any,
+    are silently not pre-warmed, matching get_model()'s own scope)."""
+    from app.pipeline import model_registry
+
+    model_keys = set()
+    for station_cfg in resolved.inspection_stations():
+        defect_config = station_cfg.pipeline.defect
+        if defect_config is not None:
+            model_keys.add((defect_config.model_path, defect_config.model_type))
+        measurement_config = station_cfg.pipeline.measurement
+        if measurement_config is not None and measurement_config.uses_own_model():
+            model_keys.add((measurement_config.model_path, measurement_config.model_type))
+
+    for model_path, model_type in model_keys:
+        if model_type != "yolo":
+            continue
+        model_registry.get_model(model_path, model_type)
 
 
 def _create_part_session(part_code: str) -> Optional[int]:
@@ -172,6 +215,7 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     resolved = resolve_config_for_part(part_code)
     app.state.resolved_config = resolved
     _seed_sim_if_enabled(app, resolved)
+    _prewarm_models(resolved)
 
     app.state.current_session_id = _create_part_session(part_code)
     session_id = app.state.current_session_id

@@ -14,10 +14,15 @@ fully in parallel.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
+import time
 
+import numpy as np
 import torch
+
+log = logging.getLogger("pipeline.model_registry")
 
 # machine_config.yaml uses container-style absolute paths (e.g.
 # /models/pt/yolo11n.pt) matching a future Docker bind-mount of
@@ -53,7 +58,27 @@ def get_model(model_path: str, model_type: str):
                 raise FileNotFoundError(f"model_path {model_path!r} not found: {resolved_path}")
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
+            t0 = time.monotonic()
             model = YOLO(resolved_path).to(device)
+            load_ms = (time.monotonic() - t0) * 1000
+
+            # Warm-up: a freshly-loaded model's first .predict() call pays
+            # for CUDA context init + cuDNN kernel autotuning -- found via
+            # h/w integration testing 2026-09-11, the first LIVE call took
+            # 800-1500ms (vs. 30-75ms every call after), long enough for
+            # that part to have already rotated past the reject station by
+            # the time its verdict came back (dropped as stale). Pay that
+            # cost once here, on a throwaway frame, while the ring hasn't
+            # started moving yet -- not on session's first real part.
+            t1 = time.monotonic()
+            dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
+            model.predict(dummy_frame, verbose=False)
+            warmup_ms = (time.monotonic() - t1) * 1000
+
+            log.info(
+                "model_registry: loaded %s on device=%s in %.0fms, warmed up in %.0fms (cuda_available=%s)",
+                model_path, device, load_ms, warmup_ms, torch.cuda.is_available(),
+            )
             _models[model_path] = model
             _model_locks[model_path] = threading.Lock()
 

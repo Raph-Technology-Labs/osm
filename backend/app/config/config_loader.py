@@ -439,6 +439,16 @@ class PLCConnectionConfig(BaseModel):
     # Deliberately not tuned yet; real value comes once the indexer/PLC
     # hardware is actually connected (explicit instruction, not guessed).
     watchdog_timeout_ms: float = 5000.0
+    # Bypass switch for the watchdog (CLAUDE.md Rule 4/Section 15 --
+    # safety-critical: normally required, never silently removed). Default
+    # True. Set False ONLY for h/w integration/commissioning against a real
+    # PLC whose instrumentation side doesn't increment `heartbeat` yet --
+    # every other real-mode check (pulse_count, part_sensor) still runs
+    # normally; this only skips the "PLC looks dead, STOP_CMD" escalation.
+    # Must be True again before any real production run -- inspection_
+    # session.py logs a loud startup WARNING whenever this is False so it
+    # can't go unnoticed in a deployment.
+    watchdog_enabled: bool = True
     # spec12 -- real-hardware poll cadence (part_sensor + pulse_count), only
     # used when sim.enabled above is false (StationDispatcher's real-mode
     # tick interval). NOT the same knob as sim.tick_interval_ms (that's a

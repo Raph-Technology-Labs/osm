@@ -390,12 +390,25 @@ class CameraStation:
         if self._frame_provider is None:
             log.warning(f"{self.camera_id}: fired with no frame provider set (not connected) -- skipping")
             return None
+        # Timing (CLAUDE.md Section 14 -- throughput metrics): capture AND
+        # inference (defect/measurement) both happen synchronously inside
+        # _frame_provider, on this one thread -- this is the ONLY place
+        # that latency exists, so it's the one place worth timing. Logged
+        # unconditionally, not just when slow, so a run's log can answer
+        # "how long did inference actually take" after the fact (e.g. for
+        # reject-lateness diagnosis) without needing to reproduce live.
+        t0 = time.monotonic()
         try:
             captured = self._frame_provider(slot_id)
         except CameraConnectionError:
             log.warning(f"{self.camera_id}: capture failed, marking disconnected", exc_info=True)
             self.last_capture_ok = False
             return None
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        log.info(
+            f"{self.camera_id}: capture+inference took {elapsed_ms:.1f}ms "
+            f"(station={self.station_id}, slot_id={slot_id}, part_id={part_id})"
+        )
         self.last_capture_ts = time.time()
         self.last_capture_ok = True
         if self.on_result:
