@@ -12,7 +12,6 @@ import DeviceSettingsPage from "../pages/DeviceSettingsPage";
 import TechnicalSupport from "../pages/TechinicalSupport";
 import PlaceholderPage from "../pages/PlaceholderPage";
 import AddNewPartPage from "../pages/AddNewPartPage";
-import RequireSuperAdmin from "../auth/RequireSuperAdmin";
 import RequireAdmin from "../auth/RequireAdmin";
 import PartConfigPage from "../pages/PartConfigPage";
 
