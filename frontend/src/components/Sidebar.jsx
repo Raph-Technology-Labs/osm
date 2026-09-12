@@ -26,7 +26,6 @@ import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import AddCircleOutlinedIcon from "@mui/icons-material/AddCircleOutlined";
 import PlayCircleOutlinedIcon from "@mui/icons-material/PlayCircleOutlined";
-import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
 
 import { useAuth } from "../auth/AuthContext";
 import logo from "../assets/assets/logo/raph-logo.png";
@@ -89,9 +88,6 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
     { name: "Part Details", path: "/part-details", icon: <CategoryIcon /> },
     { name: "Health Check", path: "/health-check", icon: <DevicesOutlinedIcon /> },
     { name: "Device Settings", path: "/device-settings", icon: <SettingsIcon /> },
-    ...(isSuperAdmin
-      ? [{ name: "Configuration", path: "/config", icon: <TuneOutlinedIcon /> }]
-      : []),
   ];
 
   const bottomItems = [

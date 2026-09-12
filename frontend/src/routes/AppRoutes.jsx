@@ -14,7 +14,7 @@ import PlaceholderPage from "../pages/PlaceholderPage";
 import AddNewPartPage from "../pages/AddNewPartPage";
 import RequireSuperAdmin from "../auth/RequireSuperAdmin";
 import RequireAdmin from "../auth/RequireAdmin";
-import ConfigPage from "../pages/ConfigPage";
+import PartConfigPage from "../pages/PartConfigPage";
 
 const AppRoutes = () => {
   return (
@@ -45,18 +45,28 @@ const AppRoutes = () => {
             </RequireAdmin>
           }
         />
+  {/* Without a partId the page shows its own category/part picker;
+            with one it opens straight on that part. */}
+        <Route
+          path="/part-config"
+          element={
+            <RequireAdmin>
+              <PartConfigPage />
+            </RequireAdmin>
+          }
+        />
+        <Route
+          path="/part-config/:partId"
+          element={
+            <RequireAdmin>
+              <PartConfigPage />
+            </RequireAdmin>
+          }
+        />
 
         <Route path="/health-check" element={<HealthCheckPage />} />
         <Route path="/device-settings" element={<DeviceSettingsPage />} />
 
-        <Route
-          path="/config"
-          element={
-            <RequireSuperAdmin>
-              <ConfigPage />
-            </RequireSuperAdmin>
-          }
-        />
         <Route path="/technical-support" element={<TechnicalSupport />} />
       </Route>
 

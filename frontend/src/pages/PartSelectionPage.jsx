@@ -24,6 +24,7 @@ import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import ClearIcon from "@mui/icons-material/Clear";
 import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import { useNavigate } from "react-router-dom";
+import usePartImage from "../hooks/usePartImage";
 
 import api from "../api/axios";
 
@@ -54,6 +55,7 @@ const PartSelectionPage = () => {
   const [sessionStarting, setSessionStarting] = useState(false);
   const [sessionStartError, setSessionStartError] = useState("");
 
+  
   // Load categories once.
   useEffect(() => {
     setCategoriesLoading(true);
@@ -167,6 +169,11 @@ const PartSelectionPage = () => {
       severity: cfg?.severity,
     }));
   }, [selectedPart]);
+
+  // PartImage
+  const partImageUrl = usePartImage(selectedPart?.part_id, selectedPart?.has_image);
+
+
 
   // dimensions: { param: { nominal, upper_limit, lower_limit, unit, notes } }
   const dimensionRows = useMemo(() => {
@@ -373,35 +380,33 @@ const PartSelectionPage = () => {
 
           {/* ── RIGHT: image + actions ─────────────────────────── */}
           <Box sx={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
-            <Box
-              sx={{
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-                border: "1px dashed",
-                borderColor: "divider",
-                borderRadius: 2,
-                bgcolor: "background.default",
-                minHeight: { xs: 160, md: 220 },
-                overflow: "hidden",
-              }}
-            >
-              {selectedPart?.part_id ? (
-                <Box
-                  component="img"
-                  src={`/api/parts/${selectedPart.part_id}/image`}
-                  alt={selectedPart.part_name}
-                  onError={(e) => {
-                    e.currentTarget.style.display = "none";
-                  }}
-                  sx={{ maxWidth: "100%", maxHeight: 220, objectFit: "contain" }}
-                />
-              ) : (
-                <Typography color="text.secondary">
-                  <CameraAltIcon fontSize="small" /> Part image
-                </Typography>
-              )}
-            </Box>
+                          <Box
+                sx={{
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  border: "1px dashed",
+                  borderColor: "divider",
+                  borderRadius: 2,
+                  bgcolor: "background.default",
+                  minHeight: { xs: 160, md: 220 },
+                  overflow: "hidden",
+                }}
+              >
+                {partImageUrl ? (
+                  <Box
+                    component="img"
+                    src={partImageUrl}
+                    alt={selectedPart?.part_name || "Part"}
+                    sx={{ maxWidth: "100%", maxHeight: 220, objectFit: "contain" }}
+                  />
+                ) : (
+                  <Typography color="text.secondary">
+                    <CameraAltIcon fontSize="small" />{" "}
+                    {selectedPart?.has_image ? "Loading image…" : "Part image"}
+                  </Typography>
+                )}
+              </Box>
 
             <Box sx={{ display: "flex", gap: 2 }}>
               <Button
