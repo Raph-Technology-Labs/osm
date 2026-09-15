@@ -39,6 +39,18 @@ def _protocol_address(register: int) -> int:
     return register - MODBUS_ADDRESS_OFFSET
 
 
+def rpm_to_speed_setpoint(rpm: float) -> int:
+    """registers.speed_setpoint is documented as "0-1000 scale" -- this
+    rpm*10 conversion is UNCONFIRMED against the instrumentation sheet (see
+    machine_config.yaml's speed_setpoint comment), but it's the one
+    conversion this app uses, so it lives in exactly one place: both
+    routers/inspection.py's /inspection/speed (operator's live RPM slider)
+    and inspection_session.py's automatic session-start write (CLAUDE.md:
+    "written once at session start") call this, so they can never drift
+    apart into two different formulas."""
+    return round(rpm * 10)
+
+
 def resolve_plc_target(plc_cfg: PLCConnectionConfig) -> tuple[str, int]:
     if plc_cfg.sim.enabled:
         return plc_cfg.sim.host, plc_cfg.sim.port

@@ -233,11 +233,10 @@ def set_speed(body: SpeedSetpointRequest, request: Request):
     plc_updated = False
     client = getattr(request.app.state, "plc_client", None)
     if client is not None and client.is_connected():
-        from app.plc.modbus_client import PLCConnectionError
+        from app.plc.modbus_client import PLCConnectionError, rpm_to_speed_setpoint
 
-        rpm_x10 = round(body.rpm * 10)
         try:
-            client.write_register(resolved.plc.registers.speed_setpoint, rpm_x10)
+            client.write_register(resolved.plc.registers.speed_setpoint, rpm_to_speed_setpoint(body.rpm))
             plc_updated = True
         except PLCConnectionError:
             log.warning("speed: PLC register write failed, sim scaling still applied", exc_info=True)

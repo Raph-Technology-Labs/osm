@@ -24,7 +24,7 @@ from app.db.db import SessionLocal
 from app.indexer.dispatcher import StationDispatcher
 from app.indexer.tracker import IndexerSlotTracker
 from app.models.models import Part, PartSession
-from app.plc.modbus_client import ModbusPLCClient, PLCConnectionError
+from app.plc.modbus_client import ModbusPLCClient, PLCConnectionError, rpm_to_speed_setpoint
 from app.plc.watchdog import PLCWatchdog
 from app.services.results_writer import (
     CameraResultItem,
@@ -252,7 +252,8 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                         draw_result=draw_result,
                         indexer_tracker=app.state.indexer_tracker,
                         sim_verdict_enabled=resolved.plc.sim.enabled,
-                    )
+                    ),
+                    is_sim=True,
                 )
             else:
                 try:
@@ -405,4 +406,25 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
         resolved, registry, app.state.indexer_tracker, plc_client=getattr(app.state, "plc_client", None)
     )
     app.state.dispatcher = dispatcher
+
+    # CLAUDE.md: "Config-driven motor speed, written to the speed_setpoint
+    # register once at session start" -- found live, 2026-09-15, that this
+    # was never actually implemented: machine_config.yaml's
+    # speed_setpoint_rpm was only ever read as a baseline divisor inside
+    # /inspection/speed's sim-scale math, never written to the real PLC
+    # unless an operator manually used the Inspection page's RPM slider
+    # first. On real hardware the motor just kept running at whatever speed
+    # it was last commanded to (or its own default), silently ignoring
+    # config. Same conversion as the manual slider path
+    # (rpm_to_speed_setpoint), so the two can never drift apart.
+    plc_client = getattr(app.state, "plc_client", None)
+    if plc_client is not None and plc_client.is_connected():
+        try:
+            plc_client.write_register(
+                resolved.plc.registers.speed_setpoint, rpm_to_speed_setpoint(resolved.plc.speed_setpoint_rpm),
+            )
+            log.info("speed_setpoint_rpm applied at session start: %.1f RPM", resolved.plc.speed_setpoint_rpm)
+        except PLCConnectionError:
+            log.warning("Failed to write speed_setpoint_rpm at session start -- PLC may run at its previous speed", exc_info=True)
+
     return resolved
