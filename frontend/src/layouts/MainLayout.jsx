@@ -1,7 +1,6 @@
 import { Box, Typography } from "@mui/material";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
-import ConnectionAlerts from "../components/ConnectionAlerts";
 
 // noScroll: for pages meant to be installed as a fixed factory display
 // (the Inspection page) -- fills exactly one viewport, no page-level
@@ -25,7 +24,6 @@ const MainLayout = ({ title, children, noScroll: noScrollProp = false }) => {
         overflow: noScroll ? "hidden" : "visible",
       }}
     >
-      <ConnectionAlerts />
       <Sidebar
         onNavigate={(path) => navigate(path)}
         sessionActive={sessionActive}

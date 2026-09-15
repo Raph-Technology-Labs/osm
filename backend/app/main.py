@@ -6,19 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config.config_loader import DEFAULT_CONFIG_PATH
 from app.routers import actuators, auth, dashboard, health, inspection, part_config, parts, parts_admin
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-# DEBUG was only ever needed for the pulse_count/encoder_indexer_ppr register
-# investigation (now resolved) -- at DEBUG, pymodbus's own logger dumps a
-# raw SEND/RECV trace per Modbus transaction and the dispatcher logs its own
-# per-tick pulse/gap trace, both of which drown out the signal that actually
-# matters day to day: camera capture+inference timing
-# (app/camera/station_registry.py's "capture+inference took Xms" line) and
-# genuine warnings/errors. Quieted dispatcher's routine per-event INFO
-# chatter (home calibrated, station fired, reject armed/fired) down to
-# WARNING+ too -- still surfaces anything that actually needs attention
-# (missed ACKs, faults, dropped detections), just not every normal tick.
-logging.getLogger("pymodbus.logging").setLevel(logging.WARNING)
-logging.getLogger("dispatcher").setLevel(logging.WARNING)
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 app = FastAPI()
 

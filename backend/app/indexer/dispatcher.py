@@ -272,29 +272,9 @@ class StationDispatcher:
         return max(self._tick_interval_s / self._speed_scale, MIN_INTERVAL_S)
 
     def _schedule_tick(self) -> None:
-        self._timer = threading.Timer(self._current_interval_s(), self._guarded_tick)
+        self._timer = threading.Timer(self._current_interval_s(), self._tick_fn)
         self._timer.daemon = True
         self._timer.start()
-
-    def _guarded_tick(self) -> None:
-        """Found live, 2026-09-15: a transient Modbus disconnect
-        (PLCConnectionError from a read timeout) propagated straight out of
-        _tick_real(), uncaught, on a threading.Timer callback -- which
-        killed that thread silently. _tick_real/_tick_sim normally
-        reschedule themselves at their own end, but an exception raised
-        before reaching that point means no exception ever reaches this
-        thread's normal error reporting AND no further tick ever gets
-        scheduled -- the whole ring silently stops advancing forever, with
-        the FastAPI server still up and answering requests as if nothing
-        were wrong. Catch here (the one place every tick path funnels
-        through), log it, and reschedule anyway so a transient outage is a
-        blip, not a permanent freeze -- the next tick's own read naturally
-        retries the PLC connection."""
-        try:
-            self._tick_fn()
-        except Exception:
-            log.error("Unhandled exception in dispatcher tick -- rescheduling anyway so the ring keeps polling", exc_info=True)
-            self._schedule_tick()
 
     def _tick_sim(self) -> None:
         if self._stopped:
