@@ -252,7 +252,8 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                         draw_result=draw_result,
                         indexer_tracker=app.state.indexer_tracker,
                         sim_verdict_enabled=resolved.plc.sim.enabled,
-                    )
+                    ),
+                    is_sim=True,
                 )
             else:
                 try:
