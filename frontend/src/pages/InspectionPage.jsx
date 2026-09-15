@@ -5,18 +5,23 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 import api from "../api/axios";
 import useLiveEvents from "../hooks/useLiveEvents";
-import useResultTally from "../hooks/useResultTally";
 import DigitalTwin from "../components/inspection/DigitalTwin";
 import PageTabs from "../components/inspection/PageTabs";
 import StationCell from "../components/inspection/StationCell";
 import SessionBreakdown, { SessionTotals } from "../components/inspection/SessionAnalysis";
 import RpmControl from "../components/inspection/RpmControl";
+import useSessionAnalysis from "../hooks/useSessionAnalysis";
 
-// Stations per page -- "2x2 or 3x2 ... assume 1920x1080" per the Inspection
-// page spec. 4 keeps each station cell comfortably sized at that resolution;
-// revisit if real screens turn out smaller/larger than assumed.
-const PAGE_CAPACITY = 4;
+// Stations per page. Two stations sharing the height leaves each camera tile
+// large enough to read across the room; more than that and the frames get too
+// short to be useful, so extra stations page (PageTabs) rather than shrink.
+const PAGE_CAPACITY = 2;
 const REVOLUTIONS_POLL_MS = 3000;
+
+// The analysis column is a fixed rail: it never grows into the station area
+// and the station area never squeezes it, so the digital twin renders at the
+// same size no matter how many stations or cameras exist.
+const RAIL_WIDTH = 360;
 
 const InspectionPage = () => {
   const theme = useTheme();
@@ -41,10 +46,10 @@ const InspectionPage = () => {
 
   const cameraIds = useMemo(() => Object.values(camerasByStation).flat(), [camerasByStation]);
   const { frames, results, ringState, hasIpc } = useLiveEvents(cameraIds);
-  const tally = useResultTally(results);
+  const analysis = useSessionAnalysis(sessionActive);
 
-  // station_id -> the config row, so StationCell can show its real name,
-  // offset and pipeline instead of inferring them.
+  // station_id -> the config row, so StationCell can show its real name and
+  // offset instead of inferring them.
   const stationById = useMemo(() => {
     const map = {};
     stations.forEach((s) => {
@@ -140,12 +145,21 @@ const InspectionPage = () => {
   const currentStations = pages[activePage] || [];
 
   return (
-    // Two columns from the very top of the page: the header belongs to the
-    // LEFT column only, so the analysis column starts level with it and the
-    // top-right space is used rather than left blank.
-    <Box sx={{ height: "100%", minHeight: 0, display: "flex", gap: 2 }}>
-      {/* ── LEFT: header, then the station list (the only thing that scrolls) ── */}
-      <Box sx={{ flexGrow: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
+    // Two columns from the very top: the header belongs to the LEFT column
+    // only, so the analysis rail starts level with it. overflow: hidden on the
+    // root means neither column can push the page sideways.
+    <Box sx={{ height: "100%", minHeight: 0, display: "flex", gap: 2, overflow: "hidden" }}>
+      {/* ── LEFT: header, then the stations ──────────────────────────── */}
+      <Box
+        sx={{
+          flex: "1 1 0",
+          minWidth: 0, // without this the column refuses to shrink and clips
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+          overflow: "hidden",
+        }}
+      >
         <Paper
           variant="outlined"
           sx={{
@@ -156,7 +170,7 @@ const InspectionPage = () => {
             flexShrink: 0,
             display: "flex",
             alignItems: "center",
-            gap: 2.5,
+            gap: 2,
             flexWrap: "wrap",
           }}
         >
@@ -193,10 +207,10 @@ const InspectionPage = () => {
             </Typography>
           </Box>
 
-          {/* Speed and run control sit together: Apply writes the setpoint,
-              Start/Stop act on the same motor. Separating them put two halves
-              of one decision at opposite ends of the bar. */}
+          {/* Speed setpoint. Start/Stop sits at the far end of the same bar. */}
           <RpmControl />
+
+          <Box sx={{ flexGrow: 1 }} />
 
           <Stack direction="row" spacing={1} alignItems="center">
             <Button
@@ -245,7 +259,20 @@ const InspectionPage = () => {
 
         <PageTabs pageCount={pages.length} activePage={activePage} onChange={setActivePage} />
 
-        <Box sx={{ flexGrow: 1, minHeight: 0, overflowY: "auto", pr: 1 }}>
+        {/* Stations divide this space between them and never scroll: these are
+            live values, and a value an operator has to scroll to find is a
+            value they will miss. PAGE_CAPACITY is what keeps the share large
+            enough to be readable. */}
+        <Box
+          sx={{
+            flexGrow: 1,
+            minHeight: 0,
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+          }}
+        >
           {currentStations.map((stationId) => (
             <StationCell
               key={stationId}
@@ -254,17 +281,17 @@ const InspectionPage = () => {
               cameras={camerasByStation[stationId] || []}
               frames={frames}
               results={results}
-              tally={tally}
+              stationTotals={analysis?.stations?.[stationId]}
             />
           ))}
         </Box>
       </Box>
 
-      {/* ── RIGHT: totals → twin → breakdown, starting at the top of the page ── */}
+      {/* ── RIGHT: fixed rail, totals → twin → breakdown ─────────────── */}
       <Box
         sx={{
-          width: 360,
-          flexShrink: 0,
+          flex: `0 0 ${RAIL_WIDTH}px`, // never grows into the stations, never shrinks
+          minWidth: 0,
           height: "100%",
           overflowY: "auto",
           display: "flex",
@@ -275,9 +302,9 @@ const InspectionPage = () => {
       >
         <SessionTotals ringState={ringState} />
 
-        {/* DigitalTwin's own Paper sets height:100%, which collapsed to a
-            sliver once this column started scrolling — override it here so
-            the ring renders at its natural size and nothing is clipped. */}
+        {/* DigitalTwin's own Paper sets height:100%, which collapses to a
+            sliver inside a scrolling column — override it so the ring renders
+            at its natural size and nothing is clipped. */}
         <Box
           sx={{
             flexShrink: 0,
@@ -293,7 +320,7 @@ const InspectionPage = () => {
           />
         </Box>
 
-        <SessionBreakdown tally={tally} />
+        <SessionBreakdown analysis={analysis} />
       </Box>
     </Box>
   );

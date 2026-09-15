@@ -1,4 +1,5 @@
 import { Box, Chip, Paper, Typography, useTheme } from "@mui/material";
+import VideocamOutlinedIcon from "@mui/icons-material/VideocamOutlined";
 
 // One camera tile: live frame, OK/NOK badge, and whichever detail its
 // pipeline produces -- defect name + count (defect stations) or nominal/
@@ -8,7 +9,7 @@ import { Box, Chip, Paper, Typography, useTheme } from "@mui/material";
 // Styling only, no behaviour change: the card border and footer badge take
 // their colour from result.passed so a NOK tile is identifiable across the
 // room, which is the whole point of the operator screen.
-const CameraPlaceholder = ({ cameraId, frame, result, pipeline }) => {
+const CameraPlaceholder = ({ cameraId, frame, result }) => {
   const theme = useTheme();
   const hasResult = Boolean(result);
   const passed = result?.passed;
@@ -31,13 +32,14 @@ const CameraPlaceholder = ({ cameraId, frame, result, pipeline }) => {
         display: "flex",
         flexDirection: "column",
         height: "100%",
+        minHeight: 0,
       }}
     >
-      {/* Header: camera id + which pipeline runs on it */}
+      {/* Header: camera id, and the part it last reported on */}
       <Box
         sx={{
           px: 1.5,
-          py: 1,
+          py: 0.75,
           display: "flex",
           alignItems: "center",
           gap: 1,
@@ -46,19 +48,6 @@ const CameraPlaceholder = ({ cameraId, frame, result, pipeline }) => {
         }}
       >
         <Typography sx={{ fontWeight: 700, fontSize: "0.9rem" }}>{cameraId}</Typography>
-        {pipeline && (
-          <Chip
-            size="small"
-            label={pipeline}
-            sx={{
-              height: 20,
-              fontSize: "0.65rem",
-              fontWeight: 600,
-              bgcolor: pipeline === "defect" ? "error.light" : "info.light",
-              color: pipeline === "defect" ? "error.dark" : "info.dark",
-            }}
-          />
-        )}
         <Box sx={{ flexGrow: 1 }} />
         {hasResult && result.part_id != null && (
           <Typography variant="caption" sx={{ color: "text.secondary" }}>
@@ -67,12 +56,15 @@ const CameraPlaceholder = ({ cameraId, frame, result, pipeline }) => {
         )}
       </Box>
 
-      {/* Live frame */}
+            {/* Live frame, or a standing-by panel until the first one arrives.
+          Height-driven, not aspect-ratio-driven: the tile has to fit the
+          space the station row has, whatever that is, so this page never
+          scrolls. objectFit: contain letterboxes rather than distorting. */}
       <Box
         sx={{
           position: "relative",
-          width: "100%",
-          aspectRatio: "4 / 3",
+          flexGrow: 1,
+          minHeight: 0,
           bgcolor: theme.palette.grey[900],
           display: "flex",
           alignItems: "center",
@@ -80,31 +72,47 @@ const CameraPlaceholder = ({ cameraId, frame, result, pipeline }) => {
         }}
       >
         {frame ? (
-          <img
-            src={frame}
-            alt={cameraId}
-            style={{ width: "100%", height: "100%", objectFit: "contain" }}
-          />
+          <>
+            <img
+              src={frame}
+              alt={cameraId}
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            />
+            <Chip
+              size="small"
+              label="LIVE"
+              sx={{
+                position: "absolute",
+                top: 6,
+                right: 6,
+                height: 18,
+                fontSize: "0.6rem",
+                fontWeight: 700,
+                bgcolor: "error.main",
+                color: "#fff",
+              }}
+            />
+          </>
         ) : (
-          <Typography sx={{ color: theme.palette.grey[500], fontSize: "0.8rem" }}>
-            Waiting for frames…
-          </Typography>
-        )}
-        {frame && (
-          <Chip
-            size="small"
-            label="LIVE"
-            sx={{
-              position: "absolute",
-              top: 6,
-              right: 6,
-              height: 18,
-              fontSize: "0.6rem",
-              fontWeight: 700,
-              bgcolor: "error.main",
-              color: "#fff",
-            }}
-          />
+          // Standing-by rather than an empty black rectangle: an operator
+          // should be able to tell "camera configured, no frames yet" from
+          // "something is broken" without asking anyone.
+          <Box sx={{ textAlign: "center", px: 2 }}>
+            <VideocamOutlinedIcon sx={{ fontSize: 34, color: theme.palette.grey[700] }} />
+            <Typography
+              sx={{
+                color: theme.palette.grey[500],
+                fontSize: "0.78rem",
+                fontWeight: 600,
+                mt: 0.5,
+              }}
+            >
+              Standing by
+            </Typography>
+            <Typography sx={{ color: theme.palette.grey[600], fontSize: "0.68rem" }}>
+              No frames from {cameraId} yet
+            </Typography>
+          </Box>
         )}
       </Box>
 
@@ -118,7 +126,7 @@ const CameraPlaceholder = ({ cameraId, frame, result, pipeline }) => {
           gap: 1,
           borderTop: 1,
           borderColor: "divider",
-          minHeight: 64,
+          minHeight: 60,
         }}
       >
         <Box sx={{ flexGrow: 1, minWidth: 0 }}>

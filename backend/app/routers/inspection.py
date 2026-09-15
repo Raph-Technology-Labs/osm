@@ -2,11 +2,18 @@
 ZMQ (CLAUDE.md Section 9), this only serves the initial camera list + totals
 so the frontend isn't hardcoded to "cam1,cam2"."""
 
+import csv
+import io
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
+from fastapi import Query
+from sqlalchemy.orm import Session as DbSession
+
+from app.db.db import get_db
+from app.services import session_analysis
 
 from app.auth.dependencies import require_role
 
@@ -72,6 +79,121 @@ def get_current_session(request: Request):
     # the closest honest estimate until real pulse tracking is wired.
     revolutions = _state["totals"]["total_fired"] // resolved.indexer.n_slots if resolved else 0
     return {**_state["totals"], "revolutions": revolutions}
+
+def _resolve_session_id(request: Request, session_id: int | None) -> int:
+    """An explicit session_id wins (for looking at a finished run); otherwise
+    the one currently running. 404 rather than an empty rollup when neither
+    exists -- "no session" and "a session with no results yet" are different
+    answers, and the page should say which."""
+    resolved = session_id if session_id is not None else getattr(
+        request.app.state, "current_session_id", None
+    )
+    if resolved is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No session to analyse -- none is running, and result "
+                "persistence may be off for this part (see "
+                "inspection_session._create_part_session)"
+            ),
+        )
+    return resolved
+
+
+@router.get("/session/analysis")
+def get_session_analysis(
+    request: Request,
+    session_id: int | None = Query(default=None),
+    db: DbSession = Depends(get_db),
+):
+    """Per-defect-class, per-parameter and per-station rollups from the
+    persisted rows -- survives a page reload, unlike the frontend's live
+    tally. Lags the ring by however long results_writer's queue takes to
+    drain, which is well under a second."""
+    return session_analysis.build_analysis(db, _resolve_session_id(request, session_id))
+
+
+@router.get("/session/events")
+def get_session_events(
+    request: Request,
+    session_id: int | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    only_nok: bool = Query(default=False),
+    db: DbSession = Depends(get_db),
+):
+    """Newest-first station fires for the event log. One row per camera per
+    fire; rows sharing a ring_part_id belong to the same physical part."""
+    return {
+        "events": session_analysis.recent_events(
+            db, _resolve_session_id(request, session_id), limit=limit, only_nok=only_nok
+        )
+    }
+
+
+@router.get("/session/report")
+def download_session_report(
+    request: Request,
+    session_id: int | None = Query(default=None),
+    db: DbSession = Depends(get_db),
+):
+    """CSV of every station fire in one session -- one row per camera, with
+    the ring_part_id that ties a part's s1/s2/exit rows together.
+
+    Deliberately finer-grained than the dashboard's /download-report (one row
+    per SESSION, for "what did we run this week"): the question on the
+    Inspection page is "what happened to the parts in this run", which needs
+    per-part detail. stdlib csv, matching that export's choice not to pull in
+    pandas for this.
+    """
+    resolved = _resolve_session_id(request, session_id)
+    events = session_analysis.recent_events(db, resolved, limit=100000)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "fired_at",
+            "ring_part_id",
+            "station_id",
+            "station_fire_no",
+            "camera_id",
+            "pipeline",
+            "detail",
+            "camera_passed",
+            "station_passed",
+            "rejected",
+        ]
+    )
+    # recent_events is newest-first for the on-screen log; a report reads
+    # better oldest-first, in the order the parts actually ran.
+    for e in reversed(events):
+        writer.writerow(
+            [
+                e["fired_at"],
+                e["ring_part_id"],
+                e["station_id"],
+                e["station_fire_no"],
+                e.get("camera_id") or "",
+                e["pipeline"],
+                e.get("detail") or "",
+                e.get("camera_passed"),
+                e["overall_passed"],
+                e["rejected"],
+            ]
+        )
+    buf.seek(0)
+
+    # Server-generated timestamp only -- no request input reaches the
+    # filename (CLAUDE.md Section 11's export rule).
+    filename = (
+        f"osm_session_{resolved}_"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+    )
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 class SessionStartRequest(BaseModel):
