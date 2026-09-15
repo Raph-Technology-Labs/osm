@@ -71,6 +71,18 @@ class ModbusPLCClient:
     def is_connected(self) -> bool:
         return self._connected and self._client.connected
 
+    def _mark(self, ok: bool) -> None:
+        """Every read/write updates _connected from its own outcome, not
+        just connect()/close() -- found live, 2026-09-15: a request timeout
+        ("No response received") raised PLCConnectionError but never
+        touched _connected, so is_connected() (Health Check page, and any
+        future live disconnect toast) kept reporting connected=True through
+        an actual outage. pymodbus's own .connected doesn't reliably flip on
+        a timed-out request either (the socket can stay open), so this is
+        the only place that actually tracks it. Self-healing: the next
+        successful call flips it back True, no explicit reconnect() needed."""
+        self._connected = ok
+
     def read_heartbeat(self) -> int:
         """Minimal liveness check -- one read of registers.heartbeat.
         Not a watchdog: no periodic polling, no staleness detection, no
@@ -78,7 +90,9 @@ class ModbusPLCClient:
         connection round-trips a real read."""
         rr = self._client.read_holding_registers(_protocol_address(self.config.registers.heartbeat), count=1)
         if rr.isError():
+            self._mark(False)
             raise PLCConnectionError(f"heartbeat read failed: {rr}")
+        self._mark(True)
         return rr.registers[0]
 
     def read_register(self, reg: int) -> int:
@@ -91,7 +105,9 @@ class ModbusPLCClient:
         slow-polled."""
         rr = self._client.read_holding_registers(_protocol_address(reg), count=1)
         if rr.isError():
+            self._mark(False)
             raise PLCConnectionError(f"register {reg} read failed: {rr}")
+        self._mark(True)
         return rr.registers[0]
 
     def read_registers(self, start_reg: int, count: int) -> list[int]:
@@ -105,13 +121,17 @@ class ModbusPLCClient:
         address -- converted here, same as read_register()."""
         rr = self._client.read_holding_registers(_protocol_address(start_reg), count=count)
         if rr.isError():
+            self._mark(False)
             raise PLCConnectionError(f"batched register read failed (start={start_reg}, count={count}): {rr}")
+        self._mark(True)
         return rr.registers
 
     def write_register(self, reg: int, value: int) -> None:
         rr = self._client.write_register(_protocol_address(reg), value)
         if rr.isError():
+            self._mark(False)
             raise PLCConnectionError(f"register {reg} write failed: {rr}")
+        self._mark(True)
 
     def close(self) -> None:
         self._client.close()

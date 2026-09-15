@@ -56,10 +56,8 @@ plc:
   #
   # No nok field here (removed per explicit instruction 2026-09-07) -- OK/
   # NOK is never forced by config. Every non-blank slot runs real defect/
-  # measurement inference against its sim image (cam2's /data/sim/cats/
-  # folder, e.g., already mixes real-defect and clean photos), and that
-  # real result decides. Only which slots are permanently unfed is a
-  # sim-harness knob.
+  # measurement inference against its sim image, and that real result
+  # decides. Only which slots are permanently unfed is a sim-harness knob.
   sim:
     enabled: false
     host: "localhost"
@@ -90,7 +88,7 @@ plc:
   real_poll_interval_ms: 35.0 # PLACEHOLDER
   # Config-driven motor speed, written to the speed_setpoint register once
   # at session start (CLAUDE.md Rule 5: config-driven, never hardcoded).
-  speed_setpoint_rpm: 80.0 # PLACEHOLDER
+  speed_setpoint_rpm: 65.0 # PLACEHOLDER
   # PLACEHOLDER -- app/plc/watchdog.py's heartbeat-staleness timeout before
   # escalating to STOP_CMD. Not tuned yet; real value once indexer/PLC
   # hardware is actually connected.
@@ -171,6 +169,8 @@ redis:
     result: "rv_inspection_result"
     trigger: "rv_trigger_event"
 
+# s1-only variant of machine_config.yaml -- station s2 (Defect Detection,
+# cam2) removed entirely so the ring runs with a single inspection station.
 # Every physical station on the ring is a stations[] entry, discriminated by
 # `type`. No trigger_reg/part_id_reg anywhere: the PC self-fires off its own
 # slot math (Rule 1), it never waits on a controller trigger register.
@@ -181,7 +181,7 @@ redis:
 # (IndexerSlotTracker.transition_r1), nothing physical happens. When
 # r1.enabled is false, NOK parts ride through untouched. `type: exit` is the
 # final checkpoint: by the time a part gets here its slot status is already
-# OK/NOK from s2 (or, if r1 is disabled, still unresolved and evaluated
+# OK/NOK from s1 (or, if r1 is disabled, still unresolved and evaluated
 # here as a fallback). If OK, result_write.ack_reg is a dummy ACK (confirms
 # the result_aggregator increment). NOK is flagged/displayed only, no
 # physical action, so no ack is expected on that path.
@@ -211,8 +211,8 @@ stations:
       # plain-circle sim images it will detect nothing and measurement.py
       # falls back to whole-frame contour measurement -- same runtime
       # behavior as leaving model_path unset, until a real part-trained
-      # model exists (same caveat as s2's defect model below). Own
-      # model_path (not shared from a defect block -- s1 has none).
+      # model exists. Own model_path (not shared from a defect block --
+      # s1 has none).
       measurement:
         # model_path/model_type commented out -- run_measurement_inference's
         # AI-locator stage is disabled in code (see measurement.py), pure
@@ -263,48 +263,10 @@ stations:
         save_result: true
         draw_result: true
 
-  - id: s2
-    name: "Station 2 - Defect Detection"
-    type: inspection
-    station_offset_pulses: 1066 # PLACEHOLDER
-
-    cameras:
-      cam2:
-        ip: "192.168.5.42"
-        vendor: lucid
-        resolution: { x: 1920, y: 1080 }
-        fps: 30
-        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
-        capture_mode: single_shot
-        strobe_reg: 19
-        strobe_capture_delay_ms: 50 # PLACEHOLDER -- see cam1's note above
-        sim:
-          enabled: true
-          image_path: "/home/snehal-dev/osm/osm_5044_rimcut_thard_air" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
-          # -> OK -- synthetic (no internet access to source a real dog photo), just
-          # needs to not trigger the stock model's "cat" class, verified it doesn't.
-
-    pipeline:
-      defect:
-        model_path: "/models/pt/osm.pt" # stock COCO-pretrained yolo11n -- stand-in until a
-        # real defect-trained model exists; "cat" is a real COCO class so this
-        # is a working detector, not a stub. Swap for the trained defect
-        # model when available.
-        model_type: yolo
-        conf_thresh: 0.3
-        allowed_cameras: [cam2]
-        detect_classes: ['Air_5044','Thard_5044','Rim_Cut_5044','Bar_defect_5044'] # everything this model outputs
-        allowed_defects: ['Air_5044','Thard_5044','Rim_Cut_5044','Bar_defect_5044'] # ok/nok decided ONLY on these
-
-      result:
-        pass_if: all_cameras_pass
-        save_result: true
-        draw_result: true
-
   - id: r1
     name: "Reject Station 1"
     type: reject
-    station_offset_pulses: 2500 # PLACEHOLDER -- between s2 (1080) and exit1 (1800); real value
+    station_offset_pulses: 2500 # PLACEHOLDER -- downstream of s1, before exit1; real value
                                  # needs the actual reject-station time-of-flight (CLAUDE.md Rule 7)
     enabled: true # false = commissioning mode, no rejection actuator wired yet -- NOK parts
                   # ride through untouched and get resolved at exit1 instead
