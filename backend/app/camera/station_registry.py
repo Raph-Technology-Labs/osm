@@ -355,36 +355,17 @@ class CameraStation:
         # set, "connected" = produced a capture recently (see is_connected()).
         self.last_capture_ts: Optional[float] = None
         self.last_capture_ok: Optional[bool] = None
-        # Set via set_frame_provider(is_sim=...) -- a sim camera reads from
-        # disk, there's no physical link to lose, so is_connected() treats
-        # it differently (see below).
-        self.is_sim: bool = False
 
     def is_initialized(self) -> bool:
         return self._frame_provider is not None
 
     def is_connected(self, staleness_threshold_s: float = 10.0) -> bool:
-        """Found live, 2026-09-15: a real station's capture cadence tracks
-        how often the physical ring actually presents a part at it (RPM,
-        entry rate, station spacing) -- easily longer than
-        staleness_threshold_s between fires under real, uneven operation,
-        which made the (real-camera) staleness heuristic below fire false
-        "disconnected" alerts (the new ConnectionAlerts toast) on a camera
-        that was working fine, just hadn't fired recently. For a SIM
-        camera specifically this is worse than just noisy: it's
-        meaningless -- a sim frame provider reads from disk, there's no
-        physical link that can actually drop, so "connected" can only
-        sensibly mean "configured and ready" (is_initialized()), same as
-        it always could regardless of capture timing."""
-        if self.is_sim:
-            return self.is_initialized()
         if self.last_capture_ts is None:
             return False
         return (time.time() - self.last_capture_ts) < staleness_threshold_s
 
-    def set_frame_provider(self, provider: FrameProvider, is_sim: bool = False) -> None:
+    def set_frame_provider(self, provider: FrameProvider) -> None:
         self._frame_provider = provider
-        self.is_sim = is_sim
 
     def set_driver(self, driver: "CameraDriver") -> None:
         self.driver = driver
