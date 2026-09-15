@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Box, Typography, Button, Stack, useTheme } from "@mui/material";
+import { Box, Typography, Button, Chip, Paper, Stack, useTheme } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 import api from "../api/axios";
@@ -8,13 +8,20 @@ import useLiveEvents from "../hooks/useLiveEvents";
 import DigitalTwin from "../components/inspection/DigitalTwin";
 import PageTabs from "../components/inspection/PageTabs";
 import StationCell from "../components/inspection/StationCell";
+import SessionBreakdown, { SessionTotals } from "../components/inspection/SessionAnalysis";
 import RpmControl from "../components/inspection/RpmControl";
+import useSessionAnalysis from "../hooks/useSessionAnalysis";
 
-// Stations per page -- "2x2 or 3x2 ... assume 1920x1080" per the Inspection
-// page spec. 4 keeps each station cell comfortably sized at that resolution;
-// revisit if real screens turn out smaller/larger than assumed.
-const PAGE_CAPACITY = 4;
+// Stations per page. Two stations sharing the height leaves each camera tile
+// large enough to read across the room; more than that and the frames get too
+// short to be useful, so extra stations page (PageTabs) rather than shrink.
+const PAGE_CAPACITY = 2;
 const REVOLUTIONS_POLL_MS = 3000;
+
+// The analysis column is a fixed rail: it never grows into the station area
+// and the station area never squeezes it, so the digital twin renders at the
+// same size no matter how many stations or cameras exist.
+const RAIL_WIDTH = 360;
 
 const InspectionPage = () => {
   const theme = useTheme();
@@ -39,6 +46,17 @@ const InspectionPage = () => {
 
   const cameraIds = useMemo(() => Object.values(camerasByStation).flat(), [camerasByStation]);
   const { frames, results, ringState, hasIpc } = useLiveEvents(cameraIds);
+  const analysis = useSessionAnalysis(sessionActive);
+
+  // station_id -> the config row, so StationCell can show its real name and
+  // offset instead of inferring them.
+  const stationById = useMemo(() => {
+    const map = {};
+    stations.forEach((s) => {
+      map[s.station_id] = s;
+    });
+    return map;
+  }, [stations]);
 
   const fetchConfig = () => {
     api
@@ -127,99 +145,172 @@ const InspectionPage = () => {
   const currentStations = pages[activePage] || [];
 
   return (
-    <>
-      <Typography variant="h5" sx={{ fontWeight: 700, mb: 1.5, flexShrink: 0 }}>
-        Live Inspection
-      </Typography>
-
-      {/* Top control bar -- Start/Stop, RPM, totals. Fixed height, never scrolls. */}
-      <Stack direction="row" spacing={3} alignItems="flex-start" flexWrap="wrap" sx={{ mb: 1.5, flexShrink: 0 }}>
-        <Stack direction="row" spacing={1}>
-          <Button
-            variant="contained"
-            color="success"
-            startIcon={<PlayArrowIcon />}
-            onClick={handleStart}
-            disabled={motorRunning}
-          >
-            Start
-          </Button>
-          <Button
-            variant="contained"
-            color="error"
-            startIcon={<StopIcon />}
-            onClick={handleStop}
-            disabled={!motorRunning}
-          >
-            Stop
-          </Button>
-        </Stack>
-
-        <RpmControl />
-
-        <Box sx={{ flexGrow: 1 }} />
-
-        {/* Per-part counts (same source as the Digital Twin's OK/NOK --
-            ringState.ok_total/nok_total, bumped once per part resolved at
-            exit/r1) -- NOT per-camera-result counts, so this always agrees
-            with the ring's green-wedge count. Per operator request
-            2026-09-07, replacing the old per-camera Fired/Passed/Failed
-            here (that mismatch, e.g. Passed:+2 for one part touching 2
-            cameras, was the source of the earlier confusion). */}
-        <Stack direction="row" spacing={3}>
-          <Typography>
-            Total Parts: <b>{(ringState?.ok_total || 0) + (ringState?.nok_total || 0)}</b>
-          </Typography>
-          <Typography sx={{ color: theme.palette.success.main }}>
-            OK: <b>{ringState?.ok_total || 0}</b>
-          </Typography>
-          <Typography sx={{ color: theme.palette.error.main }}>
-            Failed: <b>{ringState?.nok_total || 0}</b>
-          </Typography>
-        </Stack>
-      </Stack>
-
-      {sessionStatus && (
-        <Typography
-          variant="body2"
-          sx={{ mb: 1, flexShrink: 0, color: sessionStatus.type === "error" ? theme.palette.error.main : theme.palette.success.main }}
+    // Two columns from the very top: the header belongs to the LEFT column
+    // only, so the analysis rail starts level with it. overflow: hidden on the
+    // root means neither column can push the page sideways.
+    <Box sx={{ height: "100%", minHeight: 0, display: "flex", gap: 2, overflow: "hidden" }}>
+      {/* ── LEFT: header, then the stations ──────────────────────────── */}
+      <Box
+        sx={{
+          flex: "1 1 0",
+          minWidth: 0, // without this the column refuses to shrink and clips
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+          overflow: "hidden",
+        }}
+      >
+        <Paper
+          variant="outlined"
+          sx={{
+            borderRadius: 2,
+            px: 2,
+            py: 1.5,
+            mb: 1.5,
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 2,
+            flexWrap: "wrap",
+          }}
         >
-          {sessionStatus.text}
-        </Typography>
-      )}
-      {!hasIpc && (
-        <Typography sx={{ mb: 1, flexShrink: 0, color: theme.palette.warning.main }}>
-          Live feed unavailable — this page needs the Electron app (ZMQ bridge), not a plain browser tab.
-        </Typography>
-      )}
-
-      {/* Main area: camera grid (left, flexible) + digital twin (right, fixed width). No scrolling. */}
-      <Box sx={{ flexGrow: 1, minHeight: 0, display: "flex", gap: 2, overflow: "hidden" }}>
-        <Box sx={{ flexGrow: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <PageTabs pageCount={pages.length} activePage={activePage} onChange={setActivePage} />
-          <Box
-            sx={{
-              flexGrow: 1,
-              minHeight: 0,
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-              gap: 2,
-              overflow: "hidden",
-            }}
-          >
-            {currentStations.map((stationId) => (
-              <StationCell
-                key={stationId}
-                stationId={stationId}
-                cameras={camerasByStation[stationId] || []}
-                frames={frames}
-                results={results}
+          <Box sx={{ minWidth: 0 }}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap" }}>
+              <Typography sx={{ fontWeight: 700, fontSize: "1.05rem" }}>
+                {partCode || "No part selected"}
+              </Typography>
+              <Chip
+                size="small"
+                label={motorRunning ? "RUNNING" : "STOPPED"}
+                sx={{
+                  height: 22,
+                  fontWeight: 700,
+                  fontSize: "0.65rem",
+                  bgcolor: motorRunning ? "success.light" : "action.hover",
+                  color: motorRunning ? "success.dark" : "text.secondary",
+                }}
               />
-            ))}
+              <Chip
+                size="small"
+                label={hasIpc ? "Live feed linked" : "No live feed"}
+                sx={{
+                  height: 22,
+                  fontWeight: 600,
+                  fontSize: "0.65rem",
+                  bgcolor: hasIpc ? "info.light" : "warning.light",
+                  color: hasIpc ? "info.dark" : "warning.dark",
+                }}
+              />
+            </Stack>
+            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              {nSlots ? `Ring ${nSlots} slots` : "Ring —"} · {stations.length} stations
+            </Typography>
           </Box>
-        </Box>
 
-        <Box sx={{ width: 300, flexShrink: 0, height: "100%" }}>
+          {/* Speed setpoint. Start/Stop sits at the far end of the same bar. */}
+          <RpmControl />
+
+          <Box sx={{ flexGrow: 1 }} />
+
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Button
+              variant="contained"
+              color="success"
+              startIcon={<PlayArrowIcon />}
+              onClick={handleStart}
+              disabled={motorRunning}
+            >
+              Start
+            </Button>
+            <Button
+              variant="contained"
+              color="error"
+              startIcon={<StopIcon />}
+              onClick={handleStop}
+              disabled={!motorRunning}
+            >
+              Stop
+            </Button>
+          </Stack>
+        </Paper>
+
+        {(sessionStatus || !hasIpc) && (
+          <Box sx={{ mb: 1.5, flexShrink: 0 }}>
+            {sessionStatus && (
+              <Typography
+                variant="body2"
+                sx={{
+                  color:
+                    sessionStatus.type === "error"
+                      ? theme.palette.error.main
+                      : theme.palette.success.main,
+                }}
+              >
+                {sessionStatus.text}
+              </Typography>
+            )}
+            {!hasIpc && (
+              <Typography variant="body2" sx={{ color: theme.palette.warning.main }}>
+                Live feed unavailable — this page needs the Electron app (ZMQ bridge), not a plain browser tab.
+              </Typography>
+            )}
+          </Box>
+        )}
+
+        <PageTabs pageCount={pages.length} activePage={activePage} onChange={setActivePage} />
+
+        {/* Stations divide this space between them and never scroll: these are
+            live values, and a value an operator has to scroll to find is a
+            value they will miss. PAGE_CAPACITY is what keeps the share large
+            enough to be readable. */}
+        <Box
+          sx={{
+            flexGrow: 1,
+            minHeight: 0,
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+          }}
+        >
+          {currentStations.map((stationId) => (
+            <StationCell
+              key={stationId}
+              stationId={stationId}
+              station={stationById[stationId]}
+              cameras={camerasByStation[stationId] || []}
+              frames={frames}
+              results={results}
+              stationTotals={analysis?.stations?.[stationId]}
+            />
+          ))}
+        </Box>
+      </Box>
+
+      {/* ── RIGHT: fixed rail, totals → twin → breakdown ─────────────── */}
+      <Box
+        sx={{
+          flex: `0 0 ${RAIL_WIDTH}px`, // never grows into the stations, never shrinks
+          minWidth: 0,
+          height: "100%",
+          overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          gap: 2,
+          pr: 0.5,
+        }}
+      >
+        <SessionTotals ringState={ringState} />
+
+        {/* DigitalTwin's own Paper sets height:100%, which collapses to a
+            sliver inside a scrolling column — override it so the ring renders
+            at its natural size and nothing is clipped. */}
+        <Box
+          sx={{
+            flexShrink: 0,
+            "& > .MuiPaper-root": { height: "auto", overflow: "visible" },
+          }}
+        >
           <DigitalTwin
             nSlots={nSlots}
             stations={stations}
@@ -228,8 +319,10 @@ const InspectionPage = () => {
             running={motorRunning}
           />
         </Box>
+
+        <SessionBreakdown analysis={analysis} />
       </Box>
-    </>
+    </Box>
   );
 };
 

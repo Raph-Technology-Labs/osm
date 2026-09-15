@@ -97,7 +97,7 @@ plc:
   watchdog_timeout_ms: 1000.0 # PLACEHOLDER
   # Bypassed for h/w integration (2026-09-11): the instrumentation side
   # isn't incrementing `heartbeat` (40005) yet, so the watchdog was firing
-  # STOP_CMD every ~1s and stopping the motor during commissioning even
+  # STOP_CMD every ~1s and stopping the motor during commissioning evens
   # though the rest of the PLC link (pulse_count, part_sensor) is working
   # fine. MUST be set back to true (or removed -- true is the default)
   # before any real production run.
@@ -203,7 +203,7 @@ stations:
         strobe_capture_delay_ms: 50 # PLACEHOLDER -- real light settle time not yet confirmed with the instrumentation team; not wired to an actual strobe write yet either (see CameraConfig.strobe_capture_delay_ms)
         sim:
           enabled: false
-          image_path: "/data/sim/circles/" # black circle on white bg -- contour-measured, not detected by the stock model
+          image_path: "/home/dhanashree/dhanashree-dev/panda.png" # black circle on white bg -- contour-measured, not detected by the stock model
 
     pipeline:
       # No real part-trained locator model exists yet. Stock yolo11n.pt is
@@ -279,8 +279,8 @@ stations:
         strobe_reg: 19
         strobe_capture_delay_ms: 50 # PLACEHOLDER -- see cam1's note above
         sim:
-          enabled: true
-          image_path: "/home/snehal-dev/osm/osm_5044_rimcut_thard_air" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
+          enabled: false
+          image_path: "/home/dhanashree/dhanashree-dev/panda.png" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
           # -> OK -- synthetic (no internet access to source a real dog photo), just
           # needs to not trigger the stock model's "cat" class, verified it doesn't.
 
