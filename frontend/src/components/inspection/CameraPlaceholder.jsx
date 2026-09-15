@@ -190,24 +190,6 @@ const CameraPlaceholder = ({ cameraId, frame, result }) => {
                   {measurement.resolved_upper ?? "—"} {measurement.unit || "mm"}
                 </Typography>
               )}
-              {measurement.ovality_measured != null && (
-                <Typography
-                  variant="caption"
-                  sx={{
-                    display: "block",
-                    color:
-                      measurement.max_ovality != null &&
-                      measurement.ovality_measured > measurement.max_ovality
-                        ? theme.palette.error.main
-                        : "text.secondary",
-                  }}
-                  noWrap
-                >
-                  ovality {measurement.ovality_measured.toFixed(2)}{" "}
-                  {measurement.unit || "mm"}
-                  {measurement.max_ovality != null && ` (max ${measurement.max_ovality})`}
-                </Typography>
-              )}
             </>
           )}
 
