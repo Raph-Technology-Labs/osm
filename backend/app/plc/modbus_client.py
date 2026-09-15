@@ -21,7 +21,6 @@ Section 10.
 from __future__ import annotations
 
 import logging
-import threading
 
 from pymodbus.client import ModbusTcpClient
 
@@ -70,31 +69,16 @@ class ModbusPLCClient:
         host, port = resolve_plc_target(config)
         self._client = ModbusTcpClient(host, port=port)
         self._connected = False
-        # pymodbus's sync client is one blocking TCP socket -- not safe for
-        # concurrent use from multiple threads. Found live, 2026-09-15:
-        # StationDispatcher's tick thread (~every real_poll_interval_ms) and
-        # the new /health/plc endpoint (polled from the frontend's global
-        # disconnect-toast hook) both call into this same client instance
-        # from different threads with no serialization, which can interleave
-        # two Modbus request/response pairs on one socket -- indistinguishable
-        # from a real timeout/disconnect, and a likely contributor to slow
-        # requests (session start blocking behind a contended read) and
-        # spurious "No response received" errors that weren't necessarily a
-        # genuine hardware/network issue. Every method below holds this for
-        # its one request/response round trip -- matches zeromq.py's
-        # _send_lock for the exact same class of shared-socket hazard.
-        self._lock = threading.Lock()
 
     def connect(self) -> bool:
-        with self._lock:
-            self._connected = self._client.connect()
-            if not self._connected:
-                raise PLCConnectionError(
-                    f"Could not open Modbus TCP connection to {self._client.comm_params.host}"
-                    f":{self._client.comm_params.port}"
-                )
-            log.info("PLC connected (%s)", "sim" if self.config.sim.enabled else "real hardware")
-            return self._connected
+        self._connected = self._client.connect()
+        if not self._connected:
+            raise PLCConnectionError(
+                f"Could not open Modbus TCP connection to {self._client.comm_params.host}"
+                f":{self._client.comm_params.port}"
+            )
+        log.info("PLC connected (%s)", "sim" if self.config.sim.enabled else "real hardware")
+        return self._connected
 
     def is_connected(self) -> bool:
         return self._connected and self._client.connected
@@ -116,13 +100,12 @@ class ModbusPLCClient:
         Not a watchdog: no periodic polling, no staleness detection, no
         escalation (see app/plc/watchdog.py for that). Just proves the
         connection round-trips a real read."""
-        with self._lock:
-            rr = self._client.read_holding_registers(_protocol_address(self.config.registers.heartbeat), count=1)
-            if rr.isError():
-                self._mark(False)
-                raise PLCConnectionError(f"heartbeat read failed: {rr}")
-            self._mark(True)
-            return rr.registers[0]
+        rr = self._client.read_holding_registers(_protocol_address(self.config.registers.heartbeat), count=1)
+        if rr.isError():
+            self._mark(False)
+            raise PLCConnectionError(f"heartbeat read failed: {rr}")
+        self._mark(True)
+        return rr.registers[0]
 
     def read_register(self, reg: int) -> int:
         """Single-register read, for actuator/error-register lookups
@@ -132,13 +115,12 @@ class ModbusPLCClient:
         CLAUDE.md Throughput Design Requirement 1 wants for the hot
         inspection path -- these reads are low-frequency, user-triggered or
         slow-polled."""
-        with self._lock:
-            rr = self._client.read_holding_registers(_protocol_address(reg), count=1)
-            if rr.isError():
-                self._mark(False)
-                raise PLCConnectionError(f"register {reg} read failed: {rr}")
-            self._mark(True)
-            return rr.registers[0]
+        rr = self._client.read_holding_registers(_protocol_address(reg), count=1)
+        if rr.isError():
+            self._mark(False)
+            raise PLCConnectionError(f"register {reg} read failed: {rr}")
+        self._mark(True)
+        return rr.registers[0]
 
     def read_registers(self, start_reg: int, count: int) -> list[int]:
         """Batched read -- CLAUDE.md Throughput Design Requirement 1: one
@@ -149,23 +131,20 @@ class ModbusPLCClient:
         compounds fast at the 900 PPM / 15 events-sec target. `start_reg`
         is a literal Modicon register number (e.g. 40001), not a protocol
         address -- converted here, same as read_register()."""
-        with self._lock:
-            rr = self._client.read_holding_registers(_protocol_address(start_reg), count=count)
-            if rr.isError():
-                self._mark(False)
-                raise PLCConnectionError(f"batched register read failed (start={start_reg}, count={count}): {rr}")
-            self._mark(True)
-            return rr.registers
+        rr = self._client.read_holding_registers(_protocol_address(start_reg), count=count)
+        if rr.isError():
+            self._mark(False)
+            raise PLCConnectionError(f"batched register read failed (start={start_reg}, count={count}): {rr}")
+        self._mark(True)
+        return rr.registers
 
     def write_register(self, reg: int, value: int) -> None:
-        with self._lock:
-            rr = self._client.write_register(_protocol_address(reg), value)
-            if rr.isError():
-                self._mark(False)
-                raise PLCConnectionError(f"register {reg} write failed: {rr}")
-            self._mark(True)
+        rr = self._client.write_register(_protocol_address(reg), value)
+        if rr.isError():
+            self._mark(False)
+            raise PLCConnectionError(f"register {reg} write failed: {rr}")
+        self._mark(True)
 
     def close(self) -> None:
-        with self._lock:
-            self._client.close()
-            self._connected = False
+        self._client.close()
+        self._connected = False

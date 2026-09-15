@@ -7,7 +7,7 @@ import api from "../api/axios";
 // push -- these are low-frequency status checks (CLAUDE.md Section 9
 // reserves the ZMQ/IPC path for the high-rate camera-feed/inspection-result
 // stream only), so a few seconds of latency to notice a disconnect is fine.
-const POLL_MS = 8000;
+const POLL_MS = 4000;
 const ALERT_AUTO_DISMISS_MS = 10000;
 
 export default function useConnectionHealth() {
@@ -62,13 +62,7 @@ export default function useConnectionHealth() {
       }
     };
 
-    // No immediate poll on mount (found live, 2026-09-15: this fired a
-    // PLC health request at the exact moment a page loads / a session
-    // starts, competing with session-start's own PLC/camera work over the
-    // one shared Modbus connection -- ModbusPLCClient now locks around
-    // that, so it's no longer a correctness hazard, but there's still no
-    // reason to add load right at that moment). First check happens after
-    // one interval instead.
+    poll();
     const intervalId = setInterval(poll, POLL_MS);
     return () => {
       cancelled = true;
