@@ -208,7 +208,7 @@ stations:
         strobe_reg: 18 # fire-and-forget CMD, no ACK -- per-camera light, not global
         strobe_capture_delay_ms: 50 # PLACEHOLDER -- real light settle time not yet confirmed with the instrumentation team; not wired to an actual strobe write yet either (see CameraConfig.strobe_capture_delay_ms)
         sim:
-          enabled: false
+          enabled: true
           image_path: "/data/sim/circles/" # black circle on white bg -- contour-measured, not detected by the stock model
 
     pipeline:

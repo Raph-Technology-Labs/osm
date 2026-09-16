@@ -200,7 +200,8 @@ const InspectionPage = () => {
         >
           <Box sx={{ minWidth: 0 }}>
             <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap" }}>
-              <Typography sx={{ fontWeight: 700, fontSize: "1.05rem" }}>
+              <Typography sx={{ fontWeight: 800, fontSize: "2.4rem", letterSpacing: "0.02em",
+                  lineHeight: 1.05, }}>
                 {partCode || "No part selected"}
               </Typography>
               <Chip

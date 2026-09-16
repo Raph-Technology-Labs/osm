@@ -341,7 +341,7 @@ const PartSelectionPage = () => {
               renderInput={(params) => (
                 <TextField
                   {...params}
-                  inputRef={partNameRef}
+                  
                   placeholder={
                     selectedCategoryId
                       ? "Type part name or code"
