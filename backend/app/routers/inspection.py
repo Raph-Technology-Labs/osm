@@ -113,7 +113,12 @@ def get_session_analysis(
     persisted rows -- survives a page reload, unlike the frontend's live
     tally. Lags the ring by however long results_writer's queue takes to
     drain, which is well under a second."""
-    return session_analysis.build_analysis(db, _resolve_session_id(request, session_id))
+    
+    # return session_analysis.build_analysis(db, _resolve_session_id(request, session_id))
+    cams = _camera_pipelines(getattr(request.app.state, "resolved_config", None))
+    return session_analysis.build_analysis(
+        db, _resolve_session_id(request, session_id), camera_pipelines=cams
+    )
 
 
 @router.get("/session/events")
@@ -126,9 +131,16 @@ def get_session_events(
 ):
     """Newest-first station fires for the event log. One row per camera per
     fire; rows sharing a ring_part_id belong to the same physical part."""
+    # return {
+    #     "events": session_analysis.recent_events(
+    #         db, _resolve_session_id(request, session_id), limit=limit, only_nok=only_nok
+    #     )
+    # }
+    cams = _camera_pipelines(getattr(request.app.state, "resolved_config", None))
     return {
         "events": session_analysis.recent_events(
-            db, _resolve_session_id(request, session_id), limit=limit, only_nok=only_nok
+            db, _resolve_session_id(request, session_id),
+            limit=limit, only_nok=only_nok, camera_pipelines=cams,
         )
     }
 
@@ -171,7 +183,9 @@ def download_session_report(
     page is "what happened to the parts in this run".
     """
     resolved = _resolve_session_id(request, session_id)
-    rows = session_analysis.report_rows(db, resolved)
+    # rows = session_analysis.report_rows(db, resolved)
+    cams = _camera_pipelines(getattr(request.app.state, "resolved_config", None))
+    rows = session_analysis.report_rows(db, resolved, camera_pipelines=cams)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     # Server-generated timestamp only -- no request input reaches the filename
@@ -180,7 +194,8 @@ def download_session_report(
 
     if format == "pdf":
         buf = io.BytesIO()
-        report_pdf.build_session_pdf(rows, session_analysis.build_analysis(db, resolved), buf)
+        report_pdf.build_session_pdf(rows, session_analysis.build_analysis(db, resolved, camera_pipelines=cams), buf
+        )
         buf.seek(0)
         return StreamingResponse(
             buf,
@@ -405,3 +420,29 @@ def set_speed(body: SpeedSetpointRequest, request: Request):
         raise HTTPException(status_code=503, detail="No active session and no PLC connected -- nothing to change")
 
     return {"status": "ok", "rpm": body.rpm, "plc_updated": plc_updated, "sim_updated": sim_updated}
+
+
+def _camera_pipelines(resolved) -> dict[str, str]:
+    """camera_id -> "defect" | "measurement", straight from the resolved config.
+
+    The config is the only authority on this: s1's measurement.allowed_cameras
+    is [cam1], s2's defect.allowed_cameras is [cam2]. Sniffing result rows
+    guesses, and guesses wrong -- is_defective is set for measurement cameras
+    too, which is how measurement failures ended up in the Defect card.
+    """
+    out: dict[str, str] = {}
+    if not resolved:
+        return out
+    for station in resolved.stations:
+        pipeline = getattr(station, "pipeline", None)
+        if not pipeline:
+            continue
+        measurement = getattr(pipeline, "measurement", None)
+        if measurement:
+            for cam in getattr(measurement, "allowed_cameras", []) or []:
+                out[cam] = "measurement"
+        defect = getattr(pipeline, "defect", None)
+        if defect:
+            for cam in getattr(defect, "allowed_cameras", []) or []:
+                out[cam] = "defect"
+    return out

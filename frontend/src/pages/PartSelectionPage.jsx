@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Button,
@@ -56,6 +56,11 @@ const PartSelectionPage = () => {
   const [sessionStarting, setSessionStarting] = useState(false);
   const [sessionStartError, setSessionStartError] = useState("");
 
+  // ── Fit-to-viewport ────────────────────────────────────────────
+  const containerRef = useRef(null);
+  const paperRef = useRef(null);
+  const [scale, setScale] = useState(1);
+
   
   // Load categories once.
   useEffect(() => {
@@ -101,6 +106,30 @@ const PartSelectionPage = () => {
   if (!selectedCategoryId) return;
   partNameRef.current?.focus();
 }, [selectedCategoryId]);
+
+// Shrink the card if it's taller than the viewport, so the page never
+// needs a scrollbar and nothing gets clipped.
+useLayoutEffect(() => {
+  const fit = () => {
+    const c = containerRef.current;
+    const p = paperRef.current;
+    if (!c || !p) return;
+    const cs = getComputedStyle(c);
+    const avail =
+      c.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const natural = p.offsetHeight; // transform doesn't affect offsetHeight
+    setScale(natural > avail ? Math.max(0.55, avail / natural) : 1);
+  };
+
+  fit();
+  const ro = new ResizeObserver(fit);
+  if (paperRef.current) ro.observe(paperRef.current);
+  window.addEventListener("resize", fit);
+  return () => {
+    ro.disconnect();
+    window.removeEventListener("resize", fit);
+  };
+}, [selectedPart, parts.length, scanStatus, sessionStartError, categoriesError]);
 
   // Barcode resolves against the parts already loaded for this category.
   const handleBarcodeScanned = (scannedCode) => {
@@ -209,29 +238,34 @@ const PartSelectionPage = () => {
 
   return (
     <Box
-      sx={{
-        minHeight: "100%",
-        height: "100%",
-        overflowY: "auto",
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "flex-start",
-        p: { xs: 1.5, sm: 3 },
-      }}
-    >
-      <Paper
-        elevation={0}
-        sx={{
-          width: "100%",
-          maxWidth: 1300,
-          p: { xs: 2.5, sm: 4, md: 5 },
-          my: { xs: 1, sm: 2 },
-          borderRadius: 3,
-          bgcolor: "background.paper",
-          border: "1px solid",
-          borderColor: "divider",
-        }}
-      >
+  ref={containerRef}
+  sx={{
+    flex: 1,
+    height: "100%",
+    minHeight: 0,
+    overflow: "hidden",          // was overflowY: "auto"
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "flex-start",
+    p: { xs: 1.5, sm: 3 },
+  }}
+>
+  <Paper
+    ref={paperRef}
+    elevation={0}
+    sx={{
+      width: "100%",
+      maxWidth: 1300,
+      transform: `scale(${scale})`,
+      transformOrigin: "top center",
+      p: { xs: 2.5, sm: 4, md: 5 },
+      my: { xs: 1, sm: 2 },
+      borderRadius: 3,
+      bgcolor: "background.paper",
+      border: "1px solid",
+      borderColor: "divider",
+    }}
+  >
         {/* ── Header ───────────────────────────────────────────── */}
         <Box sx={{ mb: 2 }}>
           <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
@@ -341,7 +375,7 @@ const PartSelectionPage = () => {
               renderInput={(params) => (
                 <TextField
                   {...params}
-                  inputRef={partNameRef}
+                  
                   placeholder={
                     selectedCategoryId
                       ? "Type part name or code"

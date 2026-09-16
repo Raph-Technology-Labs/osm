@@ -15,7 +15,11 @@ const MainLayout = ({ title, children, noScroll: noScrollProp = false }) => {
   // layout -- derived from the route the same way sessionActive is, since
   // the shared route-level <MainLayout /> (see AppRoutes.jsx) is a single
   // static instance and can't take a different noScroll prop per page.
-  const noScroll = noScrollProp || sessionActive;
+  // const noScroll = noScrollProp || sessionActive;
+
+  const isPartSelection = location.pathname.startsWith("/part-selection"); // ← real path
+
+  const noScroll = noScrollProp || sessionActive || isPartSelection;
 
   return (
     <Box

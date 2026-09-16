@@ -47,7 +47,7 @@ const StatTile = ({ label, value, color }) => {
 
 const DashboardPage = () => {
   const theme = useTheme();
-  const [timeFilter, setTimeFilter] = useState("today");
+  const [timeFilter, setTimeFilter] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [stats, setStats] = useState(null);
@@ -266,7 +266,7 @@ const DashboardPage = () => {
         />
       </Paper>
 
-      <Snackbar
+      <Snackbar 
         open={Boolean(toast)}
         autoHideDuration={4000}
         onClose={() => setToast("")}
