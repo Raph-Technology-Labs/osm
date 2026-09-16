@@ -256,6 +256,10 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                     is_sim=True,
                 )
             else:
+                # station.driver is only non-None here if build_from_config()
+                # kept this exact CameraStation (unchanged config, still
+                # connected) instead of recreating it -- reuse that live
+                # connection instead of paying for a full reconnect.
                 try:
                     provide, driver = real_frame_provider(
                         camera_id,
@@ -263,6 +267,7 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
                         defect_config=camera_defect_config,
                         measurement_config=camera_measurement_config,
                         draw_result=draw_result,
+                        existing_driver=station.driver,
                     )
                 except CameraConnectionError:
                     log.warning(f"{camera_id}: real camera connect failed -- leaving station unavailable", exc_info=True)

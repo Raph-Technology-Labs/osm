@@ -300,6 +300,7 @@ def real_frame_provider(
     defect_config: Optional["DefectConfig"] = None,
     measurement_config: Optional["MeasurementConfig"] = None,
     draw_result: bool = True,
+    existing_driver: Optional["CameraDriver"] = None,
 ) -> Tuple[FrameProvider, "CameraDriver"]:
     """Real-hardware sibling of sim_frame_provider(). Looks up the right
     CameraDriver by camera_config.vendor (driver_registry.py), connects
@@ -307,14 +308,26 @@ def real_frame_provider(
     runs the exact same real defect/measurement inference sim_frame_provider
     runs above -- only the frame source differs.
 
+    existing_driver: an already-connected driver from a previous session's
+    CameraStation, passed through by start_session() when
+    StationRegistry.build_from_config() determined this camera's config is
+    unchanged and it's still connected -- skips the real Arena SDK
+    connect/nodemap-configure/start_stream entirely and just rebuilds the
+    provide() closure (cheap, pure Python) against the current
+    defect_config/measurement_config, which CAN legitimately differ session
+    to session (different part) even when the camera's own config didn't.
+
     Raises CameraConnectionError if the device can't be reached -- callers
     (start_session) must catch this and leave the station uninitialized
     rather than crash session start over one bad camera (CLAUDE.md's
     camera-disconnect-mid-session rule)."""
-    from app.camera.driver_registry import get_driver_class
+    if existing_driver is not None:
+        driver = existing_driver
+    else:
+        from app.camera.driver_registry import get_driver_class
 
-    driver = get_driver_class(camera_config.vendor)(camera_id, camera_config)
-    driver.connect()  # raises CameraConnectionError -- caller's problem
+        driver = get_driver_class(camera_config.vendor)(camera_id, camera_config)
+        driver.connect()  # raises CameraConnectionError -- caller's problem
 
     def provide(slot_id: Optional[int] = None) -> CapturedFrame:
         # slot_id accepted (matches FrameProvider's signature) but
@@ -359,6 +372,12 @@ class CameraStation:
         # disk, there's no physical link to lose, so is_connected() treats
         # it differently (see below).
         self.is_sim: bool = False
+        # The CameraConfig this station was last built/connected with --
+        # build_from_config() compares this against the next resolved
+        # config to decide whether a real camera actually needs to be
+        # torn down and reconnected, or is unchanged and can be reused
+        # as-is (see build_from_config's docstring).
+        self.camera_config: Optional["CameraConfig"] = None
 
     def is_initialized(self) -> bool:
         return self._frame_provider is not None
@@ -458,11 +477,23 @@ class StationRegistry:
         """Create and register one CameraStation for each configured camera.
         Reconciles against whatever was already registered -- closing a real
         camera's device handle before replacing or dropping it is mandatory
-        here, since this runs again on every session start / part reselect,
-        not just once at boot. Without this, each reload replaces
-        CameraStation objects with fresh ones while the old ones' still-open
-        LucidCamera driver handles become unreferenced and never released --
-        one leaked Arena SDK device handle per reload."""
+        whenever a camera's config actually changed or it's no longer
+        present (topology changed on part reselect), since this runs again
+        on every session start, not just once at boot. Without that, each
+        reload would replace CameraStation objects with fresh ones while the
+        old ones' still-open LucidCamera driver handles become unreferenced
+        and never released -- one leaked Arena SDK device handle per reload.
+
+        Found live 2026-09-16: with a config unchanged from the previous
+        session (same part started twice in a row, nothing reselected),
+        this used to unconditionally close+recreate every station anyway,
+        forcing a full real-camera reconnect (Arena SDK device discovery +
+        a dozen-plus GenICam nodemap writes + start_stream) on every single
+        "Start Session" click even when nothing needed to change. Now: a
+        camera already registered with an identical CameraConfig and a
+        live driver (still connected from last time) is left alone --
+        inspection_session.py's camera loop sees its existing `driver` and
+        reuses it instead of reconnecting."""
         new_camera_ids = {
             camera_id
             for station in resolved_config.inspection_stations()
@@ -475,11 +506,22 @@ class StationRegistry:
                 self._stations.pop(camera_id).close()
 
         for station in resolved_config.inspection_stations():
-            for camera_id in station.cameras:
+            for camera_id, camera_config in station.cameras.items():
                 existing = self._stations.get(camera_id)
+                if (
+                    existing is not None
+                    and existing.station_id == station.id
+                    and existing.camera_config == camera_config
+                    and existing.driver is not None
+                ):
+                    # Unchanged and still connected -- keep it, skip the
+                    # reconnect churn.
+                    continue
                 if existing is not None:
                     existing.close()
-                self._stations[camera_id] = CameraStation(camera_id, station.id)
+                new_station = CameraStation(camera_id, station.id)
+                new_station.camera_config = camera_config
+                self._stations[camera_id] = new_station
 
     def stations_for_station(self, station_id: str) -> list[CameraStation]:
         """Return all camera stations belonging to the given station ID."""
