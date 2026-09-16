@@ -13,7 +13,7 @@ DEFECT_COLOR = (0, 0, 255)  # red (BGR) -- a detection that's a triggered allowe
 DETECT_COLOR = (0, 200, 0)  # green -- detected but not in allowed_defects
 MEASURE_COLOR = (255, 128, 0)  # orange -- measurement ellipse overlay
 IN_TOLERANCE_COLOR = (0, 200, 0)  # green -- this contour point's local diameter is in-spec
-OUT_OF_TOLERANCE_COLOR = (255, 255, 0)  # cyan -- out of the tolerance band; not red, kept distinct from DEFECT_COLOR's red boxes elsewhere
+OUT_OF_TOLERANCE_COLOR = (0, 0, 255)  # red -- out of the tolerance band (NOK)
 
 Point = Tuple[int, int]
 # (leftmost, rightmost, topmost, bottommost) contour points, ROI-local --
