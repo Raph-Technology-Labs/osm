@@ -32,6 +32,7 @@ const InspectionPage = () => {
   const [camerasByStation, setCamerasByStation] = useState({}); // { station_id: [camera_id, ...] }
   const [nSlots, setNSlots] = useState(null);
   const [stations, setStations] = useState([]); // [{station_id, name, slot_offset}]
+  const [speedSetpointRpm, setSpeedSetpointRpm] = useState(45); // machine_config.yaml's plc.speed_setpoint_rpm, until fetchConfig resolves
   const [revolutions, setRevolutions] = useState(0);
   const [activePage, setActivePage] = useState(0);
 
@@ -75,6 +76,7 @@ const InspectionPage = () => {
         setStationOrder(order);
         setNSlots(data.n_slots || null);
         setStations(data.stations || []);
+        if (data.speed_setpoint_rpm != null) setSpeedSetpointRpm(data.speed_setpoint_rpm);
       })
       .catch(() => {});
   };
@@ -208,7 +210,7 @@ const InspectionPage = () => {
           </Box>
 
           {/* Speed setpoint. Start/Stop sits at the far end of the same bar. */}
-          <RpmControl />
+          <RpmControl defaultRpm={speedSetpointRpm} />
 
           <Box sx={{ flexGrow: 1 }} />
 

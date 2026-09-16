@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Box, Slider, TextField, Button, Typography, Alert, useTheme } from "@mui/material";
 import api from "../../api/axios";
 
@@ -11,6 +11,16 @@ const RpmControl = ({ defaultRpm = 45 }) => {
   const [appliedRpm, setAppliedRpm] = useState(defaultRpm); // last value actually written to the PLC
   const [rpm, setRpm] = useState(defaultRpm); // live value while dragging/typing, before Apply
   const [status, setStatus] = useState(null); // { type: 'success'|'error', text }
+
+  // defaultRpm arrives from /inspection/config's async fetch, after this
+  // component's first mount (so the useState initializers above only ever
+  // see whatever the caller had synchronously at mount time) -- sync once
+  // the real machine_config.yaml value lands, so the slider reflects the
+  // actual configured speed instead of staying stuck on the prop default.
+  useEffect(() => {
+    setAppliedRpm(defaultRpm);
+    setRpm(defaultRpm);
+  }, [defaultRpm]);
 
   const applyRpm = async (value) => {
     try {
@@ -29,7 +39,8 @@ const RpmControl = ({ defaultRpm = 45 }) => {
           Motor Speed
         </Typography>
         <Typography variant="body2" sx={{ color: theme.palette.text.secondary }}>
-          Current: <b style={{ color: theme.palette.text.primary }}>{appliedRpm} RPM</b>
+          {rpm !== appliedRpm ? "Setting" : "Current"}:{" "}
+          <b style={{ color: theme.palette.text.primary }}>{rpm} RPM</b>
         </Typography>
       </Box>
       <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
@@ -37,6 +48,7 @@ const RpmControl = ({ defaultRpm = 45 }) => {
           value={rpm}
           min={MIN_RPM}
           max={MAX_RPM}
+          valueLabelDisplay="auto"
           onChange={(_e, value) => setRpm(value)}
           onChangeCommitted={(_e, value) => applyRpm(value)}
           sx={{ flexGrow: 1, color: theme.palette.primary.main }}
