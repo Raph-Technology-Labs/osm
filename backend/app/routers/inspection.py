@@ -64,6 +64,9 @@ def get_config(request: Request):
         "cameras": _state["cameras"],
         "n_slots": resolved.indexer.n_slots if resolved else None,
         "stations": stations,
+        # RpmControl's initial/reset value -- the slider must reflect
+        # whatever this part's config actually has, not a hardcoded guess.
+        "speed_setpoint_rpm": resolved.plc.speed_setpoint_rpm if resolved else None,
     }
 
 
@@ -291,6 +294,28 @@ def _write_stop_cmd(request: Request, run: bool) -> bool:
         return False
 
 
+def _write_speed_setpoint(request: Request, rpm: float) -> bool:
+    """Writes the configured speed_setpoint_rpm as a raw register value (no
+    *10 scaling -- per 2026-09-16 live hardware confirmation, see /speed's
+    docstring). Called from start_motor(), before stop_cmd, so Start
+    actually applies the part's configured speed instead of leaving
+    whatever value was last left in the register (re-adding the
+    session/start speed write CLAUDE.md's history notes was previously
+    reverted -- see that section if this needs re-litigating again)."""
+    resolved = getattr(request.app.state, "resolved_config", None)
+    client = getattr(request.app.state, "plc_client", None)
+    if resolved is None or client is None or not client.is_connected():
+        return False
+    from app.plc.modbus_client import PLCConnectionError
+
+    try:
+        client.write_register(resolved.plc.registers.speed_setpoint, round(rpm))
+        return True
+    except PLCConnectionError:
+        log.warning("motor: PLC speed_setpoint write failed", exc_info=True)
+        return False
+
+
 @router.post("/motor/start", response_model=MotorCommandResponse)
 def start_motor(request: Request):
     """Starts the ring turning -- separate from session start, which only
@@ -300,6 +325,12 @@ def start_motor(request: Request):
     if dispatcher is None:
         raise HTTPException(status_code=400, detail="No active session -- start a session first")
     dispatcher.start()
+    resolved = getattr(request.app.state, "resolved_config", None)
+    if resolved is not None:
+        # Write speed before stop_cmd's 0->1 edge -- the PLC appears to
+        # latch speed_setpoint at that transition rather than reading it
+        # continuously (see /speed's docstring history).
+        _write_speed_setpoint(request, resolved.plc.speed_setpoint_rpm)
     plc_updated = _write_stop_cmd(request, run=True)
     return MotorCommandResponse(status="ok", running=True, plc_updated=plc_updated)
 
@@ -324,10 +355,14 @@ class SpeedSetpointRequest(BaseModel):
 @router.post("/speed")
 def set_speed(body: SpeedSetpointRequest, request: Request):
     """Sets motor speed two ways, independently:
-    1. Real PLC register write (rpm*10 -> 0-1000 scale, matches
-       app/plc/poller.py's write_speed_setpoint() -- same UNCONFIRMED-
-       against-the-instrumentation-sheet caveat, not inventing a second
-       conversion here) -- only if a PLC is actually connected.
+    1. Real PLC register write, raw RPM value (no scaling) -- only if a PLC
+       is actually connected. Switched back to raw (2026-09-16) per live
+       hardware confirmation: writing 15 directly to the register ran the
+       motor fast, while this endpoint's prior rpm*10 write (150 for
+       rpm=15) ran it slow -- the opposite of what's wanted. Note this
+       conflicts with an earlier hardware observation (2026-09-15) that a
+       raw write of 15 stalled the motor on start; the two haven't been
+       reconciled, so revisit if raw values misbehave again.
     2. Scales StationDispatcher's simulation-timer fire interval, relative
        to the configured speed_setpoint_rpm baseline -- so changing speed
        has a visible effect (stations fire faster/slower) even with no
@@ -357,9 +392,9 @@ def set_speed(body: SpeedSetpointRequest, request: Request):
     if client is not None and client.is_connected():
         from app.plc.modbus_client import PLCConnectionError
 
-        rpm_x10 = round(body.rpm * 10)
+        speed_value = round(body.rpm)
         try:
-            client.write_register(resolved.plc.registers.speed_setpoint, rpm_x10)
+            client.write_register(resolved.plc.registers.speed_setpoint, speed_value)
             plc_updated = True
         except PLCConnectionError:
             log.warning("speed: PLC register write failed, sim scaling still applied", exc_info=True)
