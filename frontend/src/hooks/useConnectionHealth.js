@@ -19,7 +19,7 @@ export default function useConnectionHealth() {
   // already down when the app loads would immediately alert on load rather
   // than only on an actual transition while someone's watching.
   const prevPlcConnected = useRef(null);
-  // const prevCameraConnected = useRef({}); // camera_id -> bool | undefined -- unused while the camera alert below is disabled, see that comment
+  const prevCameraConnected = useRef({}); // camera_id -> bool | undefined
 
   // Stable identity (useCallback, empty deps -- both only ever use the
   // setAlerts updater form) so the polling effect below can depend on them
@@ -37,11 +37,7 @@ export default function useConnectionHealth() {
 
     const poll = async () => {
       try {
-        // /health/cameras is still requested (cheap/in-memory on the
-        // backend) but its response is unused while the camera alert below
-        // is disabled -- not destructured, so re-enabling it later is a
-        // one-line change, not a rewire.
-        const [{ data: plc }] = await Promise.all([
+        const [{ data: plc }, { data: cameras }] = await Promise.all([
           api.get("/health/plc"),
           api.get("/health/cameras"),
         ]);
@@ -52,22 +48,19 @@ export default function useConnectionHealth() {
         }
         prevPlcConnected.current = plc.connected;
 
-        // Commented out for now (2026-09-16): CameraStation.is_connected()
-        // (backend/app/camera/station_registry.py) treats a real camera as
-        // "disconnected" whenever it hasn't captured in the last 10s, but a
-        // real station's capture cadence tracks how often a part physically
-        // reaches it (RPM/feed rate) -- easily longer than 10s under normal,
-        // uneven operation. That false-flips this alert on a camera that's
-        // actually fine and still detecting, so it's silenced here until
-        // is_connected() is fixed to reflect actual link/connection state
-        // instead of capture-staleness. PLC alerting above is unaffected.
-        // cameras.forEach((cam) => {
-        //   const prevConnected = prevCameraConnected.current[cam.camera_id];
-        //   if (prevConnected === true && cam.connected === false) {
-        //     pushAlert(`Camera ${cam.camera_id} (station ${cam.station_id}) disconnected`);
-        //   }
-        //   prevCameraConnected.current[cam.camera_id] = cam.connected;
-        // });
+        // Re-enabled 2026-09-16: CameraStation.is_connected()
+        // (backend/app/camera/station_registry.py) now delegates to the
+        // driver's own liveness probe (LucidCamera.is_connected() queries
+        // the device's nodemap) instead of inferring disconnection from
+        // capture staleness -- no longer false-positives on a camera that's
+        // simply waiting for the next part.
+        cameras.forEach((cam) => {
+          const prevConnected = prevCameraConnected.current[cam.camera_id];
+          if (prevConnected === true && cam.connected === false) {
+            pushAlert(`Camera ${cam.camera_id} (station ${cam.station_id}) disconnected`);
+          }
+          prevCameraConnected.current[cam.camera_id] = cam.connected;
+        });
       } catch {
         // Health endpoints themselves unreachable (backend down, no
         // session token yet) -- not itself a PLC/camera disconnect worth

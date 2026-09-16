@@ -11,7 +11,7 @@ part). Uses a fake CameraDriver -- no arena_api or real hardware needed.
 from unittest.mock import patch
 
 from app.camera.camera_driver import CameraDriver
-from app.camera.station_registry import StationRegistry, real_frame_provider
+from app.camera.station_registry import CameraStation, StationRegistry, real_frame_provider
 from app.config.config_loader import (
     CameraConfig,
     CameraSimConfig,
@@ -168,3 +168,43 @@ def test_camera_dropped_from_new_config_gets_closed():
     assert FakeCameraDriver.open_count == 1
     assert FakeCameraDriver.close_count == 1
     assert "cam1" not in [s.camera_id for s in registry.all_stations()]
+
+
+def test_is_connected_reflects_driver_liveness_not_capture_staleness():
+    """The 2026-09-16 fix: CameraStation.is_connected() for a real camera
+    must delegate to the driver's own liveness probe, not infer
+    disconnection from how recently it last captured a frame -- a real
+    station's capture cadence tracks part feed rate/RPM, not link health,
+    so it was never a valid proxy (that's what caused the false
+    "disconnected" toast)."""
+    FakeCameraDriver.reset()
+    station = CameraStation("cam1", "s1")
+
+    # Never connected -- no driver at all yet.
+    assert station.is_connected() is False
+
+    driver = FakeCameraDriver("cam1", None)
+    driver.connect()
+    station.set_driver(driver)
+    assert station.is_connected() is True
+
+    # No capture ever recorded (last_capture_ts stays None) -- still
+    # "connected" per the driver. The old staleness heuristic would have
+    # reported False here even though the camera is fully live, simply
+    # because it hasn't been triggered yet.
+    assert station.last_capture_ts is None
+    assert station.is_connected() is True
+
+    # Driver reports the link is actually down -- station follows
+    # immediately, with no staleness window to wait out.
+    driver.close()
+    assert station.is_connected() is False
+
+
+def test_is_connected_for_sim_camera_ignores_driver_and_capture_timing():
+    """A sim camera has no physical link to lose -- "connected" only ever
+    means "configured and ready," same as is_initialized(), regardless of
+    capture timing or driver state (sim cameras never get a real driver)."""
+    station = CameraStation("cam1", "s1")
+    station.set_frame_provider(lambda slot_id=None: None, is_sim=True)
+    assert station.is_connected() is True

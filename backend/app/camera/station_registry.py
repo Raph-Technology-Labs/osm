@@ -365,7 +365,10 @@ class CameraStation:
         self.driver: Optional["CameraDriver"] = None
         self.on_result: Optional[Callable[[str, CapturedFrame, Optional[int], Optional[object]], None]] = None
         # Health Check page reads these -- "initialized" = frame provider
-        # set, "connected" = produced a capture recently (see is_connected()).
+        # set, "connected" = actual link state (see is_connected()).
+        # last_capture_ts/last_capture_ok are display/diagnostics only now
+        # (when did this camera last actually fire, and did it succeed) --
+        # no longer used to derive connected state, see is_connected().
         self.last_capture_ts: Optional[float] = None
         self.last_capture_ok: Optional[bool] = None
         # Set via set_frame_provider(is_sim=...) -- a sim camera reads from
@@ -382,24 +385,35 @@ class CameraStation:
     def is_initialized(self) -> bool:
         return self._frame_provider is not None
 
-    def is_connected(self, staleness_threshold_s: float = 10.0) -> bool:
-        """Found live, 2026-09-15: a real station's capture cadence tracks
-        how often the physical ring actually presents a part at it (RPM,
-        entry rate, station spacing) -- easily longer than
-        staleness_threshold_s between fires under real, uneven operation,
-        which made the (real-camera) staleness heuristic below fire false
-        "disconnected" alerts (the new ConnectionAlerts toast) on a camera
-        that was working fine, just hadn't fired recently. For a SIM
-        camera specifically this is worse than just noisy: it's
-        meaningless -- a sim frame provider reads from disk, there's no
-        physical link that can actually drop, so "connected" can only
-        sensibly mean "configured and ready" (is_initialized()), same as
-        it always could regardless of capture timing."""
+    def is_connected(self) -> bool:
+        """"Connected" reflects the actual camera link, not how recently it
+        last fired.
+
+        Found live 2026-09-15: a real station's capture cadence tracks how
+        often the physical ring actually presents a part at it (RPM, entry
+        rate, station spacing) -- easily longer than a fixed staleness
+        window between fires under real, uneven operation. The previous
+        implementation inferred "disconnected" from "hasn't captured in the
+        last N seconds," which fired false "disconnected" alerts (the
+        ConnectionAlerts toast) on a camera that was working fine, just
+        hadn't been triggered recently -- capture cadence is a function of
+        part feed rate, not link health, so it was never a valid proxy.
+
+        Real fix: delegate to the driver's own liveness probe
+        (LucidCamera.is_connected() actually queries the device's nodemap
+        and catches the failure if the link is down) instead of guessing
+        from capture timing. No driver yet (never successfully connected,
+        or closed) -- not connected, full stop.
+
+        For a SIM camera specifically, capture timing was worse than just
+        wrong, it was meaningless -- a sim frame provider reads from disk,
+        there's no physical link that can actually drop, so "connected" can
+        only sensibly mean "configured and ready" (is_initialized())."""
         if self.is_sim:
             return self.is_initialized()
-        if self.last_capture_ts is None:
+        if self.driver is None:
             return False
-        return (time.time() - self.last_capture_ts) < staleness_threshold_s
+        return self.driver.is_connected()
 
     def set_frame_provider(self, provider: FrameProvider, is_sim: bool = False) -> None:
         self._frame_provider = provider
