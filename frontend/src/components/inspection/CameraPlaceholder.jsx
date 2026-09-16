@@ -60,17 +60,21 @@ const CameraPlaceholder = ({ cameraId, frame, result }) => {
           Height-driven, not aspect-ratio-driven: the tile has to fit the
           space the station row has, whatever that is, so this page never
           scrolls. objectFit: contain letterboxes rather than distorting. */}
-      <Box
-        sx={{
-          position: "relative",
-          flexGrow: 1,
-          minHeight: 0,
-          bgcolor: theme.palette.grey[900],
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
+              <Box
+          sx={{
+            position: "relative",
+            width: "100%",
+            aspectRatio: "4 / 3",   // shape the frame, don't let it stretch
+            maxHeight: "100%",
+            minHeight: 0,
+            bgcolor: theme.palette.grey[900],
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "hidden",
+          }}
+        >
+      
         {frame ? (
           <>
             <img

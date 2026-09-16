@@ -61,7 +61,7 @@ plc:
   # real result decides. Only which slots are permanently unfed is a
   # sim-harness knob.
   sim:
-    enabled: false
+    enabled: true
     host: "localhost"
     port: 5502
     tick_interval_ms: 1000 # replaces every station's old source.sim_interval_ms
@@ -202,7 +202,7 @@ stations:
         strobe_reg: 18 # fire-and-forget CMD, no ACK -- per-camera light, not global
         strobe_capture_delay_ms: 50 # PLACEHOLDER -- real light settle time not yet confirmed with the instrumentation team; not wired to an actual strobe write yet either (see CameraConfig.strobe_capture_delay_ms)
         sim:
-          enabled: false
+          enabled: true
           image_path: "/home/dhanashree/dhanashree-dev/panda.png" # black circle on white bg -- contour-measured, not detected by the stock model
 
     pipeline:
@@ -279,7 +279,7 @@ stations:
         strobe_reg: 19
         strobe_capture_delay_ms: 50 # PLACEHOLDER -- see cam1's note above
         sim:
-          enabled: false
+          enabled: true
           image_path: "/home/dhanashree/dhanashree-dev/panda.png" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
           # -> OK -- synthetic (no internet access to source a real dog photo), just
           # needs to not trigger the stock model's "cat" class, verified it doesn't.
@@ -314,7 +314,7 @@ stations:
   - id: exit1
     name: "Exit Station - Result Check"
     type: exit
-    station_offset_pulses: 3000 # PLACEHOLDER -- point where OK/NOK is evaluated
+    station_offset_pulses: 2420 # PLACEHOLDER -- point where OK/NOK is evaluated
     pass_if: all_stations_pass
     result_write:
       part_id_reg: 100

@@ -6,6 +6,25 @@ const MIN_RPM = 0;
 const MAX_RPM = 100; // PLACEHOLDER ceiling -- real max comes with real hardware, matches this
 // project's convention of not inventing precise machine limits (CLAUDE.md "ask, don't invent").
 
+// Browsers hide the number input's spinner arrows until the pointer is over
+// the field (Chrome sets opacity:0 on the inner spin button, Firefox hides it
+// entirely unless -moz-appearance says otherwise). On a machine screen the
+// operator needs to SEE that the value is nudgeable before reaching for it,
+// so both are forced visible.
+const spinnerAlwaysVisible = {
+  "& input[type=number]": {
+    MozAppearance: "number-input",
+  },
+  "& input[type=number]::-webkit-outer-spin-button, & input[type=number]::-webkit-inner-spin-button":
+    {
+      WebkitAppearance: "inner-spin-button",
+      opacity: 1,
+      margin: 0,
+      height: 30,
+      cursor: "pointer",
+    },
+};
+
 const RpmControl = ({ defaultRpm = 45 }) => {
   const theme = useTheme();
   const [appliedRpm, setAppliedRpm] = useState(defaultRpm); // last value actually written to the PLC
@@ -47,6 +66,7 @@ const RpmControl = ({ defaultRpm = 45 }) => {
           value={rpm}
           onChange={(e) => setRpm(Number(e.target.value))}
           inputProps={{ min: MIN_RPM, max: MAX_RPM, style: { width: 56 } }}
+          sx={spinnerAlwaysVisible}
         />
         <Button size="small" variant="contained" onClick={() => applyRpm(rpm)}>
           Apply

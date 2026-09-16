@@ -5,23 +5,32 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 import api from "../api/axios";
 import useLiveEvents from "../hooks/useLiveEvents";
+import useGridCapacity from "../hooks/useGridCapacity";
 import DigitalTwin from "../components/inspection/DigitalTwin";
 import PageTabs from "../components/inspection/PageTabs";
 import StationCell from "../components/inspection/StationCell";
-import SessionBreakdown, { SessionTotals } from "../components/inspection/SessionAnalysis";
+import SessionBreakdown, {
+  SessionTotalsStrip,
+  ReportActions,
+} from "../components/inspection/SessionAnalysis";
 import RpmControl from "../components/inspection/RpmControl";
 import useSessionAnalysis from "../hooks/useSessionAnalysis";
 
-// Stations per page. Two stations sharing the height leaves each camera tile
-// large enough to read across the room; more than that and the frames get too
-// short to be useful, so extra stations page (PageTabs) rather than shrink.
-const PAGE_CAPACITY = 2;
 const REVOLUTIONS_POLL_MS = 3000;
 
 // The analysis column is a fixed rail: it never grows into the station area
 // and the station area never squeezes it, so the digital twin renders at the
 // same size no matter how many stations or cameras exist.
 const RAIL_WIDTH = 360;
+
+// The floor for one station: enough width for a camera tile, enough height
+// for that tile plus the station's own header row. Stations shrink down to
+// here and then STOP -- the overflow pages (PageTabs) instead of every tile
+// getting unreadably small. Capacity is measured against these, not assumed,
+// so a 4K panel fits more before paging and a laptop fewer, with no constant
+// to re-tune per machine.
+const MIN_STATION_W = 300;
+const MIN_STATION_H = 260;
 
 const InspectionPage = () => {
   const theme = useTheme();
@@ -103,7 +112,10 @@ const InspectionPage = () => {
   // is worth reconsidering then, but isn't a today problem.
   const handleStart = async () => {
     if (!partCode) {
-      setSessionStatus({ type: "error", text: "No part selected -- start a session from Part Selection first." });
+      setSessionStatus({
+        type: "error",
+        text: "No part selected -- start a session from Part Selection first.",
+      });
       return;
     }
     try {
@@ -134,22 +146,32 @@ const InspectionPage = () => {
     }
   };
 
-  const pages = useMemo(() => {
-    const chunks = [];
-    for (let i = 0; i < stationOrder.length; i += PAGE_CAPACITY) {
-      chunks.push(stationOrder.slice(i, i + PAGE_CAPACITY));
-    }
-    return chunks.length ? chunks : [[]];
-  }, [stationOrder]);
+  // Measured, not assumed: the station area's height is whatever the flex
+  // cascade left after the header, status line and totals band took theirs,
+  // which is knowable only after layout -- hence ResizeObserver inside the
+  // hook rather than a constant here.
+  const { ref: gridRef, cols, capacity } = useGridCapacity(MIN_STATION_W, MIN_STATION_H, 12);
 
-  const currentStations = pages[activePage] || [];
+  const pageCount = Math.max(1, Math.ceil(stationOrder.length / capacity));
+
+  // The window can be resized (or the config reloaded) while a later page is
+  // showing -- capacity grows and that page stops existing. Clamp back to the
+  // first rather than render an empty area.
+  useEffect(() => {
+    if (activePage > pageCount - 1) setActivePage(0);
+  }, [pageCount, activePage]);
+
+  const currentStations = stationOrder.slice(
+    activePage * capacity,
+    activePage * capacity + capacity
+  );
 
   return (
     // Two columns from the very top: the header belongs to the LEFT column
     // only, so the analysis rail starts level with it. overflow: hidden on the
     // root means neither column can push the page sideways.
     <Box sx={{ height: "100%", minHeight: 0, display: "flex", gap: 2, overflow: "hidden" }}>
-      {/* ── LEFT: header, then the stations ──────────────────────────── */}
+      {/* ── LEFT: header, totals band, station tabs, stations ────────── */}
       <Box
         sx={{
           flex: "1 1 0",
@@ -212,22 +234,51 @@ const InspectionPage = () => {
 
           <Box sx={{ flexGrow: 1 }} />
 
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={2} alignItems="center">
             <Button
               variant="contained"
               color="success"
+              size="large"
               startIcon={<PlayArrowIcon />}
               onClick={handleStart}
               disabled={motorRunning}
+              sx={{
+                px: 4.5,
+                py: 1.5,
+                fontSize: "1.1rem",
+                fontWeight: 800,
+                letterSpacing: 0.5,
+                minWidth: 160,
+                borderRadius: 2,
+                boxShadow: 3,
+                textTransform: "none",
+                "& .MuiSvgIcon-root": { fontSize: 26 },
+                "& .MuiButton-startIcon": { mr: 1.25 },
+              }}
             >
               Start
             </Button>
+
             <Button
               variant="contained"
               color="error"
+              size="large"
               startIcon={<StopIcon />}
               onClick={handleStop}
               disabled={!motorRunning}
+              sx={{
+                px: 4.5,
+                py: 1.5,
+                fontSize: "1.1rem",
+                fontWeight: 800,
+                letterSpacing: 0.5,
+                minWidth: 160,
+                borderRadius: 2,
+                boxShadow: 3,
+                textTransform: "none",
+                "& .MuiSvgIcon-root": { fontSize: 26 },
+                "& .MuiButton-startIcon": { mr: 1.25 },
+              }}
             >
               Stop
             </Button>
@@ -251,32 +302,47 @@ const InspectionPage = () => {
             )}
             {!hasIpc && (
               <Typography variant="body2" sx={{ color: theme.palette.warning.main }}>
-                Live feed unavailable — this page needs the Electron app (ZMQ bridge), not a plain browser tab.
+                Live feed unavailable — this page needs the Electron app (ZMQ bridge), not a plain
+                browser tab.
               </Typography>
             )}
           </Box>
         )}
 
-        <PageTabs pageCount={pages.length} activePage={activePage} onChange={setActivePage} />
+        {/* Headline counts across the full station width: this is the one
+            number an operator reads from across the room, and the 360px rail
+            could never make it big enough. flexShrink: 0 means the station
+            area below gives up the height instead, and these digits never
+            degrade no matter how dense the station grid gets. */}
+        <SessionTotalsStrip ringState={ringState} />
 
-        {/* Stations divide this space between them and never scroll: these are
-            live values, and a value an operator has to scroll to find is a
-            value they will miss. PAGE_CAPACITY is what keeps the share large
-            enough to be readable. */}
+        {/* Renders itself away at a single page -- a tab strip that never
+            changes anything is a control that lies about having options. */}
+        <PageTabs pageCount={pageCount} activePage={activePage} onChange={setActivePage} />
+
+        {/* Stations divide this space and never scroll: these are live values,
+            and a value an operator has to scroll to find is a value they will
+            miss. They shrink only down to MIN_STATION_*; past that the extras
+            move to the next tab rather than every tile becoming a thumbnail.
+            gridRef is what the capacity above was measured from. */}
         <Box
+          ref={gridRef}
           sx={{
             flexGrow: 1,
             minHeight: 0,
             overflow: "hidden",
-            display: "flex",
-            flexDirection: "column",
-            gap: 2,
+            display: "grid",
+            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+            gridAutoRows: "1fr",
+            alignItems: "start",
+            gap: 1.5,
           }}
         >
           {currentStations.map((stationId) => (
             <StationCell
               key={stationId}
               stationId={stationId}
+              index={stationOrder.indexOf(stationId)}
               station={stationById[stationId]}
               cameras={camerasByStation[stationId] || []}
               frames={frames}
@@ -287,7 +353,7 @@ const InspectionPage = () => {
         </Box>
       </Box>
 
-      {/* ── RIGHT: fixed rail, totals → twin → breakdown ─────────────── */}
+      {/* ── RIGHT: fixed rail, report actions → twin → breakdown ─────── */}
       <Box
         sx={{
           flex: `0 0 ${RAIL_WIDTH}px`, // never grows into the stations, never shrinks
@@ -300,7 +366,7 @@ const InspectionPage = () => {
           pr: 0.5,
         }}
       >
-        <SessionTotals ringState={ringState} />
+        <ReportActions />
 
         {/* DigitalTwin's own Paper sets height:100%, which collapses to a
             sliver inside a scrolling column — override it so the ring renders
