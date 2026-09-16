@@ -14,6 +14,7 @@ import PlaceholderPage from "../pages/PlaceholderPage";
 import AddNewPartPage from "../pages/AddNewPartPage";
 import RequireAdmin from "../auth/RequireAdmin";
 import PartConfigPage from "../pages/PartConfigPage";
+import PartDetails from "../pages/PartDetails"; 
 
 const AppRoutes = () => {
   return (
@@ -31,7 +32,7 @@ const AppRoutes = () => {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/part-selection" element={<PartSelectionPage />} />
         <Route path="/inspection" element={<InspectionPage />} />
-        <Route path="/part-details" element={<PlaceholderPage title="Part Details" />} />
+        <Route path="/part-details" element={<PartDetails />} />
 
         {/* Admin + superadmin only. The backend enforces this too
             (parts_admin router) — this guard just keeps the page out of

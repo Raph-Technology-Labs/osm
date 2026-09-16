@@ -8,12 +8,12 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from fastapi import Query
 from sqlalchemy.orm import Session as DbSession
 
 from app.db.db import get_db
-from app.services import session_analysis
+from app.services import session_analysis, report_pdf
 
 from app.auth.dependencies import require_role
 
@@ -133,71 +133,73 @@ def get_session_events(
     }
 
 
+_REPORT_COLUMNS = [
+    "session_id", "part_code", "part_name", "session_started_at",
+    "fired_at", "ring_part_id", "station_id", "station_fire_no", "camera_id",
+    "pipeline",
+    # defect columns -- blank on a measurement row
+    "defect_label", "defect_confidence", "detection_count", "is_defective",
+    # measurement columns -- blank on a defect row
+    "measurement_name", "measured", "nominal", "lower_limit", "upper_limit",
+    "unit", "deviation", "ovality", "max_ovality", "in_tolerance",
+    # verdicts
+    "camera_passed", "station_passed", "rejected",
+]
+
+
 @router.get("/session/report")
 def download_session_report(
     request: Request,
     session_id: int | None = Query(default=None),
+    format: str = Query(default="csv", pattern="^(csv|pdf)$"),
     db: DbSession = Depends(get_db),
 ):
-    """CSV of every station fire in one session -- one row per camera, with
-    the ring_part_id that ties a part's s1/s2/exit rows together.
+    """One session's results, as CSV or PDF.
 
-    Deliberately finer-grained than the dashboard's /download-report (one row
-    per SESSION, for "what did we run this week"): the question on the
-    Inspection page is "what happened to the parts in this run", which needs
-    per-part detail. stdlib csv, matching that export's choice not to pull in
-    pandas for this.
+    One route with ?format= rather than two paths, matching the dashboard's
+    /download-report: both formats answer the same question from the same rows
+    (session_analysis.report_rows), so they are one resource in two
+    representations, not two resources.
+
+    CSV splits defect and measurement into their own columns -- a blank cell
+    says "this row is not that kind of result", which a spreadsheet can filter
+    on. PDF composes them into one readable detail cell, because a printed page
+    has no filter box.
+
+    Deliberately finer-grained than the dashboard's own export (one row per
+    SESSION, for "what did we run this week"): the question on the Inspection
+    page is "what happened to the parts in this run".
     """
     resolved = _resolve_session_id(request, session_id)
-    events = session_analysis.recent_events(db, resolved, limit=100000)
+    rows = session_analysis.report_rows(db, resolved)
 
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(
-        [
-            "fired_at",
-            "ring_part_id",
-            "station_id",
-            "station_fire_no",
-            "camera_id",
-            "pipeline",
-            "detail",
-            "camera_passed",
-            "station_passed",
-            "rejected",
-        ]
-    )
-    # recent_events is newest-first for the on-screen log; a report reads
-    # better oldest-first, in the order the parts actually ran.
-    for e in reversed(events):
-        writer.writerow(
-            [
-                e["fired_at"],
-                e["ring_part_id"],
-                e["station_id"],
-                e["station_fire_no"],
-                e.get("camera_id") or "",
-                e["pipeline"],
-                e.get("detail") or "",
-                e.get("camera_passed"),
-                e["overall_passed"],
-                e["rejected"],
-            ]
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    # Server-generated timestamp only -- no request input reaches the filename
+    # (CLAUDE.md Section 11's export rule).
+    filename = f"osm_session_{resolved}_{stamp}.{format}"
+
+    if format == "pdf":
+        buf = io.BytesIO()
+        report_pdf.build_session_pdf(rows, session_analysis.build_analysis(db, resolved), buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
-    buf.seek(0)
 
-    # Server-generated timestamp only -- no request input reaches the
-    # filename (CLAUDE.md Section 11's export rule).
-    filename = (
-        f"osm_session_{resolved}_"
-        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
-    )
+    text = io.StringIO()
+    writer = csv.DictWriter(text, fieldnames=_REPORT_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        # DictWriter fills missing keys with "" -- exactly the blank-cell
+        # behaviour the column split depends on.
+        writer.writerow(row)
     return StreamingResponse(
-        iter([buf.getvalue()]),
+        iter([text.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
 
 class SessionStartRequest(BaseModel):
     part_code: str

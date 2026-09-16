@@ -449,3 +449,104 @@ def build_analysis(db: Session, session_id: int) -> dict:
         "measurements": measurement_totals(db, session_id),
         "stations": station_totals(db, session_id),
     }
+
+def report_rows(db: Session, session_id: int) -> list[dict]:
+    """Flat rows for the CSV/PDF export -- one row per camera, and one row per
+    MEASUREMENT PARAMETER where a camera measured several.
+
+    Deliberately not recent_events(): that one composes a human-readable
+    `detail` string for the on-screen log, which is the wrong shape for a
+    spreadsheet. A report wants each number in its own column so it can be
+    filtered and charted.
+
+    Session and part identity repeat on every row rather than sitting in a
+    preamble block: a preamble breaks every tool that reads the file as plain
+    CSV, and repeated columns cost bytes nobody notices.
+    """
+    from app.models.models import PartSession  # local: avoids a cycle
+
+    sess = db.get(PartSession, session_id)
+    # PartSession denormalizes part_code/part_name precisely so a read like
+    # this needs no join to parts.
+    part_code = getattr(sess, "part_code", "") or ""
+    part_name = getattr(sess, "part_name", "") or ""
+    started_at = getattr(sess, "session_start", None)
+
+    fires = (
+        db.query(SessionResult)
+        .options(joinedload(SessionResult.camera_results))
+        .filter(SessionResult.session_id == session_id)
+        .order_by(SessionResult.id.asc())  # oldest first: the order parts ran
+        .all()
+    )
+
+    rows: list[dict] = []
+    for r in fires:
+        base = {
+            "session_id": session_id,
+            "part_code": part_code,
+            "part_name": part_name,
+            "session_started_at": started_at,
+            "fired_at": r.fired_at,
+            "ring_part_id": r.ring_part_id,
+            "station_id": r.station_id,
+            "station_fire_no": r.station_fire_no,
+            "station_passed": r.overall_passed,
+            "rejected": r.rejected,
+        }
+
+        if not r.camera_results:
+            # The exit/reject row carries no camera of its own -- it is the
+            # part's final verdict, and dropping it would lose the only row
+            # where `rejected` is ever set.
+            rows.append({**base, "pipeline": "aggregation"})
+            continue
+
+        for cam in r.camera_results:
+            cam_base = {
+                **base,
+                "camera_id": cam.camera_id,
+                "camera_passed": cam.camera_passed,
+            }
+
+            measurements = {
+                name: m
+                for name, m in (cam.measurement_data or {}).items()
+                if isinstance(m, dict)
+            }
+
+            if measurements:
+                # One row per parameter. A part measured on diameter AND
+                # length produces two rows, so neither value has to share a
+                # column with the other.
+                for name, m in measurements.items():
+                    rows.append({
+                        **cam_base,
+                        "pipeline": "measurement",
+                        "measurement_name": name,
+                        "measured": m.get("measured"),
+                        "nominal": m.get("nominal"),
+                        # The model's docstring names these upper_limit/
+                        # lower_limit; measurement.py also writes resolved_*
+                        # after applying tolerances. Take whichever is there.
+                        "lower_limit": m.get("resolved_lower", m.get("lower_limit")),
+                        "upper_limit": m.get("resolved_upper", m.get("upper_limit")),
+                        "unit": m.get("unit") or "mm",
+                        "deviation": m.get("deviation"),
+                        "ovality": m.get("ovality_measured"),
+                        "max_ovality": m.get("max_ovality"),
+                        "in_tolerance": m.get("passed"),
+                    })
+            else:
+                rows.append({
+                    **cam_base,
+                    "pipeline": "defect",
+                    "defect_label": cam.defect_label,
+                    "defect_confidence": cam.defect_confidence,
+                    # No defect_count column exists on CameraResult -- the
+                    # number of detections is the length of all_detections.
+                    "detection_count": len(cam.all_detections or []),
+                    "is_defective": cam.is_defective,
+                })
+
+    return rows

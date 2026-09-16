@@ -1,5 +1,20 @@
 import { useState } from "react";
-import { Box, Button, LinearProgress, Paper, Stack, Typography } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  LinearProgress,
+  MenuItem,
+  Paper,
+  Snackbar,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
 import api from "../../api/axios";
 import SessionReport from "./SessionReport";
 
@@ -8,7 +23,7 @@ import SessionReport from "./SessionReport";
 //
 //   SessionTotalsStrip -> full-width band ABOVE the camera grid. Big numbers,
 //                         no controls -- readable across the room.
-//   ReportActions      -> View / Download, in the rail above the digital twin.
+//   ReportActions      -> View / Export, in the rail above the digital twin.
 //   SessionTotals      -> the same totals as a narrow rail card (kept for
 //                         layouts with no wide band to spare).
 //   SessionBreakdown   -> defect/measurement detail, below the digital twin.
@@ -27,21 +42,39 @@ import SessionReport from "./SessionReport";
 
 // --- shared -----------------------------------------------------------------
 
-// The browser can't send an Authorization header on a plain link, so the CSV
-// is fetched as a blob and handed to a synthetic anchor.
-const downloadReport = async () => {
+// One endpoint, two representations: GET /inspection/session/report?format=
+// serves both from the same rows (session_analysis.report_rows), so the
+// spreadsheet and the printed page can never tell different stories.
+//
+// Returns a result rather than swallowing failures. A download that silently
+// does nothing is the worst version of this control -- the operator can't tell
+// "no session yet" from "the app is broken".
+export const downloadReport = async (format = "csv") => {
   try {
-    const res = await api.get("/inspection/session/report", { responseType: "blob" });
+    const res = await api.get("/inspection/session/report", {
+      params: { format },
+      responseType: "blob",
+    });
+    // The browser can't send an Authorization header on a plain link, so the
+    // file is fetched as a blob and handed to a synthetic anchor.
     const url = window.URL.createObjectURL(new Blob([res.data]));
     const a = document.createElement("a");
     a.href = url;
-    a.download = "osm_session_report.csv";
+    // The server sets the real filename in Content-Disposition (session id +
+    // timestamp); this is the browser's fallback if it can't read that header.
+    a.download = `osm_session_report.${format}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
-  } catch {
-    /* no session, or nothing to export */
+    return { ok: true };
+  } catch (err) {
+    const status = err?.response?.status;
+    return {
+      ok: false,
+      message:
+        status === 404 ? "No session to export yet." : "Could not download the report.",
+    };
   }
 };
 
@@ -69,14 +102,38 @@ const Row = ({ label, value, color }) => (
 // is where an operator looks when they want to know what happened, so the way
 // to read the whole story belongs in the same column. The band stays pure
 // numbers, which is what keeps it legible from a distance.
+//
+// Modal-with-format rather than a dropdown, matching the dashboard's own
+// Download Report flow -- same gesture in both places. No date range here
+// though: the dashboard export spans many sessions, this report IS one
+// session, so a From/To pair would be a control with nothing to control.
 export const ReportActions = () => {
   const [reportOpen, setReportOpen] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
+  const [format, setFormat] = useState("csv");
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState(null); // { severity, message }
+
+  const handleDownload = async () => {
+    setBusy(true);
+    const res = await downloadReport(format);
+    setBusy(false);
+    if (res.ok) {
+      setToast({ severity: "success", message: "Download started." });
+      setDownloadOpen(false);
+    } else {
+      setToast({ severity: "error", message: res.message });
+    }
+  };
 
   return (
-    <>
-      {/* View for reading it here, Download for taking it away -- both read
-          the same endpoints, so the two can never tell different stories. */}
-      <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
+    // One Box, not a fragment: the Dialogs mount inside it rather than becoming
+    // extra children of the rail's flex column, where they take a gap's worth
+    // of space from the digital twin below.
+    <Box sx={{ flexShrink: 0 }}>
+      {/* View for reading it here, Export for taking it away -- both read the
+          same endpoints, so the two can never tell different stories. */}
+      <Stack direction="row" spacing={1}>
         <Button
           size="small"
           variant="outlined"
@@ -88,15 +145,79 @@ export const ReportActions = () => {
         <Button
           size="small"
           variant="outlined"
-          onClick={downloadReport}
+          onClick={() => setDownloadOpen(true)}
           sx={{ flex: 1, textTransform: "none" }}
         >
-          Download
+          Export
         </Button>
       </Stack>
 
+      <Dialog
+        open={downloadOpen}
+        onClose={() => setDownloadOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 1, width: 420 } }}
+      >
+        <DialogTitle sx={{ fontWeight: 700 }}>
+          Export report
+          <Typography variant="body2" sx={{ color: "#6b7280", mt: 1, fontWeight: 400 }}>
+            This run's results, one row per camera
+          </Typography>
+        </DialogTitle>
+
+        <DialogContent sx={{ bgcolor: "#f9fafb", mt: 1, p: 3, borderRadius: 1 }}>
+          <Typography
+            sx={{ fontSize: "0.875rem", fontWeight: 600, color: "#111827", mb: 0.5 }}
+          >
+            Choose Format
+          </Typography>
+          <TextField
+            select
+            fullWidth
+            value={format}
+            onChange={(e) => setFormat(e.target.value)}
+            sx={{
+              "& .MuiOutlinedInput-root": { borderRadius: 0.5, bgcolor: "#fff", height: 48 },
+            }}
+          >
+            <MenuItem value="csv">CSV</MenuItem>
+            <MenuItem value="pdf">PDF</MenuItem>
+          </TextField>
+        </DialogContent>
+
+        <DialogActions sx={{ p: 3, pt: 0, gap: 2 }}>
+          <Button
+            variant="outlined"
+            onClick={() => setDownloadOpen(false)}
+            sx={{ flex: 1, textTransform: "none", borderRadius: 0.5 }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleDownload}
+            disabled={busy}
+            sx={{ flex: 1, textTransform: "none", borderRadius: 0.5 }}
+          >
+            {busy ? "Downloading..." : "Download"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <SessionReport open={reportOpen} onClose={() => setReportOpen(false)} />
-    </>
+
+      <Snackbar
+        open={Boolean(toast)}
+        autoHideDuration={3000}
+        onClose={() => setToast(null)}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+      >
+        <Alert severity={toast?.severity} sx={{ width: "100%" }} onClose={() => setToast(null)}>
+          {toast?.message}
+        </Alert>
+      </Snackbar>
+    </Box>
   );
 };
 

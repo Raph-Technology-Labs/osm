@@ -49,6 +49,7 @@ const PartSelectionPage = () => {
 
   // ── Barcode ────────────────────────────────────────────────────
   const scannerRef = useRef(null);
+  const partNameRef = useRef(null);
   const [scanStatus, setScanStatus] = useState(null); // { type, message }
 
   // ── Session start ──────────────────────────────────────────────
@@ -92,9 +93,14 @@ const PartSelectionPage = () => {
   }, [selectedCategoryId]);
 
   // Keep the scanner field focused so a wedge scanner always lands in it.
+  // useEffect(() => {
+  //   scannerRef.current?.focus();
+  // }, [selectedCategoryId]);
+
   useEffect(() => {
-    scannerRef.current?.focus();
-  }, [selectedCategoryId]);
+  if (!selectedCategoryId) return;
+  partNameRef.current?.focus();
+}, [selectedCategoryId]);
 
   // Barcode resolves against the parts already loaded for this category.
   const handleBarcodeScanned = (scannedCode) => {
@@ -335,6 +341,7 @@ const PartSelectionPage = () => {
               renderInput={(params) => (
                 <TextField
                   {...params}
+                  inputRef={partNameRef}
                   placeholder={
                     selectedCategoryId
                       ? "Type part name or code"

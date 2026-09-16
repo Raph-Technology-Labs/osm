@@ -320,7 +320,7 @@ stations:
   - id: exit1
     name: "Exit Station - Result Check"
     type: exit
-    station_offset_pulses: 2420 # PLACEHOLDER -- point where OK/NOK is evaluated
+    station_offset_pulses: 3000 # PLACEHOLDER -- point where OK/NOK is evaluated
     pass_if: all_stations_pass
     result_write:
       part_id_reg: 100
