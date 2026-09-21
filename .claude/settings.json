@@ -20,6 +20,24 @@
             "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/block_dangerous.py"
           }
         ]
+      },
+      {
+        "matcher": "Bash|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/snehal-dev/.local/bin/graphify hook-guard search"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/snehal-dev/.local/bin/graphify hook-guard read"
+          }
+        ]
       }
     ]
   }

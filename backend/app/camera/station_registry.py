@@ -119,14 +119,30 @@ def _run_pipeline(
         # param lookup -- not generalizing to other param names here since
         # the pipeline itself doesn't calibrate/check any others yet.
         param = measurement_config.parameters.get("diameter_mm")
+        # upper_limit/lower_limit are tolerances (+/- from nominal), not
+        # absolute bounds -- resolved_upper/resolved_lower are the actual
+        # pass-window edges (nominal +/- them), sent alongside the raw
+        # tolerance values so the UI can show a real "17.5-18.5mm" range
+        # instead of the confusing raw "0.5-0.5mm" deltas. ovality/
+        # max_ovality sent too so a size-in-spec-but-still-NOK part (failed
+        # on roundness, not size) is visible on the Inspection page instead
+        # of just an unexplained NOK badge.
+        resolved_upper = resolved_lower = None
+        if param and param.nominal_value is not None and param.upper_limit is not None and param.lower_limit is not None:
+            resolved_upper = param.nominal_value + param.upper_limit
+            resolved_lower = param.nominal_value - param.lower_limit
         measurement_data = {
             "diameter_mm": {
                 "nominal": param.nominal_value if param else None,
                 "upper_limit": param.upper_limit if param else None,
                 "lower_limit": param.lower_limit if param else None,
+                "resolved_upper": resolved_upper,
+                "resolved_lower": resolved_lower,
                 "measured": result.diameter_mm,
                 "unit": param.unit if param else "mm",
                 "passed": result.passed,
+                "ovality_measured": result.ovality_mm,
+                "max_ovality": param.max_ovality if param else None,
             }
         }
         return CapturedFrame(
@@ -189,7 +205,22 @@ def sim_frame_provider(
 
         def provide() -> CapturedFrame:
             frame = cv2.imread(random.choice(image_paths))
-            return _run_pipeline(frame, defect_config, measurement_config, draw_result)
+            forced_verdict = None
+            if sim_verdict_enabled and indexer_tracker is not None and slot_id is not None and defect_config is not None:
+                forced_verdict = indexer_tracker.get_slot(slot_id).forced_verdict
+            try:
+                return _run_pipeline(frame, defect_config, measurement_config, draw_result, forced_verdict=forced_verdict)
+            except Exception:
+                # CLAUDE.md Sec. 15: an uncaught pipeline exception must not
+                # kill this capture thread silently -- on_result (ring
+                # bookkeeping + ZMQ publish) still has to run, defaulting to
+                # NOK, or the slot never gets a result and stays pending
+                # forever.
+                log.error(
+                    f"{camera_id}: pipeline step raised unexpectedly -- defaulting to NOK",
+                    exc_info=True,
+                )
+                return CapturedFrame(frame=frame, is_defect=True, defect_label="pipeline_error")
 
         return provide
 
@@ -213,6 +244,7 @@ def real_frame_provider(
     defect_config: Optional["DefectConfig"] = None,
     measurement_config: Optional["MeasurementConfig"] = None,
     draw_result: bool = True,
+    existing_driver: Optional["CameraDriver"] = None,
 ) -> Tuple[FrameProvider, "CameraDriver"]:
     """Real-hardware sibling of sim_frame_provider(). Looks up the right
     CameraDriver by camera_config.vendor (driver_registry.py), connects
@@ -220,18 +252,43 @@ def real_frame_provider(
     runs the exact same real defect/measurement inference sim_frame_provider
     runs above -- only the frame source differs.
 
+    existing_driver: an already-connected driver from a previous session's
+    CameraStation, passed through by start_session() when
+    StationRegistry.build_from_config() determined this camera's config is
+    unchanged and it's still connected -- skips the real Arena SDK
+    connect/nodemap-configure/start_stream entirely and just rebuilds the
+    provide() closure (cheap, pure Python) against the current
+    defect_config/measurement_config, which CAN legitimately differ session
+    to session (different part) even when the camera's own config didn't.
+
     Raises CameraConnectionError if the device can't be reached -- callers
     (start_session) must catch this and leave the station uninitialized
     rather than crash session start over one bad camera (CLAUDE.md's
     camera-disconnect-mid-session rule)."""
-    from app.camera.driver_registry import get_driver_class
+    if existing_driver is not None:
+        driver = existing_driver
+    else:
+        from app.camera.driver_registry import get_driver_class
 
-    driver = get_driver_class(camera_config.vendor)(camera_id, camera_config)
-    driver.connect()  # raises CameraConnectionError -- caller's problem
+        driver = get_driver_class(camera_config.vendor)(camera_id, camera_config)
+        driver.connect()  # raises CameraConnectionError -- caller's problem
 
     def provide() -> CapturedFrame:
         frame = driver.read_frame()
-        return _run_pipeline(frame, defect_config, measurement_config, draw_result)
+        try:
+            return _run_pipeline(frame, defect_config, measurement_config, draw_result)
+        except Exception:
+            # CLAUDE.md Sec. 15: an uncaught pipeline exception must not
+            # kill this capture thread silently -- on_result (ring
+            # bookkeeping + ZMQ publish) still has to run, defaulting to
+            # NOK, or the slot never gets a result and stays pending
+            # forever. Seen in practice on a BLANK (unfed) slot: no part in
+            # frame -> no fittable contour -> measure_diameter_px raises.
+            log.error(
+                f"{camera_id}: pipeline step raised unexpectedly -- defaulting to NOK",
+                exc_info=True,
+            )
+            return CapturedFrame(frame=frame, is_defect=True, defect_label="pipeline_error")
 
     return provide, driver
 
@@ -247,21 +304,59 @@ class CameraStation:
         self.driver: Optional["CameraDriver"] = None
         self.on_result: Optional[Callable[[str, CapturedFrame], None]] = None
         # Health Check page reads these -- "initialized" = frame provider
-        # set, "connected" = produced a capture recently (see is_connected()).
+        # set, "connected" = actual link state (see is_connected()).
+        # last_capture_ts/last_capture_ok are display/diagnostics only now
+        # (when did this camera last actually fire, and did it succeed) --
+        # no longer used to derive connected state, see is_connected().
         self.last_capture_ts: Optional[float] = None
         self.last_capture_ok: Optional[bool] = None
-        self.strobe_reg = strobe_reg
-        self.plc = ModbusPLCClient  # type: ignore
+        # Set via set_frame_provider(is_sim=...) -- a sim camera reads from
+        # disk, there's no physical link to lose, so is_connected() treats
+        # it differently (see below).
+        self.is_sim: bool = False
+        # The CameraConfig this station was last built/connected with --
+        # build_from_config() compares this against the next resolved
+        # config to decide whether a real camera actually needs to be
+        # torn down and reconnected, or is unchanged and can be reused
+        # as-is (see build_from_config's docstring).
+        self.camera_config: Optional["CameraConfig"] = None
+
     def is_initialized(self) -> bool:
         return self._frame_provider is not None
 
-    def is_connected(self, staleness_threshold_s: float = 10.0) -> bool:
-        if self.last_capture_ts is None:
-            return False
-        return (time.time() - self.last_capture_ts) < staleness_threshold_s
+    def is_connected(self) -> bool:
+        """"Connected" reflects the actual camera link, not how recently it
+        last fired.
 
-    def set_frame_provider(self, provider: FrameProvider) -> None:
+        Found live 2026-09-15: a real station's capture cadence tracks how
+        often the physical ring actually presents a part at it (RPM, entry
+        rate, station spacing) -- easily longer than a fixed staleness
+        window between fires under real, uneven operation. The previous
+        implementation inferred "disconnected" from "hasn't captured in the
+        last N seconds," which fired false "disconnected" alerts (the
+        ConnectionAlerts toast) on a camera that was working fine, just
+        hadn't been triggered recently -- capture cadence is a function of
+        part feed rate, not link health, so it was never a valid proxy.
+
+        Real fix: delegate to the driver's own liveness probe
+        (LucidCamera.is_connected() actually queries the device's nodemap
+        and catches the failure if the link is down) instead of guessing
+        from capture timing. No driver yet (never successfully connected,
+        or closed) -- not connected, full stop.
+
+        For a SIM camera specifically, capture timing was worse than just
+        wrong, it was meaningless -- a sim frame provider reads from disk,
+        there's no physical link that can actually drop, so "connected" can
+        only sensibly mean "configured and ready" (is_initialized())."""
+        if self.is_sim:
+            return self.is_initialized()
+        if self.driver is None:
+            return False
+        return self.driver.is_connected()
+
+    def set_frame_provider(self, provider: FrameProvider, is_sim: bool = False) -> None:
         self._frame_provider = provider
+        self.is_sim = is_sim
 
     def set_driver(self, driver: "CameraDriver") -> None:
         self.driver = driver
@@ -335,7 +430,14 @@ class CameraStation:
                 f"(not connected) -- skipping"
             )
             return None
-
+        # Timing (CLAUDE.md Section 14 -- throughput metrics): capture AND
+        # inference (defect/measurement) both happen synchronously inside
+        # _frame_provider, on this one thread -- this is the ONLY place
+        # that latency exists, so it's the one place worth timing. Logged
+        # unconditionally, not just when slow, so a run's log can answer
+        # "how long did inference actually take" after the fact (e.g. for
+        # reject-lateness diagnosis) without needing to reproduce live.
+        t0 = time.monotonic()
         try:
             with self.fire_strobe():
                 captured = self._frame_provider()
@@ -347,13 +449,16 @@ class CameraStation:
             )
             self.last_capture_ok = False
             return None
-
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        log.info(
+            f"{self.camera_id}: capture+inference took {elapsed_ms:.1f}ms "
+            f"(station={self.station_id}, slot_id={slot_id}, part_id={part_id})"
+        )
         self.last_capture_ts = time.time()
         self.last_capture_ok = True
 
         if self.on_result:
-            self.on_result(self.camera_id, captured)
-
+            self.on_result(self.camera_id, captured, slot_id, part_id)
         return captured
 
 
@@ -366,11 +471,23 @@ class StationRegistry:
         """Create and register one CameraStation for each configured camera.
         Reconciles against whatever was already registered -- closing a real
         camera's device handle before replacing or dropping it is mandatory
-        here, since this runs again on every session start / part reselect,
-        not just once at boot. Without this, each reload replaces
-        CameraStation objects with fresh ones while the old ones' still-open
-        LucidCamera driver handles become unreferenced and never released --
-        one leaked Arena SDK device handle per reload."""
+        whenever a camera's config actually changed or it's no longer
+        present (topology changed on part reselect), since this runs again
+        on every session start, not just once at boot. Without that, each
+        reload would replace CameraStation objects with fresh ones while the
+        old ones' still-open LucidCamera driver handles become unreferenced
+        and never released -- one leaked Arena SDK device handle per reload.
+
+        Found live 2026-09-16: with a config unchanged from the previous
+        session (same part started twice in a row, nothing reselected),
+        this used to unconditionally close+recreate every station anyway,
+        forcing a full real-camera reconnect (Arena SDK device discovery +
+        a dozen-plus GenICam nodemap writes + start_stream) on every single
+        "Start Session" click even when nothing needed to change. Now: a
+        camera already registered with an identical CameraConfig and a
+        live driver (still connected from last time) is left alone --
+        inspection_session.py's camera loop sees its existing `driver` and
+        reuses it instead of reconnecting."""
         new_camera_ids = {
             camera_id
             for station in resolved_config.inspection_stations()
@@ -383,11 +500,22 @@ class StationRegistry:
                 self._stations.pop(camera_id).close()
 
         for station in resolved_config.inspection_stations():
-            for camera_id in station.cameras:
+            for camera_id, camera_config in station.cameras.items():
                 existing = self._stations.get(camera_id)
+                if (
+                    existing is not None
+                    and existing.station_id == station.id
+                    and existing.camera_config == camera_config
+                    and existing.driver is not None
+                ):
+                    # Unchanged and still connected -- keep it, skip the
+                    # reconnect churn.
+                    continue
                 if existing is not None:
                     existing.close()
-                self._stations[camera_id] = CameraStation(camera_id, station.id, station.strobe_reg)
+                new_station = CameraStation(camera_id, station.id)
+                new_station.camera_config = camera_config
+                self._stations[camera_id] = new_station
 
     def stations_for_station(self, station_id: str) -> list[CameraStation]:
         """Return all camera stations belonging to the given station ID."""

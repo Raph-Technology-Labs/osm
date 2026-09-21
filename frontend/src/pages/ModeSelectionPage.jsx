@@ -23,8 +23,6 @@ import SettingsInputComponentIcon from "@mui/icons-material/SettingsInputCompone
 import Inventory2Icon from "@mui/icons-material/Inventory2";
 import WarehouseIcon from "@mui/icons-material/Warehouse";
 
-import MainLayout from "../layouts/MainLayout";
-
 // Must exactly match the CheckConstraint on PartOperationMode.mode_of_operation
 const MODES = [
   {
@@ -87,7 +85,11 @@ const ModeSelectionPage = () => {
   };
 
   return (
-    <MainLayout title="New Session — Select Mode">
+    <>
+      <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+        New Session — Select Mode
+      </Typography>
+
       <Box
         sx={{
           display: "flex",
@@ -305,7 +307,7 @@ const ModeSelectionPage = () => {
           </Box>
         </DialogContent>
       </Dialog>
-    </MainLayout>
+    </>
   );
 };
 

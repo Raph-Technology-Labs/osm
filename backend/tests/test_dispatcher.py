@@ -13,7 +13,7 @@ margins to avoid flakiness from thread-scheduling jitter.
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pytest
 
@@ -26,6 +26,7 @@ class FakeStation:
     id: str
     type: str = "inspection"
     enabled: bool = True  # only meaningful for type="reject" -- see test_reject_and_sim.py
+    watches: Optional[List[str]] = None  # only meaningful for type="reject" (spec11 Part 2)
 
 
 @dataclass

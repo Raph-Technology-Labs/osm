@@ -10,6 +10,12 @@ from app.config.config_loader import resolve_config_for_part
 from app.plc.modbus_client import ModbusPLCClient
 
 
+#1. Could have directly read the station and camera configs directly from the yaml files
+#2.  but the camera stations functions are bind with the global registry so instead of standalone which will require reimplementing the necessaary functions
+#3 . I introduced the necessary function in stations_registry file. 
+
+
+
 class StrobingCamera:
     def __init__(self, resolved_config, station_id: int):
         self.config = resolved_config
@@ -45,7 +51,7 @@ class StrobingCamera:
         )
 
     @contextmanager
-    def fire_strobe(self):
+    def fire_strobe(self,):
         """
         Turn the strobe ON before capture and guarantee that
         it is turned OFF after capture.

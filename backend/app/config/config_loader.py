@@ -23,10 +23,20 @@ class DefectConfig(BaseModel):
 
 
 class MeasurementParamConfig(BaseModel):
-    calibration_factor: float = 10.0
+    # mm-per-pixel: measurement.run_measurement_inference does
+    # diameter_mm = diameter_px * calibration_factor. Derive from a real
+    # capture as (known_mm / measured_px), not the other way round.
+    calibration_factor: float = 0.1
     nominal_value: Optional[float] = None
     upper_limit: Optional[float] = None
     lower_limit: Optional[float] = None
+    # Informational only, NOT a pass/fail gate -- pass/fail is size
+    # (nominal_value +/- upper/lower_limit) only. ovality_mm (centroid-radial
+    # spread, see measurement.measure_diameter_px) is still computed and
+    # surfaced in measurement_data/the UI against this value for
+    # diagnostics; real camera edge-jitter noise made an ovality-based gate
+    # reject in-spec parts, so it was removed from passed.
+    max_ovality: Optional[float] = None
     unit: str = "mm"
 
 
@@ -187,25 +197,77 @@ class ExitStation(BaseModel):
 
 
 class RejectStation(BaseModel):
-    """The reject decision checkpoint (CLAUDE.md Rule 3: evaluated at R1,
-    never at Exit). Deliberately has NO cmd_reg/ack_reg yet -- unlike the
-    inert app/config/machine_config.example.yaml sketch, this build has no
-    wired reject actuator (REJECT_CMD, register 40009, stays unwired).
-    Real PLC actuation + ACK/timeout escalation (Rule 4) is separate future
-    work; today this only mutates ring state (IndexerSlotTracker
-    .transition_r1), nothing physical happens yet.
+    """The reject decision checkpoint (CLAUDE.md Rule 3: evaluated at the
+    reject station itself, never at Exit). Deliberately has NO ack_reg
+    yet -- unlike the inert app/config/machine_config.example.yaml
+    sketch, this build has no wired REJECT_ACK. Real PLC actuation +
+    ACK/timeout escalation (Rule 4) is separate future work; today this
+    only mutates ring state (IndexerSlotTracker.transition_reject),
+    nothing physical happens yet.
 
-    enabled=False is commissioning mode: NOK parts ride through R1
-    untouched and get resolved at Exit instead -- Exit's "everything past
-    here already passed" guarantee only holds when this is True."""
+    enabled=False is commissioning mode: NOK parts ride through this
+    station untouched and get resolved at Exit instead -- Exit's
+    "everything past here already passed" guarantee only holds when every
+    configured reject station is enabled.
+
+    watches (spec11 Part 2, dual reject routing): which inspection
+    station(s)' nok verdict this station acts on. None (the default) means
+    "watch every inspection station" -- the original, pre-Part-2 single-
+    reject-station behavior (any_station_nok), preserved exactly so
+    existing single-reject configs (rubber_big, rubber_small) need no
+    change. A part failing a station NOT in this reject station's watches
+    rides through it untouched and is caught by whichever later reject
+    station (if any) does watch that station, or falls through to Exit's
+    own any_station_nok() fallback if none does.
+
+    actuator_reg (spec14 followup #2 groundwork): the register this
+    specific station's physical reject actuator writes to. None (the
+    default) means "use the machine-wide RegisterMapConfig.reject_cmd" --
+    correct and intentional today, since every real machine this app
+    talks to has exactly one physical reject actuator regardless of how
+    many logical reject stations spec11 Part 2 lets a part config
+    declare. Only becomes relevant once a config with multiple reject
+    stations (e.g. med_3_station) actually gets a second physical
+    actuator wired in -- at that point it's a one-line config change
+    (set actuator_reg on that station), not a schema migration. Every
+    existing part config omits this and keeps writing to the shared
+    reject_cmd register, unchanged."""
     id: str
     name: str
     type: Literal["reject"] = "reject"
     station_offset_pulses: int
     enabled: bool = True
+    watches: Optional[List[str]] = None
+    actuator_reg: Optional[int] = None
 
 
-Station = Annotated[Union[InspectionStation, RejectStation, ExitStation], Field(discriminator="type")]
+class VirtualExitStation(BaseModel):
+    """spec11 Part 3 (continuous, no removal) -- a checkpoint that tallies
+    ok/nok exactly like ExitStation, but never discharges the part
+    (IndexerSlotTracker.transition_virtual_exit() does NOT call
+    free_slot()). Sits at a configured station_offset_pulses like any
+    other station, dispatched by the same slot-changed detection every
+    other station already uses -- no new revolution-boundary mechanism
+    needed. A part config using this has no type: reject/exit stations at
+    all (see ResolvedMachineConfig.exactly_one_terminal_station): there's
+    nothing to physically reject or discharge, only inspection stations
+    plus one or more of these.
+
+    Deliberately has NO pass_if field, unlike ExitStation -- ExitStation's
+    own pass_if is a dead field today (declared but never read by
+    transition_exit(), see docs/specs/spec14_followup_hardening.md #1);
+    propagating that same unused field here would just be adding more
+    dead weight, not restoring real functionality."""
+    id: str
+    name: str
+    type: Literal["virtual_exit"] = "virtual_exit"
+    station_offset_pulses: int
+
+
+Station = Annotated[
+    Union[InspectionStation, RejectStation, ExitStation, VirtualExitStation],
+    Field(discriminator="type"),
+]
 
 
 class SimCounts(NamedTuple):
@@ -302,6 +364,15 @@ class RegisterMapConfig(BaseModel):
     stop_cmd: int
     speed_setpoint: int
     fault: int
+    # CLAUDE.md Critical Rule 4 ("Every _CMD register gets a matching
+    # _ACK") -- neither exists on the instrumentation sheet yet (per
+    # explicit instruction, don't invent an address), so both default to
+    # None. StationDispatcher._check_reject_ack()/_check_exit_ack() no-op
+    # until real numbers land here -- today they're a one-shot presence
+    # read/log for visibility, NOT yet the full missed-ack timeout ->
+    # STOP_COMMAND/FAULT_STATUS escalation Rule 4 describes.
+    reject_ack: Optional[int] = None
+    exit_ack: Optional[int] = None
 
 
 class PLCSimConfig(BaseModel):
@@ -377,6 +448,16 @@ class PLCConnectionConfig(BaseModel):
     # Deliberately not tuned yet; real value comes once the indexer/PLC
     # hardware is actually connected (explicit instruction, not guessed).
     watchdog_timeout_ms: float = 5000.0
+    # Bypass switch for the watchdog (CLAUDE.md Rule 4/Section 15 --
+    # safety-critical: normally required, never silently removed). Default
+    # True. Set False ONLY for h/w integration/commissioning against a real
+    # PLC whose instrumentation side doesn't increment `heartbeat` yet --
+    # every other real-mode check (pulse_count, part_sensor) still runs
+    # normally; this only skips the "PLC looks dead, STOP_CMD" escalation.
+    # Must be True again before any real production run -- inspection_
+    # session.py logs a loud startup WARNING whenever this is False so it
+    # can't go unnoticed in a deployment.
+    watchdog_enabled: bool = True
     # spec12 -- real-hardware poll cadence (part_sensor + pulse_count), only
     # used when sim.enabled above is false (StationDispatcher's real-mode
     # tick interval). NOT the same knob as sim.tick_interval_ms (that's a
@@ -412,54 +493,118 @@ class ResolvedMachineConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def exactly_one_exit_station(self):
+    def exactly_one_terminal_station(self):
+        """Every part needs exactly one terminal checkpoint -- otherwise
+        either nothing ever gets tallied (neither present) or it's
+        ambiguous which discharge semantics apply (both present). Two
+        valid shapes only: exactly one type: exit and zero type:
+        virtual_exit (the original, still-default shape -- rubber_big/
+        rubber_small/med_3_station all look like this), OR zero type: exit
+        and one-or-more type: virtual_exit (spec11 Part 3 -- continuous,
+        no removal; more than one virtual_exit checkpoint around the ring
+        is allowed, since none of them discharge the part, unlike a real
+        exit). Replaces the old exactly_one_exit_station, which had no
+        way to express a config with no real exit station at all."""
         exits = [s for s in self.stations if s.type == "exit"]
-        if len(exits) != 1:
-            raise ValueError(f"stations[] must contain exactly one type: exit entry, found {len(exits)}")
-        return self
+        virtual_exits = [s for s in self.stations if s.type == "virtual_exit"]
+        if len(exits) == 1 and len(virtual_exits) == 0:
+            return self
+        if len(exits) == 0 and len(virtual_exits) >= 1:
+            return self
+        raise ValueError(
+            f"stations[] must contain exactly one type: exit entry with zero "
+            f"type: virtual_exit, OR zero type: exit entries with at least one "
+            f"type: virtual_exit (never both, never neither) -- found "
+            f"{len(exits)} exit and {len(virtual_exits)} virtual_exit"
+        )
 
     @model_validator(mode="after")
-    def at_most_one_reject_station(self):
-        rejects = [s for s in self.stations if s.type == "reject"]
-        if len(rejects) > 1:
-            raise ValueError(f"stations[] must contain at most one type: reject entry, found {len(rejects)}")
+    def reject_watches_reference_real_stations(self):
+        """spec11 Part 2 (dual reject routing) -- a RejectStation.watches
+        entry that doesn't match any real inspection station id is a config
+        typo that would otherwise load cleanly and just silently never
+        fire (any_watched_station_nok() only ever sees nok states for
+        stations that actually exist in station_states). Same "catch the
+        typo at load time" spirit as validate_camera_refs above."""
+        inspection_ids = {s.id for s in self.inspection_stations()}
+        for reject in (s for s in self.stations if s.type == "reject"):
+            if reject.watches is None:
+                continue
+            unknown = set(reject.watches) - inspection_ids
+            if unknown:
+                raise ValueError(
+                    f"reject station {reject.id!r}.watches references unknown "
+                    f"inspection station(s): {unknown}"
+                )
         return self
 
     @model_validator(mode="after")
     def reject_before_exit(self):
         """CLAUDE.md Critical Rule 3: the reject decision is evaluated at
-        R1, never at Exit -- that guarantee only holds if R1 physically
-        sits before Exit on the ring. Nothing previously checked this;
-        found in spec12's code review as a config typo that would load and
-        validate cleanly while silently violating Rule 3 at runtime."""
-        reject = self.reject_station()
-        if reject is None:
+        a reject station, never at Exit -- that guarantee only holds if
+        EVERY configured reject station physically sits before Exit on the
+        ring (spec11 Part 2 generalized this from "the one reject station"
+        to "every reject station" -- multiple are now valid). Nothing
+        previously checked even the single-station case; found in spec12's
+        code review as a config typo that would load and validate cleanly
+        while silently violating Rule 3 at runtime.
+
+        No-ops entirely if there's no real exit station (spec11 Part 3:
+        virtual_exit-only parts have no type: exit at all) -- Rule 3's
+        "before Exit" constraint has nothing to be evaluated against
+        there. exactly_one_terminal_station has already run (declared
+        above this validator) and guarantees at most one exit station
+        whenever any exist, so exit_station() below is safe once we know
+        at least one reject station is present to check."""
+        rejects = [s for s in self.stations if s.type == "reject"]
+        if not rejects or not any(s.type == "exit" for s in self.stations):
             return self
         exit_st = self.exit_station()
-        if reject.station_offset_pulses >= exit_st.station_offset_pulses:
-            raise ValueError(
-                f"reject station {reject.id!r} (station_offset_pulses="
-                f"{reject.station_offset_pulses}) must be strictly before the exit "
-                f"station {exit_st.id!r} (station_offset_pulses="
-                f"{exit_st.station_offset_pulses}) in ring order -- CLAUDE.md Rule 3 "
-                f"requires the reject decision to be evaluated before Exit"
-            )
+        for reject in rejects:
+            if reject.station_offset_pulses >= exit_st.station_offset_pulses:
+                raise ValueError(
+                    f"reject station {reject.id!r} (station_offset_pulses="
+                    f"{reject.station_offset_pulses}) must be strictly before the exit "
+                    f"station {exit_st.id!r} (station_offset_pulses="
+                    f"{exit_st.station_offset_pulses}) in ring order -- CLAUDE.md Rule 3 "
+                    f"requires the reject decision to be evaluated before Exit"
+                )
         return self
 
     def inspection_stations(self) -> List[InspectionStation]:
         return [s for s in self.stations if s.type == "inspection"]
 
     def exit_station(self) -> ExitStation:
+        """Only call this when a real exit station is known to exist (a
+        virtual_exit-only part per spec11 Part 3 has none) -- callers
+        outside a `type == "exit"` check of their own should confirm via
+        exactly_one_terminal_station's shape first, same as
+        reject_before_exit does."""
         for s in self.stations:
             if s.type == "exit":
                 return s
-        raise ValueError("no type: exit station found")  # unreachable, exactly_one_exit_station enforces this
+        raise ValueError("no type: exit station found")
 
-    def reject_station(self) -> Optional[RejectStation]:
-        for s in self.stations:
-            if s.type == "reject":
-                return s
-        return None
+    def virtual_exit_stations(self) -> List[VirtualExitStation]:
+        """spec11 Part 3 -- zero for every part except a continuous,
+        no-removal one (exactly_one_terminal_station guarantees these are
+        mutually exclusive with a real exit station)."""
+        return [s for s in self.stations if s.type == "virtual_exit"]
+
+    def reject_stations(self) -> List[RejectStation]:
+        """Every configured reject station (spec11 Part 2: zero, one, or
+        more -- the old at_most_one_reject_station cap is gone), sorted by
+        station_offset_pulses ascending (ring order). Callers that iterate
+        this to arm/fire pulse-precise reject targets (StationDispatcher
+        ._tick_real) depend on this order: it's what guarantees the
+        PHYSICALLY-FIRST eligible reject station always wins the race to
+        claim a slot in _pending_reject_targets when two reject stations'
+        watches overlap, regardless of the order they happen to be listed
+        in stations[] in the YAML."""
+        return sorted(
+            (s for s in self.stations if s.type == "reject"),
+            key=lambda s: s.station_offset_pulses,
+        )
 
     def cameras(self) -> Dict[str, CameraConfig]:
         """All cameras across all inspection stations, keyed by camera_id --

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import require_role
 from app.camera.station_registry import get_station_registry
+from app.plc.modbus_client import PLCConnectionError
 
 router = APIRouter(prefix="/health", tags=["health"], dependencies=[Depends(require_role("operator"))])
 
@@ -59,6 +60,22 @@ def get_plc_health(request: Request):
             errors=[ErrorRegisterStatus(name=e.name, reg=e.reg, value=-1) for e in error_registers],
         )
 
-    heartbeat = client.read_heartbeat()
-    errors = [ErrorRegisterStatus(name=e.name, reg=e.reg, value=client.read_register(e.reg)) for e in error_registers]
+    # is_connected() only reflects the LAST read/write's outcome (it
+    # self-heals/degrades on the next attempt, not continuously) -- so a
+    # PLC that just dropped can still report connected=True here until this
+    # call itself proves otherwise. Degrade gracefully on that proof
+    # instead of letting it 500 (CLAUDE.md Section 15: mark unavailable,
+    # don't crash).
+    try:
+        heartbeat = client.read_heartbeat()
+        errors = [
+            ErrorRegisterStatus(name=e.name, reg=e.reg, value=client.read_register(e.reg))
+            for e in error_registers
+        ]
+    except PLCConnectionError:
+        return PLCHealth(
+            connected=False,
+            heartbeat=None,
+            errors=[ErrorRegisterStatus(name=e.name, reg=e.reg, value=-1) for e in error_registers],
+        )
     return PLCHealth(connected=True, heartbeat=heartbeat, errors=errors)

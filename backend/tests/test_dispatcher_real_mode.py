@@ -15,19 +15,35 @@ deterministic and don't need real sleeps or timing margins.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from app.indexer.dispatcher import PULSE_COUNT_REGISTER_WRAP, StationDispatcher
+from app.indexer.dispatcher import StationDispatcher
 from app.indexer.tracker import IndexerSlotTracker
 
+# Kept as "PULSE_COUNT_REG" for minimal diff across this file's many call
+# sites, but this is now the register StationDispatcher._tick_real() reads
+# for slot/position tracking -- registers.encoder_indexer_ppr (40002 on the
+# real sheet, confirmed 2026-09-12 to reset once per revolution at
+# encoder_cpr), NOT registers.pulse_count (40001, the raw motor-encoder
+# count) or registers.encoder_count (40003, genuinely monotonic) -- see
+# dispatcher.py's own module-level comment for the full history. The
+# literal address value doesn't matter for these unit tests against a
+# FakePlcClient, only that FakeRegisters.encoder_indexer_ppr below matches
+# what every plc.queue(PULSE_COUNT_REG, ...) call populates.
 PULSE_COUNT_REG = 40001
 PART_SENSOR_REG = 40004
 REJECT_CMD_REG = 40009
+REJECT_ACK_REG = 40013  # test-only address -- no real register exists yet (see RegisterMapConfig)
+EXIT_ACK_REG = 40014  # test-only address -- no real register exists yet (see RegisterMapConfig)
 
 
 @dataclass
 class FakeRegisters:
-    pulse_count: int = PULSE_COUNT_REG
+    pulse_count: int = 40099  # unused by dispatcher.py any more -- distinct dummy address
+    encoder_count: int = 40098  # unused by dispatcher.py any more -- distinct dummy address
+    encoder_indexer_ppr: int = PULSE_COUNT_REG  # what _tick_real() actually reads -- see comment above
     part_sensor: int = PART_SENSOR_REG
     reject_cmd: int = REJECT_CMD_REG
+    reject_ack: Optional[int] = None
+    exit_ack: Optional[int] = None
 
 
 @dataclass
@@ -58,12 +74,20 @@ class FakeRejectStation:
     type: str = "reject"
     enabled: bool = True
     station_offset_pulses: int = 0
+    watches: Optional[List[str]] = None  # spec11 Part 2 -- None means "watch every inspection station"
+    actuator_reg: Optional[int] = None  # spec14 followup #2 -- None means "use the shared reject_cmd register"
 
 
 @dataclass
 class FakeInspectionStation:
     id: str
     type: str = "inspection"
+
+
+@dataclass
+class FakeExitStation:
+    id: str = "exit"
+    type: str = "exit"
 
 
 class FakeRealResolvedConfig:
@@ -75,11 +99,15 @@ class FakeRealResolvedConfig:
     def inspection_stations(self):
         return [s for s in self.stations if s.type == "inspection"]
 
-    def reject_station(self):
-        for s in self.stations:
-            if s.type == "reject":
-                return s
-        return None
+    def reject_stations(self):
+        # Real ResolvedMachineConfig.reject_stations() sorts by
+        # station_offset_pulses (ring order) -- mirrored here since
+        # _tick_real's overlapping-watches safety depends on that order,
+        # not on YAML/list declaration order.
+        return sorted(
+            (s for s in self.stations if s.type == "reject"),
+            key=lambda s: s.station_offset_pulses,
+        )
 
 
 class FakeStationRegistry:
@@ -105,6 +133,15 @@ class FakePlcClient:
         q = self.queues[reg]
         return int(q.pop(0))
 
+    def read_registers(self, start_reg: int, count: int) -> list:
+        # Mirrors ModbusPLCClient.read_registers' batched-read shape, but
+        # pulls from the same per-register queues read_register() uses --
+        # tests still queue values per register number, independent of
+        # dispatcher.py's internal batching, so a register with nothing
+        # queued (not part of this test's setup) reads as 0 rather than
+        # KeyError.
+        return [int(self.queues[reg].pop(0)) if self.queues.get(reg) else 0 for reg in range(start_reg, start_reg + count)]
+
     def write_register(self, reg: int, value: int) -> None:
         self.writes.append((reg, value))
 
@@ -113,18 +150,33 @@ def make_real_dispatcher(
     n_slots=10,
     encoder_cpr=100,
     reject_station: Optional[FakeRejectStation] = None,
+    reject_stations: Optional[List[FakeRejectStation]] = None,
+    inspection_ids=("s1",),
     indexer: Optional[FakeIndexerConfig] = None,
     plc: Optional[FakeRealPlc] = None,
+    exit_station: Optional[FakeExitStation] = None,
 ):
-    stations = [FakeInspectionStation(id="s1")]
-    if reject_station is not None:
-        stations.append(reject_station)
+    # reject_stations (plural, spec11 Part 2) takes precedence; reject_station
+    # (singular) stays as sugar for the common single-reject-station case so
+    # every pre-Part-2 test call site here needs no change.
+    if reject_stations is not None:
+        rejects = list(reject_stations)
+    elif reject_station is not None:
+        rejects = [reject_station]
+    else:
+        rejects = []
+    exits = [exit_station] if exit_station is not None else []
+
+    stations = [FakeInspectionStation(id=sid) for sid in inspection_ids] + rejects + exits
     config = FakeRealResolvedConfig(stations, indexer=indexer, plc=plc)
+    offsets = {sid: 0 for sid in inspection_ids}
+    offsets.update({r.id: 0 for r in rejects})
+    offsets.update({e.id: 0 for e in exits})
     tracker = IndexerSlotTracker(
         n_slots=n_slots,
         encoder_cpr=encoder_cpr,
-        station_pulse_offsets={"s1": 0} if reject_station is None else {"s1": 0, "r1": 0},
-        inspection_station_ids=["s1"],
+        station_pulse_offsets=offsets,
+        inspection_station_ids=list(inspection_ids),
     )
     registry = FakeStationRegistry()
     plc_client = FakePlcClient()
@@ -135,28 +187,78 @@ def make_real_dispatcher(
     return dispatcher, tracker, plc_client
 
 
-def test_rising_edge_derives_slot_index_and_stores_pulse_count_at_detection():
+def test_first_rising_edge_calibrates_home_and_derives_slot_index():
+    # An incremental encoder has no absolute reference of its own -- raw
+    # pulse=0 is just wherever it was at power-on, not tied to any
+    # physical location. So the FIRST part_sensor rising edge each
+    # session calibrates home_offset_pulses (see StationDispatcher
+    # .home_offset_pulses), and that same edge's own detection is
+    # necessarily home-relative pulse 0 -- it defines the zero, it can't
+    # be offset from it.
     dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100)
     plc.queue(PULSE_COUNT_REG, [55, 63])
     plc.queue(PART_SENSOR_REG, [False, True])
 
     dispatcher._tick_real()  # baseline reading, no edge
-    dispatcher._tick_real()  # rising edge: accumulated = 63-55 = 8
+    dispatcher._tick_real()  # rising edge: accumulated = 63-55 = 8, calibrates home
 
-    slot_index = (8 // tracker.pulses_per_slot) % tracker.n_slots
+    assert dispatcher.home_offset_pulses == 8
+    slot_index = 0  # home-relative pulse 0 at calibration -- always slot 0
     record = tracker.get_slot(slot_index)
     assert record.assign_part_id is not None
-    assert record.pulse_count_at_detection == 8
+    assert record.pulse_count_at_detection == 0
 
 
-def test_level_high_across_ticks_counts_once_not_per_tick():
-    # Edge, not level: the first True reading legitimately counts as a
-    # rising edge (no known prior state), but the sensor staying high on
-    # subsequent polls must not re-trigger -- one part in, not three.
+def test_second_rising_edge_is_home_relative_not_raw():
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100)
+    # ticks: baseline(55) -> edge(63, calibrates home=8) -> no edge(70) ->
+    # edge(75) -- second part detected 12 raw pulses after calibration.
+    plc.queue(PULSE_COUNT_REG, [55, 63, 70, 75])
+    plc.queue(PART_SENSOR_REG, [False, True, False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()  # calibrates home_offset_pulses = 8
+    dispatcher._tick_real()
+    dispatcher._tick_real()  # second edge: accumulated = 75-55 = 20, home-relative = 20-8 = 12
+
+    assert dispatcher.home_offset_pulses == 8
+    slot_index = (12 // tracker.pulses_per_slot) % tracker.n_slots
+    record = tracker.get_slot(slot_index)
+    assert record.assign_part_id is not None
+    assert record.pulse_count_at_detection == 12
+
+
+def test_already_high_on_first_poll_is_baseline_not_a_phantom_edge():
+    # Found via h/w integration testing 2026-09-11: with no part physically
+    # present, part_sensor happened to already read HIGH on the very first
+    # poll (stuck bit / idle-high default / wiring quirk). There's no
+    # genuine prior reading on tick 1 to compare against, so this must be
+    # treated as establishing a baseline, never as a rising edge -- doing
+    # otherwise silently admits a phantom part AND miscalibrates home off a
+    # bogus reading. Sensor staying High across further ticks (no real
+    # transition ever happens) must never admit anything either.
     dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100)
     plc.queue(PULSE_COUNT_REG, [10, 20, 30])
     plc.queue(PART_SENSOR_REG, [True, True, True])
 
+    dispatcher._tick_real()  # first-ever poll: True -- baseline only, no edge
+    dispatcher._tick_real()  # still True: no transition, no edge
+    dispatcher._tick_real()  # still True: no transition, no edge
+
+    assert tracker.in_flight_count == 0
+    assert dispatcher.home_offset_pulses is None
+
+
+def test_level_high_across_ticks_counts_once_not_per_tick():
+    # A genuine False -> True transition (real edge, after baseline is
+    # already established) admits exactly one part; the sensor staying
+    # True on subsequent polls must not re-trigger -- one part in, not
+    # three.
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100)
+    plc.queue(PULSE_COUNT_REG, [10, 10, 20, 30])
+    plc.queue(PART_SENSOR_REG, [False, True, True, True])
+
+    dispatcher._tick_real()  # baseline: False
     dispatcher._tick_real()  # rising edge (False -> True): one part enters
     dispatcher._tick_real()  # still True: no re-trigger
     dispatcher._tick_real()  # still True: no re-trigger
@@ -202,13 +304,16 @@ def test_target_fire_pulse_reflects_actual_detected_offset_not_nominal_slot():
 
 
 def test_wraparound_crossing_between_detection_and_fire():
-    # pulse_count wraps (65535 -> 0-ish) between when a target is armed and
-    # when it's actually reached -- the monotonic accumulator must keep
-    # counting up through the wrap, not corrupt/reset the pending target.
+    # pulse_count wraps (resets to 0 every revolution, at encoder_cpr --
+    # CLAUDE.md Rule 2, confirmed against real hardware 2026-09-12) between
+    # when a target is armed and when it's actually reached -- the
+    # monotonic accumulator must keep counting up through the wrap, not
+    # corrupt/reset the pending target.
     reject = FakeRejectStation(station_offset_pulses=10)
-    dispatcher, tracker, plc = make_real_dispatcher(n_slots=1000, encoder_cpr=100000, reject_station=reject)
+    encoder_cpr = 100000
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=1000, encoder_cpr=encoder_cpr, reject_station=reject)
 
-    near_wrap = PULSE_COUNT_REGISTER_WRAP - 5
+    near_wrap = encoder_cpr - 5
     plc.queue(PULSE_COUNT_REG, [near_wrap, near_wrap, 3, 20])  # wraps between samples 2 and 3
     plc.queue(PART_SENSOR_REG, [False, True, False, False])
 
@@ -220,7 +325,7 @@ def test_wraparound_crossing_between_detection_and_fire():
     tracker.mark_pending(slot_index, "s1")
     tracker.apply_station_result(slot_index, "s1", passed=False)
 
-    dispatcher._tick_real()  # crosses the 65536 boundary: gap = (65536-65531)+3 = 8
+    dispatcher._tick_real()  # crosses the encoder_cpr boundary: gap = (100000-99995)+3 = 8
     assert dispatcher._real_accumulated_pulses == 8  # monotonic, kept counting through the wrap
 
     target = dispatcher._pending_reject_targets[slot_index]
@@ -231,7 +336,7 @@ def test_wraparound_crossing_between_detection_and_fire():
     assert (REJECT_CMD_REG, 1) in plc.writes
     assert (REJECT_CMD_REG, 0) in plc.writes
     assert tracker.get_slot(slot_index).assign_part_id is None
-    assert tracker.r1_removed == 1
+    assert tracker.reject_removed == 1
 
 
 def test_speed_scale_change_does_not_corrupt_pending_target():
@@ -273,6 +378,52 @@ def test_fire_and_immediately_clear_not_hold_then_clear():
 
     # Fire-and-immediately-clear: exactly one 1-then-0 pair, no other writes.
     assert plc.writes == [(REJECT_CMD_REG, 1), (REJECT_CMD_REG, 0)]
+
+
+def test_actuator_reg_unset_uses_the_shared_reject_cmd_register():
+    # spec14 followup #2 groundwork -- omitting actuator_reg (every
+    # existing part config does) must preserve today's shared-register
+    # behavior exactly, unchanged.
+    reject = FakeRejectStation(station_offset_pulses=0)  # actuator_reg left at its None default
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100, reject_station=reject)
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    plc.queue(PULSE_COUNT_REG, [5])
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert plc.writes == [(REJECT_CMD_REG, 1), (REJECT_CMD_REG, 0)]
+
+
+def test_actuator_reg_set_routes_firing_to_that_specific_register():
+    # A reject station with its own actuator_reg must fire THAT register,
+    # not the shared reject_cmd -- the one-line config change that makes
+    # wiring in a second physical actuator possible later.
+    dedicated_reg = 50123
+    reject = FakeRejectStation(station_offset_pulses=0, actuator_reg=dedicated_reg)
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100, reject_station=reject)
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    plc.queue(PULSE_COUNT_REG, [5])
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert plc.writes == [(dedicated_reg, 1), (dedicated_reg, 0)]
+    assert (REJECT_CMD_REG, 1) not in plc.writes  # never touches the shared register
+    assert tracker.get_slot(0).assign_part_id is None  # still fires/transitions correctly
+    assert tracker.reject_removed == 1
 
 
 def test_already_passed_target_is_skipped_not_misfired(caplog):
@@ -327,6 +478,108 @@ def test_disabled_reject_station_never_arms_or_fires():
     assert dispatcher._pending_reject_targets == {}
     assert plc.writes == []
     assert tracker.get_slot(0).assign_part_id is not None  # untouched, rides through to exit
+
+
+# --- spec11 Part 2 (dual reject routing): overlapping-watches safety ---
+#
+# Today's actual configs never give two reject stations overlapping
+# watches: lists, but nothing in the schema forbids it, and _arm_reject_
+# targets' cross-reject-station guards only matter AT ALL when it happens.
+# These tests construct that overlap directly so the mechanism itself is
+# proven safe, not just "safe because today's specific layout happens not
+# to exercise it."
+
+def test_overlapping_watches_does_not_overwrite_the_pending_target():
+    r1 = FakeRejectStation(id="r1", station_offset_pulses=30, watches=["s1"])
+    r2 = FakeRejectStation(id="r2", station_offset_pulses=80, watches=["s1"])  # overlaps r1 on s1
+    dispatcher, tracker, _plc = make_real_dispatcher(reject_stations=[r1, r2])
+
+    tracker.on_part_entered(5, part_id="A")  # slot 0, pulse_count_at_detection=5
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    dispatcher._arm_reject_targets(r1)
+    dispatcher._arm_reject_targets(r2)  # must NOT overwrite r1's claim with 5+80=85
+
+    assert dispatcher._pending_reject_targets[0] == 5 + 30  # r1's target, unmodified
+    assert dispatcher._pending_reject_armed_by[0] is r1
+
+
+def test_overlapping_watches_physically_first_station_wins_regardless_of_declared_order():
+    r1 = FakeRejectStation(id="r1", station_offset_pulses=30, watches=["s1"])
+    r2 = FakeRejectStation(id="r2", station_offset_pulses=80, watches=["s1"])
+    # Declared r2-before-r1 -- reject_stations() must still process them in
+    # ring order (by station_offset_pulses), not declaration order.
+    dispatcher, tracker, _plc = make_real_dispatcher(reject_stations=[r2, r1])
+
+    tracker.on_part_entered(5, part_id="A")
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    for rs in dispatcher.resolved_config.reject_stations():
+        dispatcher._arm_reject_targets(rs)
+
+    assert dispatcher._pending_reject_targets[0] == 5 + 30  # r1 (physically first), never r2
+    assert dispatcher._pending_reject_armed_by[0] is r1
+
+
+def test_overlapping_watches_fires_using_the_armer_not_whichever_station_is_checked_last(monkeypatch):
+    # The dangerous version of this bug: if firing used whichever reject
+    # station's loop iteration happened to notice the crossing (instead of
+    # whichever one actually armed it), and that station's .watches
+    # didn't happen to match, transition_reject() would silently no-op
+    # even though the physical reject_cmd register was already written --
+    # a part physically discarded but the tracker still believes it's
+    # in-flight.
+    r1 = FakeRejectStation(id="r1", station_offset_pulses=0, watches=["s1"])
+    r2 = FakeRejectStation(id="r2", station_offset_pulses=50, watches=["s1"])
+    dispatcher, tracker, plc = make_real_dispatcher(reject_stations=[r2, r1])  # declared out of ring order
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()  # part enters at accumulated=5, slot 0
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)  # nok -- both r1 and r2 watch s1
+
+    calls = []
+    real_transition_reject = tracker.transition_reject
+
+    def spy(slot_id, reject_station):
+        calls.append(reject_station.id)
+        return real_transition_reject(slot_id, reject_station)
+
+    tracker.transition_reject = spy
+
+    plc.queue(PULSE_COUNT_REG, [5])  # flat -- r1's target (0+5=5) == accumulated(5): arms AND fires this tick
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert calls == ["r1"]  # never r2, even though r2 also watches s1
+    assert tracker.get_slot(0).assign_part_id is None
+    assert tracker.reject_removed == 1
+
+
+def test_overlapping_watches_one_stations_missed_window_does_not_block_a_laters_chance():
+    # r1 (physically first) misses its window (nok verdict arrived too
+    # late) -- r2 (physically later, also watching s1) must still get its
+    # own independent chance to arm the SAME occupant, not be silently
+    # skipped just because r1 already logged a miss for it.
+    r1 = FakeRejectStation(id="r1", station_offset_pulses=5, watches=["s1"])
+    r2 = FakeRejectStation(id="r2", station_offset_pulses=50, watches=["s1"])
+    dispatcher, tracker, _plc = make_real_dispatcher(reject_stations=[r1, r2])
+
+    tracker.on_part_entered(5, part_id="A")  # pulse_count_at_detection=5
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    dispatcher._real_accumulated_pulses = 12  # already past r1's target (5+5=10)
+    dispatcher._arm_reject_targets(r1)  # skips + logs, does NOT arm
+    assert 0 not in dispatcher._pending_reject_targets
+
+    dispatcher._arm_reject_targets(r2)  # r2's target (5+50=55) is still ahead -- gets its own chance
+    assert dispatcher._pending_reject_targets[0] == 55
+    assert dispatcher._pending_reject_armed_by[0] is r2
 
 
 def test_ms_to_pulses_converts_at_the_currently_measured_rate():
@@ -384,3 +637,87 @@ def test_pulse_rate_measured_live_from_consecutive_ticks_not_speed_scale(monkeyp
 
     dispatcher.set_speed_scale(10.0)  # must not affect the measured real-mode rate at all
     assert dispatcher._pulses_per_ms == 2.0
+
+
+def test_reject_ack_read_and_recorded_when_register_configured():
+    # registers.reject_ack is None by default (no real address exists on
+    # the instrumentation sheet yet) -- when a test/config DOES set one,
+    # _check_reject_ack must read it right after firing and record the
+    # result on dispatcher.last_reject_ack.
+    reject = FakeRejectStation(station_offset_pulses=0)
+    plc_cfg = FakeRealPlc(registers=FakeRegisters(reject_ack=REJECT_ACK_REG))
+    dispatcher, tracker, plc = make_real_dispatcher(
+        n_slots=10, encoder_cpr=100, reject_station=reject, plc=plc_cfg
+    )
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    plc.queue(PULSE_COUNT_REG, [5])
+    plc.queue(PART_SENSOR_REG, [False])
+    plc.queue(REJECT_ACK_REG, [1])
+    dispatcher._tick_real()  # arms and immediately crosses -- fires, then checks reject_ack
+
+    assert plc.writes == [(REJECT_CMD_REG, 1), (REJECT_CMD_REG, 0)]
+    assert dispatcher.last_reject_ack is True
+
+
+def test_reject_ack_unconfigured_is_a_noop():
+    # Today's actual state (no real reject_ack address yet): firing must
+    # not attempt a read, and must not crash FakePlcClient's queue lookup
+    # for a register nobody queued anything for.
+    reject = FakeRejectStation(station_offset_pulses=0)
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=10, encoder_cpr=100, reject_station=reject)
+    plc.queue(PULSE_COUNT_REG, [0, 5])
+    plc.queue(PART_SENSOR_REG, [False, True])
+
+    dispatcher._tick_real()
+    dispatcher._tick_real()
+    tracker.mark_pending(0, "s1")
+    tracker.apply_station_result(0, "s1", passed=False)
+
+    plc.queue(PULSE_COUNT_REG, [5])
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert plc.writes == [(REJECT_CMD_REG, 1), (REJECT_CMD_REG, 0)]
+    assert getattr(dispatcher, "last_reject_ack", None) is None
+
+
+def test_exit_ack_read_and_recorded_when_register_configured():
+    # No inspection stations here -- exit_ack is the only thing under
+    # test, so inspection_ids=() keeps s1's own mark_pending/fire_station
+    # dispatch out of the way entirely.
+    plc_cfg = FakeRealPlc(registers=FakeRegisters(exit_ack=EXIT_ACK_REG))
+    dispatcher, tracker, plc = make_real_dispatcher(
+        n_slots=10, encoder_cpr=100, inspection_ids=(), exit_station=FakeExitStation(), plc=plc_cfg
+    )
+    dispatcher.home_offset_pulses = 0  # exit_ack is under test here, not homing -- precalibrate
+    tracker.on_part_entered(0, part_id=1)  # a part already sitting at slot 0 == exit's offset
+
+    plc.queue(PULSE_COUNT_REG, [0])
+    plc.queue(PART_SENSOR_REG, [False])
+    plc.queue(EXIT_ACK_REG, [1])
+    dispatcher._tick_real()  # first-ever tick: _last_slot_ids starts empty, so exit reads as "changed"
+
+    assert dispatcher.last_exit_ack is True
+    assert tracker.get_slot(0).status.value == "EMPTY"  # transition_exit freed it
+
+
+def test_exit_ack_unconfigured_is_a_noop():
+    dispatcher, tracker, plc = make_real_dispatcher(
+        n_slots=10, encoder_cpr=100, inspection_ids=(), exit_station=FakeExitStation()
+    )
+    dispatcher.home_offset_pulses = 0  # exit_ack is under test here, not homing -- precalibrate
+    tracker.on_part_entered(0, part_id=1)
+
+    plc.queue(PULSE_COUNT_REG, [0])
+    plc.queue(PART_SENSOR_REG, [False])
+    dispatcher._tick_real()
+
+    assert getattr(dispatcher, "last_exit_ack", None) is None
+    assert tracker.get_slot(0).status.value == "EMPTY"

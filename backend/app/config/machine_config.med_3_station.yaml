@@ -1,0 +1,229 @@
+machine:
+  part_code: "M3S-001"
+  part_name: "Med 3-Station"
+
+# spec11 Part 2 -- exercises dual reject routing (watches: field), on top
+# of the same N-cameras-per-station generality Part 1 (rubber_small)
+# already exercises. 2 cameras/station per explicit instruction. Same
+# physical indexer/PLC as rubber_big/rubber_small (one machine, different
+# parts) -- reused verbatim, not re-guessed. See machine_config.yaml for
+# the fuller per-field reasoning behind every PLACEHOLDER/CONFIRMED value
+# below.
+indexer:
+  diameter_mm: 500.0 # CONFIRMED -- same physical disc as rubber_big
+  part_size_mm: 20.0 # CONFIRMED -- same physical disc as rubber_big
+  tolerance_pct: 4 # PLACEHOLDER -- same as rubber_big; see machine_config.yaml's comment
+  encoder_cpr: 4800 # CONFIRMED -- same physical disc as rubber_big
+  entry_sensor_mid_offset_pulses: 40 # PLACEHOLDER -- same as rubber_big; see its comment
+
+plc:
+  ip: "192.168.6.40" # same physical PLC as rubber_big -- one machine, different parts
+  port: 502
+  vendor: integra
+  sim:
+    enabled: true
+    host: "localhost"
+    port: 5502
+    tick_interval_ms: 300
+    blank: 5 # same as rubber_big -- same indexer.* above, so the same n_slots (75)
+    entry_sensor_response_delay_ms: 0 # PLACEHOLDER -- same as rubber_big
+    reject_actuator_response_delay_ms: 0 # PLACEHOLDER -- same as rubber_big
+  real_poll_interval_ms: 50.0 # PLACEHOLDER -- same as rubber_big
+  speed_setpoint_rpm: 45.0 # PLACEHOLDER -- same as rubber_big
+  watchdog_timeout_ms: 3000.0 # PLACEHOLDER -- same as rubber_big
+
+  registers:
+    pulse_count: 40001
+    encoder_indexer_ppr: 40002
+    encoder_count: 40003
+    part_sensor: 40004
+    heartbeat: 40005
+    indexing_pulse: 40006
+    heartbeat_per_slot: 40007
+    indexing_pulse_per_slot: 40008
+    reject_cmd: 40009
+    stop_cmd: 40010
+    speed_setpoint: 40011
+    fault: 40012
+
+# 3 inspection stations (s1/s2/s3), 2 cameras each (6 total: cam1-cam6) --
+# same shape/reuse pattern as rubber_small. TWO reject stations, dual
+# routing via watches: (spec11 Part 2):
+#   - r1 (after s1, before s2): watches: [s1] -- pulls a part failing s1
+#     immediately, before it ever reaches s2/s3.
+#   - r2 (after s3, before exit1): watches: [s2, s3] -- catches a part that
+#     passed s1 (so r1 let it through) but failed s2 or s3.
+# A part failing s1 never reaches r2 at all (r1 already freed its slot).
+# A part passing s1 but failing s2/s3 rides through r1 untouched (r1 only
+# watches s1) and is caught at r2 instead.
+stations:
+  - id: s1
+    name: "Station 1 - Dimension Measurement"
+    type: inspection
+    station_offset_pulses: 400 # PLACEHOLDER
+
+    cameras:
+      cam1:
+        ip: "192.168.5.41"
+        vendor: lucid
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 18
+        strobe_capture_delay_ms: 50
+        sim:
+          enabled: true
+          image_path: "/data/sim/circles/"
+      cam2:
+        ip: "192.168.5.42"
+        vendor: lucid
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 19
+        strobe_capture_delay_ms: 50
+        sim:
+          enabled: true
+          image_path: "/data/sim/circles/"
+
+    pipeline:
+      measurement:
+        model_path: "/models/pt/yolo11n.pt"
+        model_type: yolo
+        allowed_cameras: [cam1, cam2]
+        allowed_classes: [rubber_part]
+        method: caliper
+        parameters:
+          diameter_mm:
+            calibration_factor: 10.5 # reused from rubber_big -- see its comment for calibration provenance
+            nominal_value: 10.0
+            upper_limit: 10.6
+            lower_limit: 9.2
+            unit: mm
+
+      result:
+        pass_if: all_cameras_pass
+        save_result: true
+        draw_result: true
+
+  - id: r1
+    name: "Reject Station 1 - Dimension Fail"
+    type: reject
+    station_offset_pulses: 600 # PLACEHOLDER -- between s1 (400) and s2 (900)
+    enabled: true
+    watches: [s1]
+
+  - id: s2
+    name: "Station 2 - Defect Detection"
+    type: inspection
+    station_offset_pulses: 900 # PLACEHOLDER
+
+    cameras:
+      cam3:
+        ip: "192.168.5.43"
+        vendor: lucid
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 20
+        strobe_capture_delay_ms: 50
+        sim:
+          enabled: true
+          image_path: "/data/sim/cats/"
+      cam4:
+        ip: "192.168.5.44"
+        vendor: lucid
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 21
+        strobe_capture_delay_ms: 50
+        sim:
+          enabled: true
+          image_path: "/data/sim/cats/"
+
+    pipeline:
+      defect:
+        model_path: "/models/pt/yolo11n.pt" # stock COCO-pretrained, reused from rubber_big -- see its comment
+        model_type: yolo
+        conf_thresh: 0.3
+        allowed_cameras: [cam3, cam4]
+        detect_classes: [cat]
+        allowed_defects: [cat]
+
+      result:
+        pass_if: all_cameras_pass
+        save_result: true
+        draw_result: true
+
+  - id: s3
+    name: "Station 3 - Dimension Recheck"
+    type: inspection
+    station_offset_pulses: 1400 # PLACEHOLDER
+
+    cameras:
+      cam5:
+        ip: "192.168.5.45"
+        vendor: lucid
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 22
+        strobe_capture_delay_ms: 50
+        sim:
+          enabled: true
+          image_path: "/data/sim/circles/"
+      cam6:
+        ip: "192.168.5.46"
+        vendor: lucid
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 23
+        strobe_capture_delay_ms: 50
+        sim:
+          enabled: true
+          image_path: "/data/sim/circles/"
+
+    pipeline:
+      measurement:
+        model_path: "/models/pt/yolo11n.pt"
+        model_type: yolo
+        allowed_cameras: [cam5, cam6]
+        allowed_classes: [rubber_part]
+        method: caliper
+        parameters:
+          diameter_mm:
+            calibration_factor: 10.5
+            nominal_value: 10.0
+            upper_limit: 10.6
+            lower_limit: 9.2
+            unit: mm
+
+      result:
+        pass_if: all_cameras_pass
+        save_result: true
+        draw_result: true
+
+  - id: r2
+    name: "Reject Station 2 - Defect/Recheck Fail"
+    type: reject
+    station_offset_pulses: 1700 # PLACEHOLDER -- between s3 (1400) and exit1 (2000)
+    enabled: true
+    watches: [s2, s3]
+
+  - id: exit1
+    name: "Exit Station - Result Check"
+    type: exit
+    station_offset_pulses: 2000 # PLACEHOLDER
+    pass_if: all_stations_pass
+    result_write:
+      part_id_reg: 100
+      result_reg: 101
+      ack_reg: 102

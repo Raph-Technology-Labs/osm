@@ -2,11 +2,18 @@
 ZMQ (CLAUDE.md Section 9), this only serves the initial camera list + totals
 so the frontend isn't hardcoded to "cam1,cam2"."""
 
+import csv
+import io
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import Session as DbSession
+
+from app.db.db import get_db
+from app.services import session_analysis, report_pdf
 
 from app.auth.dependencies import require_role
 
@@ -57,6 +64,9 @@ def get_config(request: Request):
         "cameras": _state["cameras"],
         "n_slots": resolved.indexer.n_slots if resolved else None,
         "stations": stations,
+        # RpmControl's initial/reset value -- the slider must reflect
+        # whatever this part's config actually has, not a hardcoded guess.
+        "speed_setpoint_rpm": resolved.plc.speed_setpoint_rpm if resolved else None,
     }
 
 
@@ -73,6 +83,138 @@ def get_current_session(request: Request):
     revolutions = _state["totals"]["total_fired"] // resolved.indexer.n_slots if resolved else 0
     return {**_state["totals"], "revolutions": revolutions}
 
+def _resolve_session_id(request: Request, session_id: int | None) -> int:
+    """An explicit session_id wins (for looking at a finished run); otherwise
+    the one currently running. 404 rather than an empty rollup when neither
+    exists -- "no session" and "a session with no results yet" are different
+    answers, and the page should say which."""
+    resolved = session_id if session_id is not None else getattr(
+        request.app.state, "current_session_id", None
+    )
+    if resolved is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No session to analyse -- none is running, and result "
+                "persistence may be off for this part (see "
+                "inspection_session._create_part_session)"
+            ),
+        )
+    return resolved
+
+
+@router.get("/session/analysis")
+def get_session_analysis(
+    request: Request,
+    session_id: int | None = Query(default=None),
+    db: DbSession = Depends(get_db),
+):
+    """Per-defect-class, per-parameter and per-station rollups from the
+    persisted rows -- survives a page reload, unlike the frontend's live
+    tally. Lags the ring by however long results_writer's queue takes to
+    drain, which is well under a second."""
+    
+    # return session_analysis.build_analysis(db, _resolve_session_id(request, session_id))
+    cams = _camera_pipelines(getattr(request.app.state, "resolved_config", None))
+    return session_analysis.build_analysis(
+        db, _resolve_session_id(request, session_id), camera_pipelines=cams
+    )
+
+
+@router.get("/session/events")
+def get_session_events(
+    request: Request,
+    session_id: int | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    only_nok: bool = Query(default=False),
+    db: DbSession = Depends(get_db),
+):
+    """Newest-first station fires for the event log. One row per camera per
+    fire; rows sharing a ring_part_id belong to the same physical part."""
+    # return {
+    #     "events": session_analysis.recent_events(
+    #         db, _resolve_session_id(request, session_id), limit=limit, only_nok=only_nok
+    #     )
+    # }
+    cams = _camera_pipelines(getattr(request.app.state, "resolved_config", None))
+    return {
+        "events": session_analysis.recent_events(
+            db, _resolve_session_id(request, session_id),
+            limit=limit, only_nok=only_nok, camera_pipelines=cams,
+        )
+    }
+
+
+_REPORT_COLUMNS = [
+    "session_id", "part_code", "part_name", "session_started_at",
+    "fired_at", "ring_part_id", "station_id", "station_fire_no", "camera_id",
+    "pipeline",
+    # defect columns -- blank on a measurement row
+    "defect_label", "defect_confidence", "detection_count", "is_defective",
+    # measurement columns -- blank on a defect row
+    "measurement_name", "measured", "nominal", "lower_limit", "upper_limit",
+    "unit", "deviation", "ovality", "max_ovality", "in_tolerance",
+    # verdicts
+    "camera_passed", "station_passed", "rejected",
+]
+
+
+@router.get("/session/report")
+def download_session_report(
+    request: Request,
+    session_id: int | None = Query(default=None),
+    format: str = Query(default="csv", pattern="^(csv|pdf)$"),
+    db: DbSession = Depends(get_db),
+):
+    """One session's results, as CSV or PDF.
+
+    One route with ?format= rather than two paths, matching the dashboard's
+    /download-report: both formats answer the same question from the same rows
+    (session_analysis.report_rows), so they are one resource in two
+    representations, not two resources.
+
+    CSV splits defect and measurement into their own columns -- a blank cell
+    says "this row is not that kind of result", which a spreadsheet can filter
+    on. PDF composes them into one readable detail cell, because a printed page
+    has no filter box.
+
+    Deliberately finer-grained than the dashboard's own export (one row per
+    SESSION, for "what did we run this week"): the question on the Inspection
+    page is "what happened to the parts in this run".
+    """
+    resolved = _resolve_session_id(request, session_id)
+    # rows = session_analysis.report_rows(db, resolved)
+    cams = _camera_pipelines(getattr(request.app.state, "resolved_config", None))
+    rows = session_analysis.report_rows(db, resolved, camera_pipelines=cams)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    # Server-generated timestamp only -- no request input reaches the filename
+    # (CLAUDE.md Section 11's export rule).
+    filename = f"osm_session_{resolved}_{stamp}.{format}"
+
+    if format == "pdf":
+        buf = io.BytesIO()
+        report_pdf.build_session_pdf(rows, session_analysis.build_analysis(db, resolved, camera_pipelines=cams), buf
+        )
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    text = io.StringIO()
+    writer = csv.DictWriter(text, fieldnames=_REPORT_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        # DictWriter fills missing keys with "" -- exactly the blank-cell
+        # behaviour the column split depends on.
+        writer.writerow(row)
+    return StreamingResponse(
+        iter([text.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 class SessionStartRequest(BaseModel):
     part_code: str
@@ -169,6 +311,28 @@ def _write_stop_cmd(request: Request, run: bool) -> bool:
         return False
 
 
+def _write_speed_setpoint(request: Request, rpm: float) -> bool:
+    """Writes the configured speed_setpoint_rpm as a raw register value (no
+    *10 scaling -- per 2026-09-16 live hardware confirmation, see /speed's
+    docstring). Called from start_motor(), before stop_cmd, so Start
+    actually applies the part's configured speed instead of leaving
+    whatever value was last left in the register (re-adding the
+    session/start speed write CLAUDE.md's history notes was previously
+    reverted -- see that section if this needs re-litigating again)."""
+    resolved = getattr(request.app.state, "resolved_config", None)
+    client = getattr(request.app.state, "plc_client", None)
+    if resolved is None or client is None or not client.is_connected():
+        return False
+    from app.plc.modbus_client import PLCConnectionError
+
+    try:
+        client.write_register(resolved.plc.registers.speed_setpoint, round(rpm))
+        return True
+    except PLCConnectionError:
+        log.warning("motor: PLC speed_setpoint write failed", exc_info=True)
+        return False
+
+
 @router.post("/motor/start", response_model=MotorCommandResponse)
 def start_motor(request: Request):
     """Starts the ring turning -- separate from session start, which only
@@ -178,6 +342,12 @@ def start_motor(request: Request):
     if dispatcher is None:
         raise HTTPException(status_code=400, detail="No active session -- start a session first")
     dispatcher.start()
+    resolved = getattr(request.app.state, "resolved_config", None)
+    if resolved is not None:
+        # Write speed before stop_cmd's 0->1 edge -- the PLC appears to
+        # latch speed_setpoint at that transition rather than reading it
+        # continuously (see /speed's docstring history).
+        _write_speed_setpoint(request, resolved.plc.speed_setpoint_rpm)
     plc_updated = _write_stop_cmd(request, run=True)
     return MotorCommandResponse(status="ok", running=True, plc_updated=plc_updated)
 
@@ -202,10 +372,14 @@ class SpeedSetpointRequest(BaseModel):
 @router.post("/speed")
 def set_speed(body: SpeedSetpointRequest, request: Request):
     """Sets motor speed two ways, independently:
-    1. Real PLC register write (rpm*10 -> 0-1000 scale, matches
-       app/plc/poller.py's write_speed_setpoint() -- same UNCONFIRMED-
-       against-the-instrumentation-sheet caveat, not inventing a second
-       conversion here) -- only if a PLC is actually connected.
+    1. Real PLC register write, raw RPM value (no scaling) -- only if a PLC
+       is actually connected. Switched back to raw (2026-09-16) per live
+       hardware confirmation: writing 15 directly to the register ran the
+       motor fast, while this endpoint's prior rpm*10 write (150 for
+       rpm=15) ran it slow -- the opposite of what's wanted. Note this
+       conflicts with an earlier hardware observation (2026-09-15) that a
+       raw write of 15 stalled the motor on start; the two haven't been
+       reconciled, so revisit if raw values misbehave again.
     2. Scales StationDispatcher's simulation-timer fire interval, relative
        to the configured speed_setpoint_rpm baseline -- so changing speed
        has a visible effect (stations fire faster/slower) even with no
@@ -235,9 +409,9 @@ def set_speed(body: SpeedSetpointRequest, request: Request):
     if client is not None and client.is_connected():
         from app.plc.modbus_client import PLCConnectionError
 
-        rpm_x10 = round(body.rpm * 10)
+        speed_value = round(body.rpm)
         try:
-            client.write_register(resolved.plc.registers.speed_setpoint, rpm_x10)
+            client.write_register(resolved.plc.registers.speed_setpoint, speed_value)
             plc_updated = True
         except PLCConnectionError:
             log.warning("speed: PLC register write failed, sim scaling still applied", exc_info=True)
@@ -246,3 +420,29 @@ def set_speed(body: SpeedSetpointRequest, request: Request):
         raise HTTPException(status_code=503, detail="No active session and no PLC connected -- nothing to change")
 
     return {"status": "ok", "rpm": body.rpm, "plc_updated": plc_updated, "sim_updated": sim_updated}
+
+
+def _camera_pipelines(resolved) -> dict[str, str]:
+    """camera_id -> "defect" | "measurement", straight from the resolved config.
+
+    The config is the only authority on this: s1's measurement.allowed_cameras
+    is [cam1], s2's defect.allowed_cameras is [cam2]. Sniffing result rows
+    guesses, and guesses wrong -- is_defective is set for measurement cameras
+    too, which is how measurement failures ended up in the Defect card.
+    """
+    out: dict[str, str] = {}
+    if not resolved:
+        return out
+    for station in resolved.stations:
+        pipeline = getattr(station, "pipeline", None)
+        if not pipeline:
+            continue
+        measurement = getattr(pipeline, "measurement", None)
+        if measurement:
+            for cam in getattr(measurement, "allowed_cameras", []) or []:
+                out[cam] = "measurement"
+        defect = getattr(pipeline, "defect", None)
+        if defect:
+            for cam in getattr(defect, "allowed_cameras", []) or []:
+                out[cam] = "defect"
+    return out

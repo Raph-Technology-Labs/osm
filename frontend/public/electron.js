@@ -16,6 +16,12 @@ const BACKEND_PORT = parseInt(process.env.BACKEND_PORT || "9001", 10);
 const ZMQ_PORT = process.env.ZMQ_PORT || "5558";
 const FRONTEND_PORT = process.env.PORT || "4001";
 
+// Backend/ZMQ may be remote (e.g. reached over Tailscale), not just
+// localhost -- derive the host from the same REACT_APP_API_URL the
+// renderer's axios client uses, instead of assuming 127.0.0.1.
+const API_URL = process.env.REACT_APP_API_URL || `http://localhost:${BACKEND_PORT}/api/v1`;
+const BACKEND_HOST = new URL(API_URL).hostname;
+
 let mainWindow;
 let sock;
 
@@ -43,9 +49,9 @@ function waitForBackend(host, port, timeoutMs) {
 
 async function connectZmq() {
   sock = new zmq.Subscriber();
-  await sock.connect(`tcp://127.0.0.1:${ZMQ_PORT}`);
+  await sock.connect(`tcp://${BACKEND_HOST}:${ZMQ_PORT}`);
   sock.subscribe("");
-  console.log(`[electron] ZMQ SUB connected to tcp://127.0.0.1:${ZMQ_PORT}`);
+  console.log(`[electron] ZMQ SUB connected to tcp://${BACKEND_HOST}:${ZMQ_PORT}`);
 
   for await (const [topic, msg] of sock) {
     const messageType = topic.toString();
@@ -89,7 +95,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   try {
-    await waitForBackend("127.0.0.1", BACKEND_PORT, 60000);
+    await waitForBackend(BACKEND_HOST, BACKEND_PORT, 60000);
   } catch (e) {
     console.error("[electron]", e.message);
   }

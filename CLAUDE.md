@@ -441,3 +441,106 @@ broader raph-vision platform.
 If a task needs actual current register addresses, part spec, or station
 layout and they're not in this repo's recipe YAML, ask rather than inventing
 plausible-looking values.
+
+## 17. Current Status & Live Hardware Findings (2026-09-15)
+
+Real PLC hardware is now connected and driving development — most of
+Section 4's "not built yet" list has moved forward. This section captures
+what's now true in practice, especially findings only discoverable on real
+hardware (the simulator never surfaced these).
+
+**Register map — confirmed on real hardware:**
+- **`encoder_indexer_ppr` (40002)** is the correct register for
+  revolution/slot position tracking — it resets to 0 at `encoder_cpr`
+  (4800), matching its own register-sheet label ("Reset to 0 at Indexer
+  Revolution"). Route all slot math through this, unwrapped against
+  `tracker.encoder_cpr` directly.
+- `pulse_count` (40001) is the raw motor-shaft encoder — wraps at ~2400 due
+  to a 2:1 gear ratio, **not** a revolution-aligned signal. Do not use for
+  slot tracking.
+- `encoder_count` (40003) is genuinely monotonic (does not reset per
+  revolution despite what its label might suggest) but is noisy — read
+  jitter of a few counts was mistaken for a wraparound during testing,
+  causing a reject to fire ~4491 pulses late. Do not use for
+  wrap-detection logic.
+- This took several rounds of live-hardware testing to pin down; if the
+  register map changes again on a future controller revision, re-verify
+  against real hardware, not the simulator — the simulator's PPR reset
+  behavior does not necessarily match real Integra firmware.
+
+**`StationDispatcher` (`app/indexer/dispatcher.py`):**
+- Real-mode tick (`_tick_real`) is wired up and battle-tested against live
+  hardware, not just the simulator path noted in Section 4.
+- Guards against feeding raw pre-homing pulses into the tracker (fixed a
+  digital-twin visual jerk on session start, before home calibration
+  completes).
+- Batches `encoder_indexer_ppr` + `part_sensor` into one
+  `read_holding_registers` call per tick, per Throughput Design
+  Requirement 1 (Section 5).
+- An uncaught `PLCConnectionError` inside the tick used to permanently
+  kill the `threading.Timer` self-reschedule chain (the whole ring silently
+  stopped polling). Fixed by wrapping the tick in a guard that always
+  reschedules even on exception — see the function for details.
+
+**`IndexerSlotTracker` (`app/indexer/tracker.py`):**
+- `reset_session_counters()` added and called from
+  `start_session()` — previously REV/OK/NOK counts carried over stale
+  across sessions instead of starting fresh.
+
+**`ModbusPLCClient` (`app/plc/modbus_client.py`):**
+- Not thread-safe by default — pymodbus's sync client is one blocking TCP
+  socket. Found live: the dispatcher's tick thread and the health-check
+  polling thread (see below) both hit the same client instance
+  unsynchronized, causing interleaved request/response pairs, spurious
+  "No response received" errors, and slow session starts. Fixed with a
+  `threading.Lock` held for the full round trip of every method (matches
+  `zeromq.py`'s `_send_lock` pattern for the PUB socket).
+- `is_connected()` previously only updated on `connect()`/`close()`, so a
+  mid-session read/write timeout never flipped it to `False`. Fixed with a
+  `_mark(ok)` call on every read/write outcome, self-healing on the next
+  successful call.
+
+**Global disconnect toast — implemented, not yet live-verified:**
+- `frontend/src/components/ConnectionAlerts.jsx` +
+  `frontend/src/hooks/useConnectionHealth.js`, mounted in
+  `MainLayout.jsx`. Polls `/health/plc` and `/health/cameras` every 8s,
+  shows a red MUI `Alert` (top-right, auto-dismiss 10s) when either goes
+  from connected → disconnected.
+- Depends on the `ModbusPLCClient` fixes above (without them the toast
+  either never fires for a real PLC drop, or false-fires).
+- Sim cameras have their own `is_connected()` path
+  (`CameraStation.is_sim` flag) that bypasses the normal 10s
+  capture-staleness check — without it, a working sim camera can
+  false-trigger the "disconnected" toast.
+- **Status: re-added after a full revert (see below), not yet tested live
+  by the user against real disconnect events.**
+
+**Explicitly reverted / not present — do not reintroduce without
+re-litigating:**
+- **Auto-apply `speed_setpoint_rpm` at session start.** Was added, then
+  found to cause real hardware to run at the *wrong* (seemingly inverted)
+  speed — e.g. a configured `15` RPM ran fast instead of slow. Root cause
+  was never isolated; the whole feature was reverted rather than debugged
+  further, per explicit user decision. `rpm_to_speed_setpoint()` does not
+  exist in `modbus_client.py`; `inspection_session.py`'s
+  `start_session()` has no session-start speed write.
+  **The manual RPM slider (`/inspection/speed` → direct
+  `write_register(speed_setpoint, ...)`) is the only working speed-setting
+  path** and is confirmed correct on real hardware (15 RPM = slow).
+  If revisiting auto-apply-at-start in future, treat the real-hardware
+  speed direction as unverified until proven, not as a known-good
+  extension of the slider path.
+
+**Git workflow note:** this project's owner has explicitly asked not to
+have commits/pushes made without being asked each time — do not commit or
+push proactively, even after finishing a fix, wait to be told.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

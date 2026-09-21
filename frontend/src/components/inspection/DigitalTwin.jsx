@@ -157,7 +157,7 @@ const DigitalTwin = ({ nSlots, stations, ringState, revolutions, running }) => {
   const displayStations = [{ station_id: "Entry", type: "entry", slot_offset: 0 }, ...stations];
 
   return (
-    <Paper
+    <Paper  
       sx={{
         p: 2,
         borderRadius: "10px",
@@ -384,7 +384,7 @@ const DigitalTwin = ({ nSlots, stations, ringState, revolutions, running }) => {
         })}
       </Box>
 
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 0.4 }}>
+      {/* <Box sx={{ display: "flex", flexDirection: "column", gap: 0.4 }}>
         <LegendRow color={IDLE_SLOT} label="Empty" />
         <LegendRow color={UNREACHED_COLOR} label="Not yet reached that station" />
         <LegendRow color={PENDING_COLOR} label="Pending — awaiting inference" />
@@ -392,11 +392,18 @@ const DigitalTwin = ({ nSlots, stations, ringState, revolutions, running }) => {
         {inspectionStations.map((s) => (
           <LegendRow key={s.station_id} color={nokColorMap[s.station_id]} label={`${s.station_id} failed`} />
         ))}
+      </Box> */}
+            {/* Legend as a wrapping row rather than a column: six one-line entries
+          stacked vertically cost more height than the ring itself. */}
+      <Box sx={{ display: "flex", flexWrap: "wrap", columnGap: 1.5, rowGap: 0.5 }}>
+        <LegendRow color={IDLE_SLOT} label="Empty" />
+        <LegendRow color={UNREACHED_COLOR} label="Not reached" />
+        <LegendRow color={PENDING_COLOR} label="Pending" />
+        <LegendRow color={OK_COLOR} label="Station Passed" />
+        {inspectionStations.map((s) => (
+          <LegendRow key={s.station_id} color={nokColorMap[s.station_id]} label={`${s.station_id} failed`} />
+        ))}
       </Box>
-      <Typography variant="caption" sx={{ color: TEXT_SECONDARY, fontSize: "0.65rem", lineHeight: 1.4 }}>
-        Live per-station ring state from IndexerSlotTracker (backend) — every
-        band, OK/NOK total, and entry position is real, not a client-side proxy.
-      </Typography>
     </Paper>
   );
 };

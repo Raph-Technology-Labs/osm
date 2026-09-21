@@ -124,14 +124,14 @@ def test_per_revolution_invariant_ok_nok_deltas_match_resolved_counts(monkeypatc
     assert (ok_after - ok_before) + (nok_after - nok_before) == tracker.n_slots - resolved_blank == 15
 
 
-def test_r1_disabled_routes_nok_to_exit_without_touching_r1_removed(monkeypatch):
+def test_r1_disabled_routes_nok_to_exit_without_touching_reject_removed(monkeypatch):
     dispatcher, tracker, _registry = make_sim_dispatcher(n_slots=20, blank=5, nok=5, r1_enabled=False)
 
     run_ticks_synchronously(dispatcher, 20, monkeypatch)  # warm-up
 
-    nok_before, r1_before = tracker.nok_total, tracker.r1_removed
+    nok_before, r1_before = tracker.nok_total, tracker.reject_removed
     run_ticks_synchronously(dispatcher, 20, monkeypatch)  # one more revolution
-    nok_after, r1_after = tracker.nok_total, tracker.r1_removed
+    nok_after, r1_after = tracker.nok_total, tracker.reject_removed
 
     assert r1_after == r1_before == 0  # r1 disabled -- never actually removes anything
     assert nok_after - nok_before == 5  # but nok_total still climbs -- via exit's fallback path

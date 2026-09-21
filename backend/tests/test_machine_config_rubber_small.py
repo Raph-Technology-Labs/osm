@@ -46,10 +46,12 @@ def test_rubber_small_has_default_single_reject_and_exit():
     # reject routing).
     resolved = resolve_config_for_part("RS-001", config_path=RUBBER_SMALL_CONFIG_PATH)
 
-    reject = resolved.reject_station()
+    rejects = resolved.reject_stations()
     exit_station = resolved.exit_station()
-    assert reject is not None
+    assert len(rejects) == 1
+    reject = rejects[0]
     assert reject.id == "r1"
+    assert reject.watches is None  # default: watches every inspection station, not selective routing
     assert reject.enabled is True
     assert exit_station.id == "exit1"
     assert reject.station_offset_pulses < exit_station.station_offset_pulses

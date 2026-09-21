@@ -1,3 +1,5 @@
+
+##osm
 # backend/app/models/models.py
 import hashlib
 from typing import Optional

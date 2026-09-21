@@ -79,6 +79,19 @@ class LucidCamera(CameraDriver):
             self._configure(self._device)
             self._device.start_stream()
         except Exception as e:
+            # Release the handle system.create_device() opened -- Arena SDK
+            # holds an exclusive lock on the physical camera until
+            # destroy_device() is called (its own docs: "if not called, the
+            # system will call it when the module unloads," i.e. it stays
+            # locked for the life of this process otherwise). Without this,
+            # a failed connect() here permanently locks the camera out for
+            # every later connect() attempt in the same run, surfacing as
+            # SC_ERR_ACCESS_DENIED on a config that's otherwise fine.
+            if self._device is not None:
+                try:
+                    system.destroy_device(self._device)
+                except Exception:
+                    log.warning(f"{self.camera_id}: destroy_device() cleanup failed", exc_info=True)
             self._device = None
             raise CameraConnectionError(f"{self.camera_id}: Lucid connect failed: {e}") from e
 
@@ -92,8 +105,29 @@ class LucidCamera(CameraDriver):
             ]
         )
 
-        nodes["Width"].value = min(self.config.resolution.x, nodes["WidthMax"].value)
-        nodes["Height"].value = min(self.config.resolution.y, nodes["HeightMax"].value)
+        # Zero the offsets before touching Width/Height: GenICam clamps
+        # Width/Height's writable max to (WidthMax/HeightMax - current
+        # offset), so a nonzero offset left over from a previous session
+        # silently shrinks the max we can set below the sensor's true max
+        # (confirmed against a real TRT023S-M: OffsetY=200 left Height's
+        # max at 1000 instead of HeightMax=1200, so setting Height=1080
+        # failed with SC_ERR_ERROR -1001). Apply the configured ROI offsets
+        # after Width/Height are set to their final values.
+        nodes["OffsetX"].value = 0
+        nodes["OffsetY"].value = 0
+
+        # Also reserve room for the offset here: OffsetX/OffsetY's own
+        # writable max is symmetrically clamped to (WidthMax/HeightMax -
+        # current Width/Height), so setting Width/Height to the sensor's
+        # full max leaves no room for a nonzero roi.x1/y1 and the OffsetX/
+        # OffsetY writes below fail with the same SC_ERR_ERROR -1001 this
+        # function already works around for Width/Height above.
+        nodes["Width"].value = min(
+            self.config.resolution.x, nodes["WidthMax"].value - self.config.roi.x1
+        )
+        nodes["Height"].value = min(
+            self.config.resolution.y, nodes["HeightMax"].value - self.config.roi.y1
+        )
         nodes["OffsetX"].value = self.config.roi.x1
         nodes["OffsetY"].value = self.config.roi.y1
         # Assumes a monochrome sensor (matches gcm's configured cameras) --

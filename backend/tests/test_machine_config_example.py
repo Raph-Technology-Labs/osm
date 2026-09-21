@@ -24,6 +24,6 @@ def test_example_config_resolves_cleanly():
     )
 
     assert resolved.exit_station().id == "exit1"
-    assert resolved.reject_station() is not None
+    assert len(resolved.reject_stations()) == 1
     assert resolved.indexer.n_slots > 0
     assert resolved.indexer.pulses_per_slot > 0
