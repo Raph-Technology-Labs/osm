@@ -33,6 +33,7 @@ from app.services.results_writer import (
     next_fire_no,
     next_ring_part_id,
 )
+from contextlib import contextmanager
 from app.utils import zeromq
 
 log = logging.getLogger("inspection_session")

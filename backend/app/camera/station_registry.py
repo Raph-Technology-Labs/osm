@@ -11,7 +11,7 @@ to know which one it got.
 """
 
 from __future__ import annotations
-
+from contextlib import contextmanager
 import glob
 import logging
 import os
@@ -293,6 +293,45 @@ def sim_frame_provider(
 
     return provide
 
+@contextmanager
+def fire_strobe(self, strobe_reg):
+
+    if strobe_reg is None:
+        print(
+            f"Strobing failed for station {self.station_id}: "
+            "strobe register is None"
+        )
+        yield
+        return
+
+    try:
+        print(
+            f"Strobe ON: station={self.station_id}, "
+            f"register={strobe_reg}"
+        )
+
+        self.plc.write_register(strobe_reg, 1)
+
+        # Capture happens while the strobe is ON.
+        yield
+
+    finally:
+        try:
+            print(
+                f"Strobe OFF: station={self.station_id}, "
+                f"register={strobe_reg}"
+            )
+
+            self.plc.write_register(strobe_reg, 0)
+
+        except Exception as e:
+            print(
+                f"Failed switching OFF register "
+                f"{strobe_reg} for station "
+                f"{self.station_id}: {e}"
+            )
+
+
 
 def real_frame_provider(
     camera_id: str,
@@ -335,6 +374,7 @@ def real_frame_provider(
         # unconditionally. forced_verdict is intentionally NOT threaded in
         # here (unlike sim_frame_provider) so a real camera's verdict can
         # never be overridden by sim config, even by accident.
+        fire_strobe(camera_config.strobe_reg)
         frame = driver.read_frame()
         try:
             return _run_pipeline(frame, defect_config, measurement_config, draw_result)
