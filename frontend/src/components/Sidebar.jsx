@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  Avatar,
   Box,
   Button,
   Typography,
@@ -15,7 +16,6 @@ import {
   useMediaQuery,
 } from "@mui/material";
 import { useLocation, useNavigate } from "react-router-dom";
-
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import SettingsIcon from "@mui/icons-material/Settings";
 import CategoryIcon from "@mui/icons-material/Category";
@@ -34,8 +34,17 @@ const SIDEBAR_COLLAPSED_KEY = "sidebarCollapsed";
 const COLLAPSED_W = 74;
 const EXPANDED_W = 260;
 
+const initialsOf = (name = "") =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join("") || "?";
+
 const Sidebar = ({ onNavigate, sessionActive = false }) => {
   const theme = useTheme();
+  const sb = theme.palette.sidebar;
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -84,10 +93,10 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
   const canAddPart = Boolean(isAdmin || isSuperAdmin);
 
   const menuItems = [
-    { name: "Dashboard", path: "/", icon: <DashboardIcon /> },
-    { name: "Part Details", path: "/part-details", icon: <CategoryIcon /> },
-    { name: "Health Check", path: "/health-check", icon: <DevicesOutlinedIcon /> },
-    { name: "Device Settings", path: "/device-settings", icon: <SettingsIcon /> },
+    { name: "Dashboard", path: "/", icon: <DashboardIcon fontSize="small" /> },
+    { name: "Part Details", path: "/part-details", icon: <CategoryIcon fontSize="small" /> },
+    { name: "Health Check", path: "/health-check", icon: <DevicesOutlinedIcon fontSize="small" /> },
+    { name: "Device Settings", path: "/device-settings", icon: <SettingsIcon fontSize="small" /> },
   ];
 
   const bottomItems = [
@@ -98,6 +107,38 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
     },
   ];
 
+  const disabledSx = {
+    background: sb.disabledBg,
+    color: sb.disabledText,
+    boxShadow: "none",
+    border: "1px solid transparent",
+  };
+
+  const primaryActionSx = {
+    background: theme.palette.gradients.primary,
+    color: "#FFFFFF",
+    borderRadius: "8px",
+    boxShadow: "0 4px 12px rgba(183,28,28,0.25)",
+    "&:hover": {
+      background: "linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%)",
+      boxShadow: "0 6px 16px rgba(183,28,28,0.32)",
+    },
+    "&.Mui-disabled": disabledSx,
+  };
+
+  const secondaryActionSx = {
+    bgcolor: sb.surface,
+    color: sb.textStrong,
+    border: `1px solid ${sb.surfaceBorder}`,
+    borderRadius: "8px",
+    "&:hover": {
+      bgcolor: "#FFFFFF",
+      borderColor: sb.accent,
+      color: sb.accent,
+    },
+    "&.Mui-disabled": disabledSx,
+  };
+
   const NavButton = ({ item }) => {
     const active = location.pathname === item.path;
     const btn = (
@@ -105,23 +146,29 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
         onClick={() => goTo(item.path)}
         fullWidth
         startIcon={collapsed ? null : item.icon}
-        sx={{
-          justifyContent: collapsed ? "center" : "flex-start",
-          textTransform: "none",
-          minWidth: 0,
-          px: collapsed ? 0 : 2,
-          mb: 1,
-          fontWeight: active ? 600 : 500,
-          fontSize: "15px",
-          color: active ? "primary.main" : "text.primary",
-          background: active ? theme.palette.gradients.peach : "transparent",
-          borderRadius: "5px",
-          "&:hover": {
-            background: active
-              ? theme.palette.gradients.peach
-              : theme.palette.grey[100],
-          },
-        }}
+                        sx={{
+                    justifyContent: collapsed ? "center" : "flex-start",
+                    textTransform: "none",
+                    minWidth: 0,
+                    px: collapsed ? 0 : 2,
+                    py: 1,
+                    mb: 0.5,
+                    fontWeight: active ? 600 : 500,
+                    fontSize: "14px",
+                    color: active ? sb.accent : sb.text,
+                    bgcolor: active ? sb.activeBg : "transparent",
+                    boxShadow: active ? sb.activeShadow : "none",
+                    borderRadius: "8px",
+                    "& .MuiSvgIcon-root": {
+                      color: active ? sb.accent : sb.textMuted,
+                      transition: "color 0.15s",
+                    },
+                    "&:hover": {
+                      bgcolor: active ? sb.activeBg : sb.hover,
+                      color: active ? sb.accent : sb.textStrong,
+                      "& .MuiSvgIcon-root": { color: sb.accent },
+                    },
+                  }}
       >
         {collapsed ? item.icon : item.name}
       </Button>
@@ -136,19 +183,35 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
     );
   };
 
+  const SectionLabel = ({ children }) =>
+    collapsed ? null : (
+      <Typography
+        sx={{
+          fontSize: "11px",
+          fontWeight: 600,
+          letterSpacing: "1.2px",
+          color: sb.textMuted,
+          px: 2,
+          mb: 1,
+        }}
+      >
+        {children}
+      </Typography>
+    );
+
   return (
     <Box
       sx={{
         width: { xs: "100%", md: collapsed ? COLLAPSED_W : EXPANDED_W },
         height: { xs: "auto", md: "100%" },
         flexShrink: 0,
-        bgcolor: "background.paper",
-        color: "text.primary",
+        background: sb.background,
+        color: sb.text,
         display: "flex",
         flexDirection: "column",
         justifyContent: "space-between",
-        borderRight: { xs: "none", md: `1px solid ${theme.palette.divider}` },
-        borderBottom: { xs: `1px solid ${theme.palette.divider}`, md: "none" },
+        borderRight: { xs: "none", md: `1px solid ${sb.divider}` },
+        borderBottom: { xs: `1px solid ${sb.divider}`, md: "none" },
         overflowY: "auto",
         overflowX: "hidden",
         transition: "width 0.2s ease",
@@ -162,8 +225,8 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
             display: "flex",
             justifyContent: collapsed ? "center" : "space-between",
             alignItems: "center",
-            mb: 2,
-            py: 1,
+            mb: 3,
+            pt: 0.5,
           }}
         >
           {!collapsed && (
@@ -171,7 +234,7 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
               component="img"
               src={logo}
               alt="Raph Technology Labs"
-              sx={{ width: 140, height: "auto" }}
+              sx={{ width: 130, height: "auto", display: "block" }}
               onError={(e) => (e.target.style.display = "none")}
             />
           )}
@@ -185,8 +248,11 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
                 size="small"
                 onClick={toggleCollapsed}
                 sx={{
-                  color: "text.secondary",
-                  "&:hover": { color: "primary.main" },
+                  color: sb.textMuted,
+                  bgcolor: sb.surface,
+                  border: `1px solid ${sb.surfaceBorder}`,
+                  borderRadius: "8px",
+                  "&:hover": { color: sb.accent, bgcolor: "#FFFFFF" },
                 }}
               >
                 {collapsed ? (
@@ -199,7 +265,7 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
           )}
         </Box>
 
-        {/* New session */}
+        {/* New session — primary red action */}
         {collapsed ? (
           <Tooltip
             title={
@@ -211,18 +277,7 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
               <IconButton
                 disabled={sessionActive}
                 onClick={() => goTo("/part-selection")}
-                sx={{
-                  width: "100%",
-                  borderRadius: "5px",
-                  mb: 1,
-                  background: theme.palette.gradients.primary,
-                  color: "primary.contrastText",
-                  "&:hover": { background: theme.palette.gradients.dark },
-                  "&.Mui-disabled": {
-                    background: theme.palette.grey[100],
-                    color: theme.palette.grey[400],
-                  },
-                }}
+                sx={{ width: "100%", mb: 1, ...primaryActionSx }}
               >
                 <PlayCircleOutlinedIcon />
               </IconButton>
@@ -234,18 +289,11 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
             disabled={sessionActive}
             onClick={() => goTo("/part-selection")}
             sx={{
-              background: theme.palette.gradients.primary,
-              color: "primary.contrastText",
-              borderRadius: "5px",
-              py: 1,
+              py: 1.1,
               mb: 1,
               textTransform: "none",
               fontWeight: 600,
-              "&:hover": { background: theme.palette.gradients.dark },
-              "&.Mui-disabled": {
-                background: theme.palette.grey[100],
-                color: theme.palette.grey[400],
-              },
+              ...primaryActionSx,
             }}
           >
             + New Session
@@ -271,18 +319,7 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
               <IconButton
                 disabled={!canAddPart || sessionActive}
                 onClick={() => goTo("/add-part")}
-                sx={{
-                  width: "100%",
-                  borderRadius: "5px",
-                  mb: 3,
-                  bgcolor: "common.black",
-                  color: "common.white",
-                  "&:hover": { bgcolor: "grey.800" },
-                  "&.Mui-disabled": {
-                    bgcolor: "grey.100",
-                    color: "grey.400",
-                  },
-                }}
+                sx={{ width: "100%", mb: 3, ...secondaryActionSx }}
               >
                 <AddCircleOutlinedIcon />
               </IconButton>
@@ -305,18 +342,11 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
                 disabled={!canAddPart || sessionActive}
                 onClick={() => goTo("/add-part")}
                 sx={{
-                  bgcolor: "common.black",
-                  color: "common.white",
-                  borderRadius: "5px",
-                  py: 1,
+                  py: 1.1,
                   mb: 3,
                   textTransform: "none",
                   fontWeight: 600,
-                  "&:hover": { bgcolor: "grey.800" },
-                  "&.Mui-disabled": {
-                    bgcolor: "grey.100",
-                    color: "grey.400",
-                  },
+                  ...secondaryActionSx,
                 }}
               >
                 + Add Part
@@ -325,7 +355,7 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
           </Tooltip>
         )}
 
-        <Divider sx={{ mb: 2 }} />
+        <SectionLabel>NAVIGATION</SectionLabel>
 
         <List disablePadding>
           {menuItems.map((item) => (
@@ -335,18 +365,12 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
       </Box>
 
       {/* BOTTOM */}
-      <Box
-        sx={{
-          p: collapsed ? 1 : 2,
-          borderTop: `1px solid ${theme.palette.divider}`,
-          mt: "auto",
-        }}
-      >
+      <Box sx={{ p: collapsed ? 1 : 2, mt: "auto" }}>
         {bottomItems.map((item) => (
           <NavButton key={item.path} item={item} />
         ))}
 
-        <Divider sx={{ my: 1 }} />
+        <Divider sx={{ my: 1.5, borderColor: sb.divider }} />
 
         {collapsed ? (
           <Tooltip
@@ -357,8 +381,9 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
               onClick={() => setConfirmLogout(true)}
               sx={{
                 width: "100%",
-                color: "text.secondary",
-                "&:hover": { color: "primary.main", bgcolor: "grey.100" },
+                borderRadius: "8px",
+                color: sb.textMuted,
+                "&:hover": { color: sb.accent, bgcolor: sb.hover },
               }}
             >
               <LogoutOutlinedIcon fontSize="small" />
@@ -369,23 +394,34 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
             sx={{
               display: "flex",
               alignItems: "center",
-              justifyContent: "space-between",
-              mt: 1,
-              gap: 1,
+              gap: 1.25,
+              p: 1,
+              borderRadius: "10px",
+              bgcolor: sb.surface,
+              border: `1px solid ${sb.surfaceBorder}`,
             }}
           >
-            <Box sx={{ minWidth: 0 }}>
+            <Avatar
+              sx={{
+                width: 34,
+                height: 34,
+                fontSize: "13px",
+                fontWeight: 700,
+                background: theme.palette.gradients.primary,
+                color: "#FFFFFF",
+              }}
+            >
+              {initialsOf(user?.user_name)}
+            </Avatar>
+
+            <Box sx={{ minWidth: 0, flex: 1 }}>
               <Typography
-                variant="body2"
                 noWrap
-                sx={{ fontWeight: 600, color: "text.primary" }}
+                sx={{ fontSize: "13px", fontWeight: 600, color: sb.textStrong }}
               >
                 {user?.user_name || "Not signed in"}
               </Typography>
-              <Typography
-                variant="body2"
-                sx={{ color: "text.secondary", fontSize: "12px" }}
-              >
+              <Typography noWrap sx={{ fontSize: "11px", color: sb.textMuted }}>
                 {roleLabel}
               </Typography>
             </Box>
@@ -395,8 +431,9 @@ const Sidebar = ({ onNavigate, sessionActive = false }) => {
                 size="small"
                 onClick={() => setConfirmLogout(true)}
                 sx={{
-                  color: "text.secondary",
-                  "&:hover": { color: "primary.main", bgcolor: "grey.100" },
+                  color: sb.textMuted,
+                  borderRadius: "8px",
+                  "&:hover": { color: sb.accent, bgcolor: sb.hover },
                 }}
               >
                 <LogoutOutlinedIcon fontSize="small" />

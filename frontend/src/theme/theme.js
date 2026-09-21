@@ -76,7 +76,7 @@ const theme = createTheme({
     gradients: {
       primary: "linear-gradient(135deg, #b71c1c 0%, #8e1414 100%)",
       dark: "linear-gradient(135deg, #1A1A1A 0%, #000000 100%)",
-      peach: "linear-gradient(135deg, #FCE8E6 0%, #F7C8C2 100%)", // active nav bg, highlight cards
+      peach: "linear-gradient(135deg, #FCE8E6 0%, #F7C8C2 100%)", // highlight cards
       hero: "linear-gradient(135deg, #111111 0%, #b71c1c 55%, #FEE2E2 100%)", // login screen, banners
       subtle: "linear-gradient(180deg, #FFFFFF 0%, #F5F6F8 100%)",
     },
@@ -92,6 +92,23 @@ const theme = createTheme({
       heroCircle: "rgba(255,255,255,0.16)",
       heroCircleBorder: "rgba(255,255,255,0.25)",
       heroDot: "rgba(255,255,255,0.45)",
+    },
+
+       // Soft peach sidebar — referenced by Sidebar
+    sidebar: {
+      background: "linear-gradient(180deg, #FFF6F4 0%, #FCE8E6 100%)",
+      text: "#4B3F3F",
+      textMuted: "#8C7474",
+      textStrong: "#1A1A1A",
+      hover: "rgba(183,28,28,0.06)",
+      divider: "#F3D3CE",
+      accent: "#b71c1c", // active bar, active icon/text
+      activeBg: "#FFFFFF", // active item = white card
+      activeShadow: "0 2px 8px rgba(183,28,28,0.12)",
+      surface: "#FFFFFF", // user card, Add Part button
+      surfaceBorder: "#F3D3CE",
+      disabledBg: "rgba(183,28,28,0.06)",
+      disabledText: "rgba(26,26,26,0.35)",
     },
   },
 
@@ -255,8 +272,8 @@ const theme = createTheme({
     MuiDrawer: {
       styleOverrides: {
         paper: {
-          backgroundColor: "#FFFFFF",
-          borderRight: "1px solid #E5E7EB",
+          backgroundImage: "linear-gradient(180deg, #FFF6F4 0%, #FCE8E6 100%)",
+          borderRight: "1px solid #F3D3CE",
         },
       },
     },

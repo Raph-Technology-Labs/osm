@@ -71,6 +71,18 @@ const LoginPage = () => {
     }
   };
 
+  // Shared styles for the bigger inputs
+  const labelSx = {
+    fontSize: "14px",
+    fontWeight: 700,
+    color: theme.palette.text.primary,
+    mb: 0.8,
+  };
+
+  const inputSx = {
+    "& .MuiInputBase-input": { fontSize: "16px", py: 1.6 },
+  };
+
   return (
     <Box
       sx={{
@@ -87,45 +99,24 @@ const LoginPage = () => {
           width: { xs: "0%", sm: "48%", md: "52%" },
           display: { xs: "none", sm: "flex" },
           flexDirection: "column",
-          justifyContent: "space-between",
+          justifyContent: "flex-end",
           position: "relative",
           overflow: "hidden",
           p: { sm: 4, md: 6 },
           background: theme.palette.gradients.hero,
         }}
       >
-        {/* Logo */}
-        <Box
-          sx={{
-            position: "relative",
-            zIndex: 2,
-            backgroundColor: theme.palette.background.paper,
-            borderRadius: "10px",
-            p: 1.5,
-            width: "fit-content",
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          <Box
-            component="img"
-            src={raphLogo}
-            alt="Raph Technology Labs"
-            sx={{ height: 56, width: "auto", display: "block" }}
-          />
-        </Box>
-
         {/* Product information */}
-        <Box sx={{ position: "relative", zIndex: 2, mb: 5 }}>
+        <Box sx={{ position: "relative", zIndex: 2, my: "auto" }}>
           <Typography
             variant="h1"
             sx={{
               color: theme.palette.login.heroText,
-              fontSize: { sm: "34px", md: "42px" },
+              fontSize: { sm: "46px", md: "60px" },
               fontWeight: 700,
               lineHeight: 1.05,
-              letterSpacing: "-1px",
-              maxWidth: "420px",
+              letterSpacing: "-1.5px",
+              maxWidth: "600px",
             }}
           >
             Optical Sorting
@@ -136,26 +127,14 @@ const LoginPage = () => {
           <Typography
             sx={{
               color: theme.palette.login.heroText,
-              fontSize: "15px",
-              mt: 2,
+              fontSize: { sm: "18px", md: "21px" },
+              mt: 2.5,
               fontWeight: 400,
             }}
           >
             Vision inspection and reject control
           </Typography>
         </Box>
-
-        {/* Terminal / version */}
-        <Typography
-          sx={{
-            position: "relative",
-            zIndex: 2,
-            color: theme.palette.login.heroMutedText,
-            fontSize: "11px",
-          }}
-        >
-          Line 3 · Terminal OSM-02 · v2.4.0
-        </Typography>
 
         {/* Decorative rings */}
         <Box
@@ -233,6 +212,7 @@ const LoginPage = () => {
         sx={{
           flex: 1,
           minWidth: 0,
+          position: "relative",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -240,23 +220,37 @@ const LoginPage = () => {
           p: { xs: 2, sm: 3, md: 5 },
         }}
       >
+        {/* Logo */}
+        <Box
+          component="img"
+          src={raphLogo}
+          alt="Raph Technology Labs"
+          sx={{
+            position: "absolute",
+            top: 24,
+            right: 24,
+            height: 90,
+            width: "auto",
+          }}
+        />
+
         <Paper
           elevation={0}
           sx={{
             width: "100%",
-            maxWidth: 372,
-            p: { xs: 3, sm: 3.5 },
-            borderRadius: "8px",
+            maxWidth: 480,
+            p: { xs: 3.5, sm: 5 },
+            borderRadius: "12px",
             border: `1px solid ${theme.palette.divider}`,
             backgroundColor: theme.palette.background.paper,
             boxShadow: "0 16px 40px rgba(17,17,17,.08)",
           }}
         >
-          <Box sx={{ mb: 2.5 }}>
+          <Box sx={{ mb: 3.5 }}>
             <Typography
               variant="h2"
               sx={{
-                fontSize: "21px",
+                fontSize: "30px",
                 fontWeight: 700,
                 color: theme.palette.text.primary,
                 lineHeight: 1.2,
@@ -268,9 +262,9 @@ const LoginPage = () => {
             <Typography
               variant="body2"
               sx={{
-                fontSize: "12px",
+                fontSize: "15px",
                 color: theme.palette.text.secondary,
-                mt: 0.6,
+                mt: 1,
               }}
             >
               Use your operator or admin account
@@ -278,7 +272,7 @@ const LoginPage = () => {
           </Box>
 
           {error && (
-            <Alert severity="error" sx={{ mb: 2 }}>
+            <Alert severity="error" sx={{ mb: 2.5, fontSize: "14px" }}>
               {error}
             </Alert>
           )}
@@ -286,19 +280,10 @@ const LoginPage = () => {
           <Box
             component="form"
             onSubmit={handleSubmit}
-            sx={{ display: "flex", flexDirection: "column", gap: 1.7 }}
+            sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}
           >
             <Box>
-              <Typography
-                sx={{
-                  fontSize: "11px",
-                  fontWeight: 700,
-                  color: theme.palette.text.primary,
-                  mb: 0.65,
-                }}
-              >
-                Username
-              </Typography>
+              <Typography sx={labelSx}>Username</Typography>
 
               <TextField
                 fullWidth
@@ -308,11 +293,11 @@ const LoginPage = () => {
                 autoFocus
                 required
                 disabled={loading}
-                size="small"
+                sx={inputSx}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
-                      <PersonOutlineIcon fontSize="small" />
+                      <PersonOutlineIcon />
                     </InputAdornment>
                   ),
                 }}
@@ -320,16 +305,7 @@ const LoginPage = () => {
             </Box>
 
             <Box>
-              <Typography
-                sx={{
-                  fontSize: "11px",
-                  fontWeight: 700,
-                  color: theme.palette.text.primary,
-                  mb: 0.65,
-                }}
-              >
-                Password
-              </Typography>
+              <Typography sx={labelSx}>Password</Typography>
 
               <TextField
                 fullWidth
@@ -338,11 +314,11 @@ const LoginPage = () => {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 disabled={loading}
-                size="small"
+                sx={inputSx}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
-                      <LockOutlinedIcon fontSize="small" />
+                      <LockOutlinedIcon />
                     </InputAdornment>
                   ),
                   endAdornment: (
@@ -351,16 +327,11 @@ const LoginPage = () => {
                         type="button"
                         onClick={() => setShowPassword((s) => !s)}
                         edge="end"
-                        size="small"
                         aria-label={
                           showPassword ? "Hide password" : "Show password"
                         }
                       >
-                        {showPassword ? (
-                          <VisibilityOff fontSize="small" />
-                        ) : (
-                          <Visibility fontSize="small" />
-                        )}
+                        {showPassword ? <VisibilityOff /> : <Visibility />}
                       </IconButton>
                     </InputAdornment>
                   ),
@@ -374,8 +345,10 @@ const LoginPage = () => {
               variant="contained"
               disabled={loading}
               sx={{
-                mt: 0.8,
-                height: 42,
+                mt: 1,
+                height: 54,
+                fontSize: "17px",
+                fontWeight: 600,
                 background: theme.palette.gradients.primary,
                 color: theme.palette.primary.contrastText,
                 "&:hover": { background: theme.palette.gradients.dark },
