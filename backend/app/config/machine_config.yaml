@@ -61,7 +61,7 @@ plc:
   # real result decides. Only which slots are permanently unfed is a
   # sim-harness knob.
   sim:
-    enabled: true
+    enabled: false
     host: "localhost"
     port: 5502
     tick_interval_ms: 1000 # replaces every station's old source.sim_interval_ms
@@ -90,7 +90,7 @@ plc:
   real_poll_interval_ms: 35.0 # PLACEHOLDER
   # Config-driven motor speed, written to the speed_setpoint register once
   # at session start (CLAUDE.md Rule 5: config-driven, never hardcoded).
-  speed_setpoint_rpm: 15.0 # PLACEHOLDER
+  speed_setpoint_rpm: 25.0 # PLACEHOLDER
   # PLACEHOLDER -- app/plc/watchdog.py's heartbeat-staleness timeout before
   # escalating to STOP_CMD. Not tuned yet; real value once indexer/PLC
   # hardware is actually connected.
@@ -195,7 +195,7 @@ stations:
   - id: s1
     name: "Station 1 - Dimension Measurement"
     type: inspection
-    station_offset_pulses: 290 #267 # CONFIRMED -- measured 20deg from the presence sensor at encoder_cpr=4800 (per explicit instruction, 2026-09-11)
+    station_offset_pulses: 267 # CONFIRMED -- measured 20deg from the presence sensor at encoder_cpr=4800 (per explicit instruction, 2026-09-11)
 
     cameras:
       cam1:
@@ -207,8 +207,13 @@ stations:
         capture_mode: single_shot
         strobe_reg: 18 # fire-and-forget CMD, no ACK -- per-camera light, not global
         strobe_capture_delay_ms: 50 # PLACEHOLDER -- real light settle time not yet confirmed with the instrumentation team; not wired to an actual strobe write yet either (see CameraConfig.strobe_capture_delay_ms)
+        color: false # true = stream colour (debayered BGR) -- colour sensors only; models are trained on mono, keep false
+        exposure_us: 200 # fixed exposure in microseconds (auto off); null = keep the camera's current value -- not tuned for this camera yet
+        gain_db: 2 # fixed gain in dB (auto off); null = keep the camera's current value
+        throughput_limit_mbps: null # stream bandwidth cap in Mbit/s; null = camera's current setting -- own dedicated link (enp3s0), no cap needed
+        strobe: { enabled: false, line: Line1 } # camera-driven strobe (StrobeConfig) -- OFF: station 1 wiring pending; set true once the light controller is on this camera's Line1
         sim:
-          enabled: true
+          enabled: false
           image_path: "/data/sim/circles/" # black circle on white bg -- contour-measured, not detected by the stock model
 
     pipeline:
@@ -246,7 +251,7 @@ stations:
             # 110.3 and visibly soft; re-run this calibration once focus is
             # confirmed sharp, since any blur here directly skews every
             # diameter_mm reading downstream.
-            calibration_factor: 0.039
+            calibration_factor: 0.0391
             # upper_limit/lower_limit are tolerances (+/- from nominal_value),
             # not absolute bounds -- pass window here is nominal_value -
             # lower_limit to nominal_value + upper_limit, i.e. 17.5-18.5mm.
@@ -269,43 +274,48 @@ stations:
         save_result: true
         draw_result: true
 
-  # - id: s2
-  #   name: "Station 2 - Defect Detection"
-  #   type: inspection
-  #   station_offset_pulses: 1066 # PLACEHOLDER
+  - id: s2
+    name: "Station 2 - Defect Detection"
+    type: inspection
+    station_offset_pulses: 1600 # PLACEHOLDER
 
-  #   cameras:
-  #     cam2:
-  #       ip: "192.168.5.42"
-  #       vendor: lucid
-  #       resolution: { x: 1920, y: 1080 }
-  #       fps: 30
-  #       roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
-  #       capture_mode: single_shot
-  #       strobe_reg: 19
-  #       strobe_capture_delay_ms: 50 # PLACEHOLDER -- see cam1's note above
-  #       sim:
-  #         enabled: true
-  #         image_path: "/home/snehal-dev/osm/osm_5044_rimcut_thard_air" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
-  #         # -> OK -- synthetic (no internet access to source a real dog photo), just
-  #         # needs to not trigger the stock model's "cat" class, verified it doesn't.
+    cameras:
+      cam2:
+        ip: "192.168.7.41"
+        vendor: lucid
+        resolution: { x: 1920, y: 1080 }
+        fps: 30
+        roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
+        capture_mode: single_shot
+        strobe_reg: 19
+        strobe_capture_delay_ms: 50 # PLACEHOLDER -- see cam1's note above
+        color: false # TRI023S-C is a colour sensor, but models are trained on mono -- true switches to colour (debayered BGR)
+        exposure_us: 3300 # microseconds, auto off; also the strobe pulse length. From focus_live tuning on this camera (2026-09-24) -- re-check after lens/light changes
+        gain_db: 3.4 # dB, auto off. From the same focus_live session
+        throughput_limit_mbps: 600 # stream bandwidth cap in Mbit/s -- shares the 192.168.7.x switch with the PLC; 1920x1080 @ 30 fps Mono8 needs ~500. Needs enp4s0 at 1 Gb/s (it links at 100 Mb/s today)
+        strobe: { enabled: true, line: Line1 } # camera-driven strobe (StrobeConfig): light controller on this camera's Line1, pulsed for the exposure time of every frame
+        sim:
+          enabled: false
+          image_path: "/home/snehal-dev/osm/osm_5044_rimcut_thard_air" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
+          # -> OK -- synthetic (no internet access to source a real dog photo), just
+          # needs to not trigger the stock model's "cat" class, verified it doesn't.
 
-  #   pipeline:
-  #     defect:
-  #       model_path: "/models/pt/osm.pt" # stock COCO-pretrained yolo11n -- stand-in until a
-  #       # real defect-trained model exists; "cat" is a real COCO class so this
-  #       # is a working detector, not a stub. Swap for the trained defect
-  #       # model when available.
-  #       model_type: yolo
-  #       conf_thresh: 1
-  #       allowed_cameras: [cam2]
-  #       detect_classes: ['Air_5044','Thard_5044','Rim_Cut_5044','Bar_defect_5044'] # everything this model outputs
-  #       allowed_defects: ['Air_5044','Thard_5044','Rim_Cut_5044','Bar_defect_5044'] # ok/nok decided ONLY on these
+    pipeline:
+      defect:
+        model_path: "/models/pt/osm.pt" # stock COCO-pretrained yolo11n -- stand-in until a
+        # real defect-trained model exists; "cat" is a real COCO class so this
+        # is a working detector, not a stub. Swap for the trained defect
+        # model when available.
+        model_type: yolo
+        conf_thresh: 0.5
+        allowed_cameras: [cam2]
+        detect_classes: ['Air_5044','Thard_5044','Rim_Cut_5044','Bar_defect_5044'] # everything this model outputs
+        allowed_defects: ['Air_5044','Thard_5044','Rim_Cut_5044','Bar_defect_5044'] # ok/nok decided ONLY on these
 
-  #     result:
-  #       pass_if: all_cameras_pass
-  #       save_result: true
-  #       draw_result: true
+      result:
+        pass_if: all_cameras_pass
+        save_result: true
+        draw_result: true
 
   - id: r1
     name: "Reject Station 1"

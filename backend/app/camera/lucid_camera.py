@@ -28,10 +28,11 @@ mirror gcm's tested code closely. The one piece gcm's code never needed
 (it hardcodes a single camera via system.create_device() with no filter):
 selecting a specific camera by IP out of multiple discovered devices, in
 connect() below. Smoke-test that specifically against a real multi-camera
-Lucid setup before relying on it in production, and confirm the PixelFormat
-= "Mono8" assumption matches the real cameras (a color camera needs a
-different buffer reshape + cv2.cvtColor Bayer demosaic instead of
-COLOR_GRAY2BGR).
+Lucid setup before relying on it in production.
+
+Pixel format follows CameraConfig.color: Mono8 by default (the models are
+trained on mono), raw 8-bit Bayer debayered to BGR when color is true --
+see select_pixel_format() / to_bgr().
 """
 
 from __future__ import annotations
@@ -46,11 +47,61 @@ from app.camera.camera_driver import CameraConnectionError, CameraDriver
 
 log = logging.getLogger("lucid_camera")
 
+# GenICam 8-bit Bayer formats -> OpenCV codes. OpenCV names the pattern from
+# the second row/column, so GenICam "BayerRG" (RGGB) is OpenCV's BayerBG --
+# using the same-named code swaps red and blue (seen on the real TRI023S-C).
+_BAYER_TO_BGR = {
+    "BayerRG8": cv2.COLOR_BayerBG2BGR,
+    "BayerGB8": cv2.COLOR_BayerGR2BGR,
+    "BayerGR8": cv2.COLOR_BayerGB2BGR,
+    "BayerBG8": cv2.COLOR_BayerRG2BGR,
+}
+_BAYER_TO_GRAY = {
+    "BayerRG8": cv2.COLOR_BayerBG2GRAY,
+    "BayerGB8": cv2.COLOR_BayerGR2GRAY,
+    "BayerGR8": cv2.COLOR_BayerGB2GRAY,
+    "BayerBG8": cv2.COLOR_BayerRG2GRAY,
+}
+
+
+def select_pixel_format(available: list[str], color: bool) -> str:
+    """Pick the 8-bit PixelFormat for config.color.
+
+    color=False -> Mono8 (colour Tritons offer it too, converted on-camera);
+    raw Bayer only as a fallback on a colour camera without Mono8, turned to
+    gray in to_bgr(). color=True -> raw Bayer, debayered in to_bgr(); a mono
+    sensor has no Bayer format, so that's a config error, not a fallback.
+    """
+    bayer = next((f for f in _BAYER_TO_BGR if f in available), None)
+    if color:
+        if bayer is None:
+            raise ValueError(
+                f"color: true but the camera has no 8-bit Bayer format (mono sensor?); "
+                f"available: {available}"
+            )
+        return bayer
+    if "Mono8" in available:
+        return "Mono8"
+    if bayer is not None:
+        return bayer
+    raise ValueError(f"no Mono8 or 8-bit Bayer PixelFormat; available: {available}")
+
+
+def to_bgr(raw: np.ndarray, pixel_format: str, color: bool) -> np.ndarray:
+    """(H, W) uint8 sensor data -> (H, W, 3) BGR, the shape every pipeline
+    stage expects. Mono output stays 3-channel gray, as before."""
+    if pixel_format in _BAYER_TO_BGR:
+        if color:
+            return cv2.cvtColor(raw, _BAYER_TO_BGR[pixel_format])
+        raw = cv2.cvtColor(raw, _BAYER_TO_GRAY[pixel_format])
+    return cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+
 
 class LucidCamera(CameraDriver):
     def __init__(self, camera_id, config):
         super().__init__(camera_id, config)
         self._device = None
+        self._pixel_format = "Mono8"
 
     def connect(self) -> None:
         try:
@@ -130,14 +181,18 @@ class LucidCamera(CameraDriver):
         )
         nodes["OffsetX"].value = self.config.roi.x1
         nodes["OffsetY"].value = self.config.roi.y1
-        # Assumes a monochrome sensor (matches gcm's configured cameras) --
-        # a color camera needs a different PixelFormat + read_frame() reshape.
-        nodes["PixelFormat"].value = "Mono8"
-        # No exposure/gain fields exist on CameraConfig -- left on the
-        # device's own default/auto rather than inventing fixed values with
-        # no config backing (CLAUDE.md Rule 5: config-driven, not hardcoded).
+        self._pixel_format = select_pixel_format(
+            nodes["PixelFormat"].enumentry_names, self.config.color
+        )
+        nodes["PixelFormat"].value = self._pixel_format
+        # Order matters: throughput limit caps the max fps, and fps caps the
+        # max exposure (ExposureTime can't exceed the frame period).
         nodes["AcquisitionFrameRateEnable"].value = True
+        self._configure_throughput(nodemap)
         nodes["AcquisitionFrameRate"].value = float(self.config.fps)
+
+        self._configure_exposure_gain(nodemap)
+        self._configure_strobe(nodemap)
 
         stream_map = device.tl_stream_nodemap
         # "NewestOnly" (not gcm's "OldestFirst") -- matches this project's
@@ -145,6 +200,85 @@ class LucidCamera(CameraDriver):
         stream_map["StreamBufferHandlingMode"].value = "NewestOnly"
         stream_map["StreamAutoNegotiatePacketSize"].value = True
         stream_map["StreamPacketResendEnable"].value = True
+
+    def _configure_throughput(self, nodemap) -> None:
+        """Apply config.throughput_limit_mbps (None -> leave the camera's
+        setting). DeviceLinkThroughputLimit is in bytes/s. Checks that the
+        configured fps still fits under the cap, since the camera would
+        otherwise reject the AcquisitionFrameRate write with a bare SDK
+        error that doesn't say why."""
+        mbps = self.config.throughput_limit_mbps
+        if mbps is None:
+            return
+        nodemap.get_node("DeviceLinkThroughputLimitMode").value = "On"
+        limit = nodemap.get_node("DeviceLinkThroughputLimit")
+        bytes_per_s = int(mbps * 1e6 / 8)
+        if not limit.min <= bytes_per_s <= limit.max:
+            raise ValueError(
+                f"throughput_limit_mbps={mbps:g} is outside this camera's range "
+                f"{limit.min * 8 / 1e6:g}-{limit.max * 8 / 1e6:g} Mbit/s"
+            )
+        limit.value = bytes_per_s
+
+        max_fps = nodemap.get_node("AcquisitionFrameRate").max
+        if self.config.fps > max_fps:
+            raise ValueError(
+                f"fps={self.config.fps} doesn't fit throughput_limit_mbps={mbps:g} "
+                f"(max {max_fps:.1f} fps at this resolution) -- raise the limit, "
+                f"lower fps, or shrink the ROI"
+            )
+        log.info(f"{self.camera_id}: throughput limit {mbps:g} Mbit/s (max {max_fps:.1f} fps)")
+
+    def _configure_exposure_gain(self, nodemap) -> None:
+        """Apply config.exposure_us / gain_db with auto turned off. None ->
+        leave the camera's current value. Out of the camera's range -> raise
+        (connect() wraps it) rather than silently clamping, since a clamped
+        exposure changes brightness and strobe pulse length behind the
+        config's back."""
+        for auto_name, node_name, value, unit in (
+            ("ExposureAuto", "ExposureTime", self.config.exposure_us, "us"),
+            ("GainAuto", "Gain", self.config.gain_db, "dB"),
+        ):
+            if value is None:
+                continue
+            nodemap.get_node(auto_name).value = "Off"
+            node = nodemap.get_node(node_name)
+            if not node.min <= value <= node.max:
+                raise ValueError(
+                    f"{node_name}={value}{unit} is outside this camera's range "
+                    f"{node.min:g}-{node.max:g}{unit} at fps={self.config.fps}"
+                )
+            node.value = float(value)
+            log.info(f"{self.camera_id}: {node_name} = {value}{unit}")
+
+    def _configure_strobe(self, nodemap) -> None:
+        """Drive the light from the camera's output line: one pulse per
+        frame, lasting exactly the exposure time (LineSource =
+        ExposureActive). The camera does the timing in hardware, so the
+        light can't drift out of sync with the exposure and read_frame()
+        needs no extra work. Checked against a real TRI023S-C with its
+        strobe controller on Line1 (scripts/focus_live.py --strobe).
+
+        Disabled -> line settings are left untouched. Enabled but the camera
+        rejects a write -> raises, so connect() fails loudly instead of
+        silently inspecting with the light dark.
+        """
+        strobe = self.config.strobe
+        if not strobe.enabled:
+            return
+
+        nodemap.get_node("LineSelector").value = strobe.line
+        line_mode = nodemap.get_node("LineMode")
+        # Fixed-direction output lines expose LineMode read-only (already
+        # "Output") -- only write it where the camera allows it.
+        if line_mode.is_writable:
+            line_mode.value = "Output"
+        nodemap.get_node("LineSource").value = "ExposureActive"
+        nodemap.get_node("LineInverter").value = strobe.inverted
+        log.info(
+            f"{self.camera_id}: strobe on {strobe.line} = ExposureActive"
+            f"{' (inverted)' if strobe.inverted else ''}"
+        )
 
     def read_frame(self) -> np.ndarray:
         """gcm's proven ctypes buffer->numpy pattern (standalone_lucid.py:233-250)."""
@@ -162,11 +296,11 @@ class LucidCamera(CameraDriver):
             arr = (ctypes.c_ubyte * (buffer.width * buffer.height)).from_address(
                 ctypes.addressof(buffer.pbytes)
             )
-            gray = np.ndarray(buffer=arr, dtype=np.uint8, shape=(buffer.height, buffer.width)).copy()
+            raw = np.ndarray(buffer=arr, dtype=np.uint8, shape=(buffer.height, buffer.width)).copy()
         finally:
             self._device.requeue_buffer(buffer)
 
-        return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        return to_bgr(raw, self._pixel_format, self.config.color)
 
     def close(self) -> None:
         if self._device is None:

@@ -121,6 +121,26 @@ class CameraSimConfig(BaseModel):
         return self
 
 
+class StrobeConfig(BaseModel):
+    """Camera-driven strobe: the light controller's trigger input is wired
+    to one of the camera's opto-isolated outputs, and the camera itself
+    pulses that line for exactly the exposure time of every frame
+    (LineSource = ExposureActive). Timing is done in camera hardware, so
+    there's no per-frame PLC write and no settle-delay race -- unlike
+    strobe_reg below, which is the PLC-driven alternative.
+
+    enabled=False leaves the camera's line settings untouched (e.g. a
+    station whose strobe wiring isn't done yet)."""
+    enabled: bool = False
+    # Which camera output drives the light. Line1 = Triton/Triton2
+    # opto-isolated output (default); Line2/Line3 are the non-isolated GPIOs
+    # on cameras that have them -- any output line the camera exposes works.
+    line: str = Field("Line1", pattern=r"^Line\d+$")
+    # Flip the output polarity if the light controller triggers on the
+    # opposite level (LineInverter).
+    inverted: bool = False
+
+
 class CameraConfig(BaseModel):
     ip: str
     # Selects the driver class from app.camera.driver_registry.CAMERA_DRIVERS
@@ -132,6 +152,32 @@ class CameraConfig(BaseModel):
     roi: ROIConfig
     capture_mode: Literal["single_shot", "continuous"] = "single_shot"
     sim: CameraSimConfig = CameraSimConfig()
+    # Stream colour (8-bit Bayer, debayered to BGR) instead of mono. Only
+    # valid on a colour sensor -- connect() fails on a mono camera with
+    # color: true. Default false: the defect/measurement models are trained
+    # on mono images, so a colour camera still delivers mono frames unless
+    # this is switched on explicitly.
+    color: bool = False
+    # Fixed exposure (microseconds) / gain (dB), applied at connect() with
+    # auto exposure/gain turned off. null = leave whatever the camera
+    # already has (NOT recommended for production: a camera reboot resets
+    # it). With strobe enabled, exposure_us is also the light pulse length.
+    # Must fit the camera's range, which shrinks as fps rises (exposure
+    # can't exceed the frame period) -- connect() fails loudly if not.
+    exposure_us: Optional[float] = Field(None, gt=0)
+    gain_db: Optional[float] = Field(None, ge=0)
+    # Cap on the camera's stream bandwidth in Mbit/s (Lucid
+    # DeviceLinkThroughputLimit): the camera spaces its packets out so it
+    # never bursts past this rate -- protects a link shared with the PLC and
+    # stops a slower host port from dropping packets. null = leave the
+    # camera's current setting. The camera lowers its max fps to fit the
+    # cap; connect() fails loudly if the configured fps no longer fits.
+    # Rough need: width x height x fps x 8 / 1e6 (Mono8), e.g. 1920x1080 @
+    # 30 fps ~= 500 Mbit/s.
+    throughput_limit_mbps: Optional[float] = Field(None, gt=0)
+    # Camera-output strobe (see StrobeConfig). Applied by the vendor driver
+    # at connect(); ignored for sim cameras.
+    strobe: StrobeConfig = StrobeConfig()
     # fire-and-forget CMD, no ACK -- per-camera light, not a global strobe line
     strobe_reg: Optional[int] = None
     # Delay between firing strobe_reg and actually capturing -- the light
