@@ -622,7 +622,9 @@ def test_pulse_rate_measured_live_from_consecutive_ticks_not_speed_scale(monkeyp
     # ticks, not from set_speed_scale() (which only drives _tick_sim).
     import app.indexer.dispatcher as dispatcher_module
 
-    dispatcher, _tracker, plc = make_real_dispatcher()
+    # encoder_cpr well above the 100-pulse step: the unwrap reads direction
+    # from the shortest way round, so one tick must move < half a revolution.
+    dispatcher, _tracker, plc = make_real_dispatcher(encoder_cpr=4800)
     plc.queue(PULSE_COUNT_REG, [0, 100])
     plc.queue(PART_SENSOR_REG, [False, False])
 
@@ -721,3 +723,50 @@ def test_exit_ack_unconfigured_is_a_noop():
 
     assert getattr(dispatcher, "last_exit_ack", None) is None
     assert tracker.get_slot(0).status.value == "EMPTY"
+
+
+def test_backward_wobble_is_not_a_revolution_wrap():
+    # Real log 2026-09-24, disc near standstill: encoder_indexer_ppr dithers
+    # back by 1-2 counts. The old "raw < last => wrap" rule booked each dip
+    # as a full revolution (computed_gap=4799). A dip must add nothing, and
+    # moving forward again must only count progress past the high-water mark.
+    encoder_cpr = 4800
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=16, encoder_cpr=encoder_cpr)
+    samples = [1124, 1123, 1125, 1124, 1117, 1127, 1129, 1128, 1131]
+    plc.queue(PULSE_COUNT_REG, samples)
+    plc.queue(PART_SENSOR_REG, [False] * len(samples))
+
+    for _ in samples:
+        dispatcher._tick_real()
+
+    assert dispatcher._real_accumulated_pulses == 1131 - 1124  # net forward only
+
+
+def test_rollback_while_stopping_is_held_then_resumes_without_double_count():
+    # Disc rolls back ~60 pulses as the motor stops (1237 -> 1177 in the
+    # same log), then drives forward again.
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=16, encoder_cpr=4800)
+    samples = [1200, 1237, 1213, 1194, 1177, 1200, 1237, 1250]
+    plc.queue(PULSE_COUNT_REG, samples)
+    plc.queue(PART_SENSOR_REG, [False] * len(samples))
+
+    for _ in samples:
+        dispatcher._tick_real()
+
+    # 1200 -> 1237 (+37), roll back and re-cover (0), 1237 -> 1250 (+13)
+    assert dispatcher._real_accumulated_pulses == 50
+
+
+def test_backward_move_across_the_zero_point_is_not_a_wrap():
+    # Wobble right at the revolution boundary: 2 -> 4798 is 4 counts
+    # backwards, not a forward trip of 4796.
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=16, encoder_cpr=4800)
+    samples = [4797, 2, 4798, 5]
+    plc.queue(PULSE_COUNT_REG, samples)
+    plc.queue(PART_SENSOR_REG, [False] * len(samples))
+
+    for _ in samples:
+        dispatcher._tick_real()
+
+    # 4797 -> 2 wraps forward (+5); 4798 is backwards (0); 5 is +3 past 2
+    assert dispatcher._real_accumulated_pulses == 8

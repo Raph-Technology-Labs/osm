@@ -391,24 +391,47 @@ class StationDispatcher:
         # encoder_indexer_ppr (40002), not pulse_count (40001) or
         # encoder_count (40003) -- see the module-level comment above this
         # class for why.
+        #
+        # Direction comes from the shortest way round the circle, not from
+        # "raw went down": a drop from near encoder_cpr to near 0 is a
+        # forward wrap, but a small drop (1123 after 1124) is the disc
+        # moving BACKWARDS -- encoder dither when (nearly) stopped, or
+        # roll-back while stopping. The old "raw < last => wrap" rule booked
+        # every such wobble as a full extra revolution (seen on real
+        # hardware 2026-09-24: ~15 phantom revolutions in 5s near standstill).
+        # Backward motion never un-advances the ring (slot state is
+        # forward-only), so it adds 0 and _last_raw_pulse_count stays at the
+        # forward high-water mark: re-covering the same pulses on the way
+        # forward again isn't counted twice. Valid while the disc moves less
+        # than half a revolution per tick (~850 rpm at 35 ms polling).
         raw_pulse = pulse_sensor_batch[self._pulse_offset_in_batch]
+        cpr = self.tracker.encoder_cpr
         if self._last_raw_pulse_count is None:
             gap = 0
-        elif raw_pulse < self._last_raw_pulse_count:
-            gap = (self.tracker.encoder_cpr - self._last_raw_pulse_count) + raw_pulse
-            log.info(
-                "encoder_indexer_ppr revolution wrap: last_raw=%d, raw_pulse=%d, "
-                "encoder_cpr=%d, computed_gap=%d",
-                self._last_raw_pulse_count, raw_pulse, self.tracker.encoder_cpr, gap,
-            )
+            self._last_raw_pulse_count = raw_pulse
         else:
-            gap = raw_pulse - self._last_raw_pulse_count
+            forward = (raw_pulse - self._last_raw_pulse_count) % cpr
+            if forward <= cpr // 2:
+                gap = forward
+                if raw_pulse < self._last_raw_pulse_count:
+                    log.info(
+                        "encoder_indexer_ppr revolution wrap: last_raw=%d, raw_pulse=%d, "
+                        "encoder_cpr=%d, computed_gap=%d",
+                        self._last_raw_pulse_count, raw_pulse, cpr, gap,
+                    )
+                self._last_raw_pulse_count = raw_pulse
+            else:
+                gap = 0  # backward move -- hold the high-water mark
+                log.debug(
+                    "encoder_indexer_ppr backward move ignored: high_water=%d, raw_pulse=%d, "
+                    "back_by=%d",
+                    self._last_raw_pulse_count, raw_pulse, cpr - forward,
+                )
         log.debug(
             "encoder_indexer_ppr tick: raw_pulse=%d, gap=%d, real_accumulated_pulses=%d",
             raw_pulse, gap, self._real_accumulated_pulses + gap,
         )
         self._real_accumulated_pulses += gap
-        self._last_raw_pulse_count = raw_pulse
         self._update_pulse_rate_sample()
 
         # -- 2. Entry: real part_sensor rising-edge, one-shot latch.

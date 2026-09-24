@@ -203,29 +203,43 @@ class LucidCamera(CameraDriver):
 
     def _configure_throughput(self, nodemap) -> None:
         """Apply config.throughput_limit_mbps (None -> leave the camera's
-        setting). DeviceLinkThroughputLimit is in bytes/s. Checks that the
-        configured fps still fits under the cap, since the camera would
-        otherwise reject the AcquisitionFrameRate write with a bare SDK
-        error that doesn't say why."""
+        setting). DeviceLinkThroughputLimit is in bytes/s, and its max is the
+        camera's current Ethernet link speed.
+
+        A cap above the link speed is lowered to the link speed with a
+        warning -- the link can't carry more anyway, so the cap's purpose
+        (never exceed N) still holds. A cap below the camera's minimum is a
+        config error. Then checks that the configured fps still fits, since
+        the camera would otherwise reject the AcquisitionFrameRate write with
+        a bare SDK error that doesn't say why."""
         mbps = self.config.throughput_limit_mbps
         if mbps is None:
             return
         nodemap.get_node("DeviceLinkThroughputLimitMode").value = "On"
         limit = nodemap.get_node("DeviceLinkThroughputLimit")
+        link_mbps = limit.max * 8 / 1e6
         bytes_per_s = int(mbps * 1e6 / 8)
-        if not limit.min <= bytes_per_s <= limit.max:
+        if bytes_per_s < limit.min:
             raise ValueError(
-                f"throughput_limit_mbps={mbps:g} is outside this camera's range "
-                f"{limit.min * 8 / 1e6:g}-{limit.max * 8 / 1e6:g} Mbit/s"
+                f"throughput_limit_mbps={mbps:g} is below this camera's minimum "
+                f"{limit.min * 8 / 1e6:g} Mbit/s"
             )
+        if bytes_per_s > limit.max:
+            log.warning(
+                f"{self.camera_id}: throughput_limit_mbps={mbps:g} is above the camera's "
+                f"network link speed ({link_mbps:g} Mbit/s) -- capping at {link_mbps:g}. "
+                f"If the link should be faster, check the cable and switch port."
+            )
+            bytes_per_s = int(limit.max)
         limit.value = bytes_per_s
 
         max_fps = nodemap.get_node("AcquisitionFrameRate").max
         if self.config.fps > max_fps:
             raise ValueError(
-                f"fps={self.config.fps} doesn't fit throughput_limit_mbps={mbps:g} "
-                f"(max {max_fps:.1f} fps at this resolution) -- raise the limit, "
-                f"lower fps, or shrink the ROI"
+                f"fps={self.config.fps} doesn't fit through "
+                f"{bytes_per_s * 8 / 1e6:g} Mbit/s (max {max_fps:.1f} fps at this "
+                f"resolution; camera link is {link_mbps:g} Mbit/s) -- lower fps, shrink "
+                f"the ROI, or get the camera onto a faster link (1 Gbit switch port/cable)"
             )
         log.info(f"{self.camera_id}: throughput limit {mbps:g} Mbit/s (max {max_fps:.1f} fps)")
 

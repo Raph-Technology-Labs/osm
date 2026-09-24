@@ -247,13 +247,30 @@ def test_unset_throughput_limit_leaves_camera_untouched():
     assert nm.writes == []
 
 
-def test_throughput_limit_outside_camera_range_fails_loudly():
+def test_throughput_limit_below_camera_minimum_fails_loudly():
     nm = _throughput_nodemap(max_fps=40.0)
-    with pytest.raises(ValueError, match="outside this camera's range"):
+    with pytest.raises(ValueError, match="below this camera's minimum"):
         _camera_cfg(throughput_limit_mbps=100)._configure_throughput(nm)
+
+
+def test_throughput_limit_above_link_speed_is_capped_at_link_speed():
+    # Real case: cam2 on a 100 Mbit link -> camera range 25-100 Mbit/s.
+    nm = _throughput_nodemap(max_fps=5.4)
+    nm.nodes["DeviceLinkThroughputLimit"].min = 3_125_000
+    nm.nodes["DeviceLinkThroughputLimit"].max = 12_500_000
+    _camera_cfg(throughput_limit_mbps=600, fps=5)._configure_throughput(nm)
+    assert nm.nodes["DeviceLinkThroughputLimit"].value == 12_500_000
+
+
+def test_fps_too_high_for_slow_link_names_the_link_speed():
+    nm = _throughput_nodemap(max_fps=5.4)
+    nm.nodes["DeviceLinkThroughputLimit"].min = 3_125_000
+    nm.nodes["DeviceLinkThroughputLimit"].max = 12_500_000
+    with pytest.raises(ValueError, match="camera link is 100 Mbit/s"):
+        _camera_cfg(throughput_limit_mbps=600, fps=30)._configure_throughput(nm)
 
 
 def test_fps_that_no_longer_fits_under_the_limit_fails_loudly():
     nm = _throughput_nodemap(max_fps=12.5)  # camera's max fps after the cap
-    with pytest.raises(ValueError, match="doesn't fit throughput_limit_mbps"):
+    with pytest.raises(ValueError, match="fps=30 doesn't fit through 300 Mbit/s"):
         _camera_cfg(throughput_limit_mbps=300)._configure_throughput(nm)
