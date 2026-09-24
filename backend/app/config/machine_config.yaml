@@ -277,7 +277,7 @@ stations:
   - id: s2
     name: "Station 2 - Defect Detection"
     type: inspection
-    station_offset_pulses: 1600 # PLACEHOLDER
+    station_offset_pulses: 1000 # PLACEHOLDER
 
     cameras:
       cam2:

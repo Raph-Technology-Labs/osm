@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+from typing import Optional
 
 import cv2
 import zmq
@@ -75,7 +76,9 @@ def publish_inspection_result(
     broadcast("MessageType.InspectionResult", payload)
 
 
-def publish_ring_state(tracker, revolutions: int) -> None:
+def publish_ring_state(
+    tracker, revolutions: int, debug: Optional[dict] = None, encoder_alarm: Optional[dict] = None
+) -> None:
     """Full per-slot ring snapshot, once per dispatcher tick -- the digital
     twin's single source of truth for slot.status (DigitalTwin.jsx no
     longer reconstructs this client-side from the per-camera
@@ -109,6 +112,10 @@ def publish_ring_state(tracker, revolutions: int) -> None:
             "nok_total": tracker.nok_total,
             "reject_removed": tracker.reject_removed,
             "revolutions": revolutions,
+            "debug": debug,  # TEMP pulse-debug panel (dispatcher._pulse_debug_snapshot), None in sim
+            # Latest short-revolution warning (dispatcher._check_revolution_length),
+            # None if none this session. "seq" increments per new alarm.
+            "encoder_alarm": encoder_alarm,
         })
     except (TypeError, ValueError):
         log.error("publish_ring_state: failed to serialize ring state -- skipping this tick's publish", exc_info=True)

@@ -49,6 +49,7 @@ class FakeRegisters:
 @dataclass
 class FakeIndexerConfig:
     entry_sensor_mid_offset_pulses: int = 0
+    min_revolution_pct: float = 90.0
 
 
 @dataclass
@@ -770,3 +771,113 @@ def test_backward_move_across_the_zero_point_is_not_a_wrap():
 
     # 4797 -> 2 wraps forward (+5); 4798 is backwards (0); 5 is +3 past 2
     assert dispatcher._real_accumulated_pulses == 8
+
+
+def test_pulse_debug_snapshot_reports_slot_calculation_inputs():
+    # TEMP pulse-debug panel: must be JSON-safe and reflect backward holds.
+    import json
+
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=16, encoder_cpr=4800)
+    samples = [1124, 1130, 1128]
+    plc.queue(PULSE_COUNT_REG, samples)
+    plc.queue(PART_SENSOR_REG, [True, True, True])
+    for _ in samples:
+        dispatcher._tick_real()
+
+    snap = dispatcher._pulse_debug_snapshot()
+    json.dumps(snap)
+    assert snap["raw_pulse"] == 1128
+    assert snap["high_water"] == 1130
+    assert snap["accumulated"] == 6
+    assert snap["backward_ticks"] == 1 and snap["last_back_by"] == 2
+    assert snap["home_offset"] is None and snap["home_relative"] is None  # not homed yet
+    assert snap["part_sensor"] is True
+
+
+def test_pulse_debug_counts_real_backward_steps_not_ticks_below_high_water():
+    # Pattern from the 2026-09-24 screen recording: raw drops once, then
+    # climbs back toward the high-water mark. Only the drop is a backward
+    # step; the climbing ticks below high-water are not.
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=16, encoder_cpr=4800)
+    samples = [1461, 1464, 1385, 1409, 1443, 1457]
+    plc.queue(PULSE_COUNT_REG, samples)
+    plc.queue(PART_SENSOR_REG, [True] * len(samples))
+    for _ in samples:
+        dispatcher._tick_real()
+
+    snap = dispatcher._pulse_debug_snapshot()
+    assert snap["backward_ticks"] == 1
+    assert snap["backward_counts"] == 1464 - 1385
+    assert snap["last_back_by"] == 79
+    assert snap["below_high_water"] == 1464 - 1457
+    assert snap["accumulated"] == 3  # only 1461 -> 1464 counted
+
+
+# --------------------------------------------------------------------------- #
+# Revolution-length alarm (warn only)
+# --------------------------------------------------------------------------- #
+def _ramp(start, stop, step=100):
+    return list(range(start, stop + 1, step))
+
+
+def _run(samples, encoder_cpr=4800):
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=75, encoder_cpr=encoder_cpr)
+    plc.queue(PULSE_COUNT_REG, samples)
+    plc.queue(PART_SENSOR_REG, [True] * len(samples))
+    for _ in samples:
+        dispatcher._tick_real()
+    return dispatcher
+
+
+def test_full_revolutions_raise_no_encoder_alarm():
+    # start mid-turn (not judged), then two complete revolutions of 4800
+    samples = _ramp(3000, 4700) + _ramp(50, 4750) + _ramp(50, 4750) + [60]
+    d = _run(samples)
+    assert d.encoder_alarm is None
+    assert d._rev_checked == 2
+
+
+def test_short_revolution_raises_encoder_alarm():
+    # 2026-09-24: slipped coupling -- the PLC reset after only ~1500 counts
+    samples = _ramp(3000, 4700) + _ramp(50, 1450) + [20]
+    d = _run(samples)
+    alarm = d.encoder_alarm
+    assert alarm is not None and alarm["seq"] == 1
+    assert alarm["reached"] == 1550  # peak 1450 + one tick's step (100)
+    assert alarm["expected"] == 4800 and alarm["pct"] == round(1550 / 4800 * 100, 1)
+
+
+def test_each_new_short_revolution_bumps_the_alarm_seq():
+    samples = _ramp(3000, 4700) + _ramp(50, 1450) + _ramp(20, 1420) + [30]
+    d = _run(samples)
+    assert d.encoder_alarm["seq"] == 2
+
+
+def test_revolution_in_progress_at_session_start_is_not_judged():
+    # session starts at 3000: the reset after 4700 ends a partial revolution
+    d = _run(_ramp(3000, 4700) + [40])
+    assert d.encoder_alarm is None and d._rev_checked == 0
+
+
+def test_wobble_and_rollback_are_not_resets():
+    samples = [1124, 1123, 1125, 1117, 1127, 1237, 1213, 1177, 1200]
+    d = _run(samples)
+    assert d.encoder_alarm is None and d._rev_checked == 0
+
+
+def test_motor_stopping_mid_revolution_is_not_judged():
+    samples = _ramp(3000, 4700) + _ramp(50, 2000) + [2000] * 20
+    d = _run(samples)
+    assert d.encoder_alarm is None and d._rev_checked == 0
+
+
+def test_encoder_alarm_is_published_with_ring_state(monkeypatch):
+    import app.indexer.dispatcher as dispatcher_module
+
+    sent = []
+    monkeypatch.setattr(
+        dispatcher_module.zeromq, "publish_ring_state",
+        lambda tracker, revolutions, debug=None, encoder_alarm=None: sent.append(encoder_alarm),
+    )
+    _run(_ramp(3000, 4700) + _ramp(50, 1450) + [20])
+    assert sent[-1] is not None and sent[-1]["reached"] == 1550

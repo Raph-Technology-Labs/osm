@@ -23,6 +23,7 @@ remembering. Quick typos caught before running don't need one.
 | 2026-09-24 | [Dispatcher has no tick source: PLC offline at startup](2026-09-24-plc-offline-at-startup.md) | PLC / session start | High | Worked around; follow-up open |
 | 2026-09-24 | [Backend startup fails: `KeyError: 'stations'`](2026-09-24-stations-indent-startup-failure.md) | Config | High | Fixed |
 | 2026-09-24 | [Slow session start: 9 s GigE discovery per camera](2026-09-24-slow-session-start-discovery.md) | Camera / session start | Medium | Fixed |
+| 2026-09-24 | [Cameras free-running although config said single_shot](2026-09-24-capture-mode-ignored-free-running.md) | Camera driver | Medium | Fixed (hardware test pending) |
 | 2026-09-24 | [Station 2 config review before first run](2026-09-24-station2-config-review.md) | Config / pipeline | Medium | Fixed `781659b` |
 | 2026-09-24 | [PLC-register strobe (sb-devNtest) not merged](2026-09-24-plc-strobe-branch-not-merged.md) | Camera / strobe | Medium | Replaced by `781659b` |
 | 2026-09-24 | [Colour camera: red shown as blue](2026-09-24-bayer-red-blue-swap.md) | Camera / imaging | Medium | Fixed `781659b` |

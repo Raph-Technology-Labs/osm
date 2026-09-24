@@ -74,17 +74,23 @@ Why it wasn't caught sooner:
 - **Verification after any encoder or coupling work:** run the Modbus tester
   (backend stopped) at 25 rpm. 40002 must reach 4799 and wrap to 0 about every
   2.4 s, and 40001 must wrap at 2400.
-- **Recommended software guard (not built yet):** when `encoder_indexer_ppr`
-  wraps, compare the revolution's peak count with `encoder_cpr`. If a
-  revolution ends well short (for example < 90 % = 4320), log an error and
-  raise a UI alarm: "encoder counted only N of 4800 this revolution -- check
-  coupling/encoder". This turns a silent tracking fault into an immediate,
-  named alarm.
+- **Revolution-length alarm (built, warn only):** at every PLC reset of
+  `encoder_indexer_ppr`, `StationDispatcher._check_revolution_length()`
+  compares the count reached (peak + last tick's step) with `encoder_cpr`.
+  Below `indexer.min_revolution_pct` (default 90 %), it logs an error and the
+  Inspection page shows a yellow "Encoder lost pulses" warning (`EncoderAlarm.jsx`,
+  sent on the RingState broadcast as `encoder_alarm`).
+  - A reset = a drop of ≥ cpr/5 to within the first cpr/10 counts, so
+    wobble and roll-back never trigger it.
+  - The revolution in progress at session start, and a stop mid-turn, aren't
+    judged.
+  - 7 tests in `tests/test_dispatcher_real_mode.py`.
+  - Today's fault would have been flagged within one revolution (~2.4 s).
 
 ## Follow-ups
 - Re-secure the coupling, run the verification above, then remove the TEMP
   PULSE DEBUG panel (or keep it behind a debug flag).
-- Decide on the revolution-length guard above.
+- Decide whether the revolution-length alarm should also stop the session after N short revolutions (warn only today).
 - The part sensor is inverted (1 = no part). Fix it at the sensor (dark-on /
   NO output) or in the PLC, or add `part_sensor_active_low` to osm. Today parts
   are admitted on the trailing edge (part leaving the sensor).

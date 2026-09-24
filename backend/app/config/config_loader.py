@@ -150,6 +150,11 @@ class CameraConfig(BaseModel):
     resolution: ResolutionConfig
     fps: int = 30
     roi: ROIConfig
+    # single_shot: software-triggered, one exposure per station fire (the
+    # picture is taken when the part is under the station; the strobe
+    # flashes once per part). continuous: free-run at fps, each fire takes
+    # the newest frame (may predate the fire by up to one frame period).
+    # fps still caps the trigger rate in single_shot mode.
     capture_mode: Literal["single_shot", "continuous"] = "single_shot"
     sim: CameraSimConfig = CameraSimConfig()
     # Stream colour (8-bit Bayer, debayered to BGR) instead of mono. Only
@@ -336,6 +341,14 @@ class IndexerConfig(BaseModel):
     # would be the specific physical claim "sensor sits exactly at the
     # slot boundary," which isn't a safe default to assume silently.
     entry_sensor_mid_offset_pulses: int
+    # Revolution-length alarm (warn only): each time encoder_indexer_ppr
+    # resets at an indexer revolution, the count it reached must be at least
+    # this % of encoder_cpr, or a warning is logged and shown on the
+    # Inspection page -- pulses were lost that revolution (slipping encoder
+    # coupling, loose A/B wire, PLC missing pulses, wrong encoder_cpr).
+    # Found the hard way 2026-09-24: a slipped coupling reset at ~1500/4800
+    # and silently broke tracking. See docs/incidents/.
+    min_revolution_pct: float = Field(90.0, gt=0, le=100)
 
     @property
     def _requested_n_slots(self) -> int:
