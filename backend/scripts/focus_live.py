@@ -765,8 +765,16 @@ def main() -> None:
     # Ctrl+C already raises KeyboardInterrupt; make `kill` unwind cleanly too.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
-    infos = system.device_infos
-    matches = [d for d in infos if d.get("ip") == args.ip]
+    # Discovery waits this long on every host interface; this arena_api
+    # defaults to 1000 ms (~9 s on this PC). Lucid cameras answer in 100 ms --
+    # fall back to the slow scan only if the camera isn't seen.
+    matches: list[dict] = []
+    for timeout_ms in (100, 1000):
+        system.DEVICE_INFOS_TIMEOUT_MILLISEC = timeout_ms
+        infos = system.device_infos
+        matches = [d for d in infos if d.get("ip") == args.ip]
+        if matches:
+            break
     if not matches:
         sys.exit(f"No camera at {args.ip}. Found: {[d.get('ip') for d in infos]}")
     info = matches[0]

@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import threading
+import time
 
 import cv2
 import numpy as np
@@ -46,6 +48,55 @@ import numpy as np
 from app.camera.camera_driver import CameraConnectionError, CameraDriver
 
 log = logging.getLogger("lucid_camera")
+
+# GigE discovery. system.device_infos broadcasts on EVERY host interface
+# (camera NICs, wifi, tailscale, docker bridges...) and waits the full
+# DEVICE_INFOS_TIMEOUT_MILLISEC on each one, in turn. This arena_api build
+# defaults it to 1000 ms (its docstring says 100), so on this host (9
+# interfaces) one scan took ~9.2 s -- once per camera, every session start.
+# Lucid cameras answer within 100 ms, so scan at that first (~1 s here), and
+# only fall back to the slow timeout if the wanted camera wasn't seen.
+DISCOVERY_FAST_TIMEOUT_MS = 100
+DISCOVERY_SLOW_TIMEOUT_MS = 1000
+# Cameras connected back-to-back in one session start share one scan.
+DISCOVERY_CACHE_TTL_S = 5.0
+
+_discovery_lock = threading.Lock()
+_discovery_cache: tuple[float, list[dict]] | None = None
+
+
+def discover_device(system, ip: str, clock=time.monotonic) -> tuple[dict | None, list[dict]]:
+    """Find the device_info for `ip`. Returns (match or None, all infos seen).
+
+    Order: recent cached scan -> fresh fast scan -> one slow scan. The slow
+    scan only runs when the camera is genuinely missing (or answers late),
+    so a camera that's there costs ~1 s, and a second camera in the same
+    session start costs nothing."""
+    global _discovery_cache
+
+    def find(infos: list[dict]) -> dict | None:
+        return next((d for d in infos if d.get("ip") == ip), None)
+
+    with _discovery_lock:
+        if _discovery_cache is not None and clock() - _discovery_cache[0] < DISCOVERY_CACHE_TTL_S:
+            match = find(_discovery_cache[1])
+            if match is not None:
+                return match, _discovery_cache[1]
+
+        infos: list[dict] = []
+        for timeout_ms in (DISCOVERY_FAST_TIMEOUT_MS, DISCOVERY_SLOW_TIMEOUT_MS):
+            system.DEVICE_INFOS_TIMEOUT_MILLISEC = timeout_ms
+            t0 = clock()
+            infos = list(system.device_infos)
+            _discovery_cache = (clock(), infos)
+            log.info(
+                f"GigE discovery ({timeout_ms} ms timeout) took {clock() - t0:.2f}s, "
+                f"found {[d.get('ip') for d in infos]}"
+            )
+            match = find(infos)
+            if match is not None:
+                return match, infos
+        return None, infos
 
 # GenICam 8-bit Bayer formats -> OpenCV codes. OpenCV names the pattern from
 # the second row/column, so GenICam "BayerRG" (RGGB) is OpenCV's BayerBG --
@@ -117,15 +168,15 @@ class LucidCamera(CameraDriver):
         # no filtering (single-camera setup). Fails loudly rather than
         # silently connecting to the wrong physical camera if this lookup
         # is off; confirm the 'ip' key name against real device_infos output.
-        matches = [d for d in system.device_infos if d.get("ip") == self.config.ip]
-        if not matches:
-            seen = [d.get("ip") for d in system.device_infos]
+        match, infos = discover_device(system, self.config.ip)
+        if match is None:
+            seen = [d.get("ip") for d in infos]
             raise CameraConnectionError(
                 f"{self.camera_id}: no Lucid device found at ip={self.config.ip} (seen: {seen})"
             )
 
         try:
-            devices = system.create_device(device_infos=[matches[0]])
+            devices = system.create_device(device_infos=[match])
             self._device = devices[0]
             self._configure(self._device)
             self._device.start_stream()
