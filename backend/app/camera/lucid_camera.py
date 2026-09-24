@@ -148,11 +148,29 @@ def to_bgr(raw: np.ndarray, pixel_format: str, color: bool) -> np.ndarray:
     return cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
 
 
+# Triggered capture (capture_mode: single_shot). The camera must report
+# TriggerArmed (ready for the next trigger) within this long before we give
+# up -- normally it's immediate; longer means it's still exposing/reading
+# out a previous frame or is wedged.
+TRIGGER_ARMED_TIMEOUT_S = 0.5
+# Max wait for a frame after the trigger: exposure + readout + transfer.
+FRAME_TIMEOUT_MS = 2000
+# Per-poll wait while draining leftover buffers before a trigger.
+DRAIN_TIMEOUT_MS = 1
+DRAIN_MAX_BUFFERS = 8
+
+
 class LucidCamera(CameraDriver):
     def __init__(self, camera_id, config):
         super().__init__(camera_id, config)
         self._device = None
         self._pixel_format = "Mono8"
+        # One capture at a time per camera: station fires run on their own
+        # threads, and two overlapping trigger->get_buffer sequences on the
+        # same device could each collect the other's frame.
+        self._capture_lock = threading.Lock()
+        self._trigger_armed = None
+        self._trigger_software = None
 
     def connect(self) -> None:
         try:
@@ -244,10 +262,14 @@ class LucidCamera(CameraDriver):
 
         self._configure_exposure_gain(nodemap)
         self._configure_strobe(nodemap)
+        self._configure_trigger(nodemap)
 
         stream_map = device.tl_stream_nodemap
         # "NewestOnly" (not gcm's "OldestFirst") -- matches this project's
         # own drop-old-frames convention for live feeds (CLAUDE.md Sec. 5.3).
+        # In single_shot mode each frame belongs to one trigger, and
+        # read_frame() drains anything left over before triggering, so
+        # NewestOnly can't hand back a previous part's frame either.
         stream_map["StreamBufferHandlingMode"].value = "NewestOnly"
         stream_map["StreamAutoNegotiatePacketSize"].value = True
         stream_map["StreamPacketResendEnable"].value = True
@@ -345,25 +367,85 @@ class LucidCamera(CameraDriver):
             f"{' (inverted)' if strobe.inverted else ''}"
         )
 
+    def _configure_trigger(self, nodemap) -> None:
+        """capture_mode -> camera trigger setup.
+
+        single_shot: the camera waits for a software trigger and exposes
+        exactly one frame per read_frame() -- the picture is taken when the
+        station fires, not up to a frame period earlier, and the strobe
+        (ExposureActive) flashes once per part instead of at the free-run
+        fps. continuous: free-run at fps, read_frame() returns the newest
+        frame (the old behavior); TriggerMode is set Off explicitly so a
+        camera left in trigger mode by another tool doesn't hang it.
+        """
+        nodemap.get_node("TriggerSelector").value = "FrameStart"
+        trigger_mode = nodemap.get_node("TriggerMode")
+        # TriggerSource is only guaranteed writable with the trigger off.
+        trigger_mode.value = "Off"
+        if self.config.capture_mode == "single_shot":
+            nodemap.get_node("TriggerSource").value = "Software"
+            trigger_mode.value = "On"
+            self._trigger_armed = nodemap.get_node("TriggerArmed")
+            self._trigger_software = nodemap.get_node("TriggerSoftware")
+            log.info(f"{self.camera_id}: triggered capture (software trigger, 1 frame per read)")
+        else:
+            self._trigger_armed = self._trigger_software = None
+            log.info(f"{self.camera_id}: continuous capture (free-run at {self.config.fps} fps)")
+
+    def _drain_stale_buffers(self) -> None:
+        """Requeue any frame already waiting (a late frame from a previous
+        trigger whose read timed out) so this trigger's get_buffer() can't
+        return it. Costs ~DRAIN_TIMEOUT_MS when the queue is empty."""
+        for _ in range(DRAIN_MAX_BUFFERS):
+            try:
+                stale = self._device.get_buffer(timeout=DRAIN_TIMEOUT_MS)
+            except Exception:  # noqa: BLE001 -- timeout = queue empty, the normal case
+                return
+            self._device.requeue_buffer(stale)
+            log.warning(f"{self.camera_id}: discarded a stale frame before triggering")
+
+    def _fire_software_trigger(self) -> None:
+        self._drain_stale_buffers()
+        deadline = time.monotonic() + TRIGGER_ARMED_TIMEOUT_S
+        while not self._trigger_armed.value:
+            if time.monotonic() > deadline:
+                raise CameraConnectionError(
+                    f"{self.camera_id}: camera not armed for a trigger within "
+                    f"{TRIGGER_ARMED_TIMEOUT_S * 1000:.0f} ms (still busy with the previous frame?)"
+                )
+            time.sleep(0.0005)
+        self._trigger_software.execute()
+
     def read_frame(self) -> np.ndarray:
-        """gcm's proven ctypes buffer->numpy pattern (standalone_lucid.py:233-250)."""
+        """single_shot: trigger one exposure now and return it.
+        continuous: return the newest free-run frame.
+        Buffer -> numpy is gcm's proven ctypes pattern (standalone_lucid.py:233-250)."""
         if self._device is None:
             raise CameraConnectionError(
                 f"{self.camera_id}: read_frame() called before a successful connect()"
             )
 
-        try:
-            buffer = self._device.get_buffer(timeout=2000)
-        except Exception as e:
-            raise CameraConnectionError(f"{self.camera_id}: get_buffer() failed: {e}") from e
+        with self._capture_lock:
+            if self._trigger_software is not None:
+                try:
+                    self._fire_software_trigger()
+                except CameraConnectionError:
+                    raise
+                except Exception as e:
+                    raise CameraConnectionError(f"{self.camera_id}: software trigger failed: {e}") from e
 
-        try:
-            arr = (ctypes.c_ubyte * (buffer.width * buffer.height)).from_address(
-                ctypes.addressof(buffer.pbytes)
-            )
-            raw = np.ndarray(buffer=arr, dtype=np.uint8, shape=(buffer.height, buffer.width)).copy()
-        finally:
-            self._device.requeue_buffer(buffer)
+            try:
+                buffer = self._device.get_buffer(timeout=FRAME_TIMEOUT_MS)
+            except Exception as e:
+                raise CameraConnectionError(f"{self.camera_id}: get_buffer() failed: {e}") from e
+
+            try:
+                arr = (ctypes.c_ubyte * (buffer.width * buffer.height)).from_address(
+                    ctypes.addressof(buffer.pbytes)
+                )
+                raw = np.ndarray(buffer=arr, dtype=np.uint8, shape=(buffer.height, buffer.width)).copy()
+            finally:
+                self._device.requeue_buffer(buffer)
 
         return to_bgr(raw, self._pixel_format, self.config.color)
 
