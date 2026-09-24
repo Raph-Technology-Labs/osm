@@ -17,6 +17,7 @@ remembering. Quick typos caught before running don't need one.
 
 | Date | Report | Area | Severity | Status |
 |---|---|---|---|---|
+| 2026-09-24 | [Twin frozen / cameras not firing: encoder slipped on motor shaft](2026-09-24-encoder-slipped-on-motor-shaft.md) | Indexer hardware / PLC | High | Root cause found; coupling fix pending |
 | 2026-09-24 | [Phantom revolution wraps from encoder dither](2026-09-24-phantom-revolution-wraps.md) | Indexer / dispatcher | High | Fixed `5a7444b` |
 | 2026-09-24 | [Station 2 camera behind a 100 Mbit switch](2026-09-24-cam2-100mbit-link.md) | Network / camera | High | Fixed (switch replaced) + `5a7444b` |
 | 2026-09-24 | [Dispatcher has no tick source: PLC offline at startup](2026-09-24-plc-offline-at-startup.md) | PLC / session start | High | Worked around; follow-up open |

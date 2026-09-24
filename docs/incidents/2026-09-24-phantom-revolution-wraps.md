@@ -73,3 +73,12 @@ PLC never produces backward motion, so the bug only showed up on real hardware.
   grows over time, points to play in the coupling or gearbox.
 - Consider making the sim PLC able to inject dither and roll-back, so sim runs
   exercise this path.
+
+## Update (later on 2026-09-24)
+The encoder turned out to be **slipping on the motor shaft**: a revolution
+ended at ~1500 counts instead of 4800 (see
+[encoder slipped on motor shaft](2026-09-24-encoder-slipped-on-motor-shaft.md)).
+So the large "wraps" in the symptom log were partly these short slip
+revolutions, not only standstill dither. The old formula padded each one
+back to 4800 and hid the slip. The fix here still stands: after it, a short
+revolution freezes the twin visibly instead of silently mis-tracking.
