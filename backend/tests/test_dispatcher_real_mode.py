@@ -85,6 +85,7 @@ class FakeInspectionStation:
     type: str = "inspection"
     station_offset_pulses: int = 0
     trigger_latency_ms: float = 0.0
+    trigger: str = "pulse"
 
 
 @dataclass
@@ -886,7 +887,7 @@ class _FakeTimer:
         self.function(*self.args)
 
 
-def _precise_setup(monkeypatch, offset=300, clock_step_ms=50.0):
+def _precise_setup(monkeypatch, offset=300, clock_step_ms=50.0, trigger="pulse"):
     """s1 at `offset` pulses; first sensor edge homes AND admits a part at
     home-relative 0 (slot 0). Returns (dispatcher, tracker, step) where
     step(pulse, sensor) runs one tick with the clock advanced."""
@@ -899,6 +900,7 @@ def _precise_setup(monkeypatch, offset=300, clock_step_ms=50.0):
 
     dispatcher, tracker, plc = make_real_dispatcher(n_slots=75, encoder_cpr=4800, inspection_ids=("s1",))
     dispatcher.resolved_config.stations[0].station_offset_pulses = offset
+    dispatcher.resolved_config.stations[0].trigger = trigger
 
     def step(pulse, sensor=False):
         clock["ms"] += clock_step_ms
@@ -975,3 +977,21 @@ def test_stop_cancels_pending_capture_timers(monkeypatch):
     assert timers
     d.stop()
     assert all(t.cancelled for t in timers)
+
+
+def test_trigger_slot_station_uses_slot_change_not_the_part_pulse(monkeypatch):
+    # trigger: slot -- the legacy behaviour, even though the part has a
+    # detection pulse: no pulse target/timer; fires when the slot changes.
+    d, tracker, step = _precise_setup(monkeypatch, offset=300, trigger="slot")
+    # the part's slot is under s1 (tracker offset 0) on the detection tick
+    assert d.station_registry.fired == ["s1"]
+    for pulse in (1110, 1210, 1310, 1410):  # past the pulse target: nothing extra
+        step(pulse)
+    assert _capture_timers() == []
+    assert d.station_registry.fired == ["s1"]
+
+
+def test_trigger_defaults_to_pulse_in_config():
+    from app.config.config_loader import InspectionStation
+
+    assert InspectionStation.model_fields["trigger"].default == "pulse"

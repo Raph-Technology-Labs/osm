@@ -533,7 +533,11 @@ class StationDispatcher:
             record = self.tracker.get_slot(slot_id)
             if record.assign_part_id is None:
                 continue
-            if station.type == "inspection" and record.pulse_count_at_detection is not None:
+            if (
+                station.type == "inspection"
+                and getattr(station, "trigger", "pulse") == "pulse"
+                and record.pulse_count_at_detection is not None
+            ):
                 continue  # spec16: fired pulse-precisely by _dispatch_inspection_captures()
 
             if station.type == "exit":
@@ -660,6 +664,8 @@ class StationDispatcher:
         tick_ms = self._current_interval_s() * 1000
         half_slot = self.tracker.pulses_per_slot // 2
         for station in self.resolved_config.inspection_stations():
+            if getattr(station, "trigger", "pulse") != "pulse":
+                continue  # trigger: slot -- fired by the slot-change loop
             for slot_id in range(self.tracker.n_slots):
                 record = self.tracker.get_slot(slot_id)
                 detection = record.pulse_count_at_detection

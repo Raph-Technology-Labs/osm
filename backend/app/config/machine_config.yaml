@@ -204,6 +204,7 @@ stations:
     # (π·500 mm / 4800); increase if the part hasn't reached the centre yet,
     # decrease if it's past. Same meaning for every inspection station.
     station_offset_pulses: 267 # CONFIRMED -- measured 20deg from the presence sensor at encoder_cpr=4800 (per explicit instruction, 2026-09-11)
+    trigger: pulse # when the cameras fire: pulse = at the part's own position (centred, default) | slot = legacy slot-change (part lands anywhere within ~1 slot; big FOV only)
 
     cameras:
       cam1:
@@ -286,6 +287,7 @@ stations:
     name: "Station 2 - Defect Detection"
     type: inspection
     station_offset_pulses: 1595 # CALIBRATED 2026-09-28 on the machine: with spec16 pulse-precise firing the s2 part lands centred in cam2's FOV. See s1's note above for what this does and how to re-centre.
+    trigger: pulse # when the cameras fire: pulse = at the part's own position (centred, default) | slot = legacy slot-change (part lands anywhere within ~1 slot; big FOV only)
 
     cameras:
       cam2:

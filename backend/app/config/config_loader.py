@@ -216,6 +216,16 @@ class InspectionStation(BaseModel):
     # trigger latency). Subtracted from the target pulse so the exposure,
     # not the fire call, lands on station_offset_pulses. 0 until measured.
     trigger_latency_ms: float = Field(0.0, ge=0)
+    # When this station's cameras fire (real-PLC mode):
+    #   pulse -- spec16: at the part's own detection pulse + station_offset_pulses,
+    #            between ticks if needed; the part lands at the same spot in
+    #            the FOV every time. Default -- right for any FOV size.
+    #   slot  -- legacy: when the station's slot index changes, noticed on
+    #            the next tick; the part can land anywhere within ~one slot
+    #            plus one tick. Only for a big FOV where centring doesn't
+    #            matter, or to run without relying on detection pulses.
+    # Sim mode and parts with no detection pulse always use slot.
+    trigger: Literal["pulse", "slot"] = "pulse"
     cameras: Dict[str, CameraConfig]
     pipeline: InspectionPipeline
 

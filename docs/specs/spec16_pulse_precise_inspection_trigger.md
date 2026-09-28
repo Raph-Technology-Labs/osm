@@ -42,6 +42,10 @@ own detection pulse (spec12).
   whatever is there now would judge the wrong part.
 - **Fallback:** a part with no detection pulse, and sim mode (`_tick_sim`),
   keep the slot-change trigger unchanged.
+- **Per-station choice:** `trigger: pulse | slot` on each inspection station
+  (default `pulse`). `slot` restores the legacy slot-change firing for that
+  station. It's only meant for a large FOV where centring doesn't matter, or
+  to run without relying on detection pulses. `pulse` is correct for any FOV.
 - Each fire logs its target pulse and position, for calibrating
   `station_offset_pulses`.
 
