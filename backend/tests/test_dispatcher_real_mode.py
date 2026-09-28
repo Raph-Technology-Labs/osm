@@ -83,6 +83,8 @@ class FakeRejectStation:
 class FakeInspectionStation:
     id: str
     type: str = "inspection"
+    station_offset_pulses: int = 0
+    trigger_latency_ms: float = 0.0
 
 
 @dataclass
@@ -881,3 +883,120 @@ def test_encoder_alarm_is_published_with_ring_state(monkeypatch):
     )
     _run(_ramp(3000, 4700) + _ramp(50, 1450) + [20])
     assert sent[-1] is not None and sent[-1]["reached"] == 1550
+
+
+# --------------------------------------------------------------------------- #
+# spec16: pulse-precise inspection firing
+# --------------------------------------------------------------------------- #
+class _FakeTimer:
+    created: list = []
+
+    def __init__(self, interval, function, args=()):
+        self.interval, self.function, self.args = interval, function, args
+        self.cancelled = False
+        _FakeTimer.created.append(self)
+
+    daemon = True
+
+    def start(self):
+        pass
+
+    def cancel(self):
+        self.cancelled = True
+
+    def is_alive(self):
+        return not self.cancelled
+
+    def fire(self):
+        self.function(*self.args)
+
+
+def _precise_setup(monkeypatch, offset=300, clock_step_ms=50.0):
+    """s1 at `offset` pulses; first sensor edge homes AND admits a part at
+    home-relative 0 (slot 0). Returns (dispatcher, tracker, step) where
+    step(pulse, sensor) runs one tick with the clock advanced."""
+    import app.indexer.dispatcher as dm
+
+    clock = {"ms": 1_000_000.0}
+    monkeypatch.setattr(dm.time, "monotonic", lambda: clock["ms"] / 1000)
+    _FakeTimer.created = []
+    monkeypatch.setattr(dm.threading, "Timer", _FakeTimer)
+
+    dispatcher, tracker, plc = make_real_dispatcher(n_slots=75, encoder_cpr=4800, inspection_ids=("s1",))
+    dispatcher.resolved_config.stations[0].station_offset_pulses = offset
+
+    def step(pulse, sensor=False):
+        clock["ms"] += clock_step_ms
+        plc.queue(PULSE_COUNT_REG, [pulse])
+        plc.queue(PART_SENSOR_REG, [sensor])
+        dispatcher._tick_real()
+
+    step(1000)          # baseline
+    step(1010, True)    # edge: home + part detected at home-relative 0
+    return dispatcher, tracker, step
+
+
+def _capture_timers():
+    return [t for t in _FakeTimer.created if getattr(t.function, "__name__", "") == "_fire_inspection_capture"]
+
+
+def test_inspection_fires_between_ticks_at_the_part_target(monkeypatch):
+    d, tracker, step = _precise_setup(monkeypatch, offset=300)
+    step(1110)  # home-rel 100
+    step(1210)  # home-rel 200: target 300 is within the next tick (2 p/ms * 50 ms)
+    timers = _capture_timers()
+    assert len(timers) == 1
+    assert abs(timers[0].interval - 0.05) < 1e-9  # (300-200) / 2 p/ms = 50 ms
+    assert d.station_registry.fired == []
+    timers[0].fire()
+    assert d.station_registry.fired == ["s1"]
+
+
+def test_inspection_fires_once_per_part_across_ticks(monkeypatch):
+    d, tracker, step = _precise_setup(monkeypatch, offset=300)
+    for pulse in (1110, 1210, 1310, 1410, 1510, 1610, 1710):
+        step(pulse)
+    for t in _capture_timers():
+        t.fire()
+    assert d.station_registry.fired == ["s1"]  # not re-fired on slot changes or later ticks
+
+
+def test_without_a_measured_rate_fires_on_the_crossing_tick(monkeypatch):
+    d, tracker, step = _precise_setup(monkeypatch, offset=300, clock_step_ms=0.0)  # rate stays 0
+    step(1210)
+    assert d.station_registry.fired == []
+    step(1320)  # home-rel 310: 10 past target, <= half slot (32) -> fire now
+    assert d.station_registry.fired == ["s1"]
+    assert _capture_timers() == []
+
+
+def test_capture_missed_by_more_than_half_a_slot_records_nok_not_a_wrong_image(monkeypatch):
+    d, tracker, step = _precise_setup(monkeypatch, offset=300, clock_step_ms=0.0)
+    step(1410)  # home-rel 400: 100 past target (> 32)
+    assert d.station_registry.fired == []
+    assert tracker.get_slot(0).station_states["s1"] == "nok"
+
+
+def test_scheduled_capture_skips_if_the_slot_changed_occupant(monkeypatch):
+    d, tracker, step = _precise_setup(monkeypatch, offset=300)
+    d._fire_inspection_capture("s1", 0, "someone-else", 300)
+    assert d.station_registry.fired == []
+
+
+def test_target_includes_mid_offset_and_trigger_latency(monkeypatch):
+    d, tracker, step = _precise_setup(monkeypatch, offset=300)
+    station = d.resolved_config.stations[0]
+    d.resolved_config.indexer.entry_sensor_mid_offset_pulses = 20
+    station.trigger_latency_ms = 10.0
+    d._pulses_per_ms = 2.0
+    assert d._capture_target_pulse(station, 0) == 0 - 20 + 300 - 20
+
+
+def test_stop_cancels_pending_capture_timers(monkeypatch):
+    d, tracker, step = _precise_setup(monkeypatch, offset=300)
+    step(1110)
+    step(1210)
+    timers = _capture_timers()
+    assert timers
+    d.stop()
+    assert all(t.cancelled for t in timers)

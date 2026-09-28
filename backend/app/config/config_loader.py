@@ -211,6 +211,11 @@ class InspectionStation(BaseModel):
     name: str
     type: Literal["inspection"] = "inspection"
     station_offset_pulses: int
+    # spec16: time from the dispatcher firing this station to the cameras
+    # actually starting exposure (software trigger + GigE command + camera
+    # trigger latency). Subtracted from the target pulse so the exposure,
+    # not the fire call, lands on station_offset_pulses. 0 until measured.
+    trigger_latency_ms: float = Field(0.0, ge=0)
     cameras: Dict[str, CameraConfig]
     pipeline: InspectionPipeline
 

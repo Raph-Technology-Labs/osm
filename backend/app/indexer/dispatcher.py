@@ -176,6 +176,12 @@ class StationDispatcher:
             self._rev_last_step = 0
             self._rev_checked = 0
             self.encoder_alarm: Optional[dict] = None
+            # spec16 pulse-precise inspection firing. (station_id, slot_id)
+            # -> pulse_count_at_detection of the occupant already handled
+            # (fired, scheduled or missed), so each part fires once per
+            # station however many ticks see it.
+            self._capture_handled: Dict[Tuple[str, int], int] = {}
+            self._capture_timers: list = []
             # None (not False) -- there's no genuine prior reading on the
             # first-ever poll this session, so we can't yet tell a real
             # rising edge from a sensor that just happens to already read
@@ -551,6 +557,8 @@ class StationDispatcher:
             record = self.tracker.get_slot(slot_id)
             if record.assign_part_id is None:
                 continue
+            if station.type == "inspection" and record.pulse_count_at_detection is not None:
+                continue  # spec16: fired pulse-precisely by _dispatch_inspection_captures()
 
             if station.type == "exit":
                 log.info(
@@ -572,6 +580,9 @@ class StationDispatcher:
                 )
                 self.tracker.mark_pending(slot_id, station.id)
                 self.station_registry.fire_station(station.id, slot_id=slot_id, part_id=record.assign_part_id)
+
+        # -- 3b. Inspection cameras: pulse-precise (spec16).
+        self._dispatch_inspection_captures()
 
         # -- 4. Reject: pulse-precise, not slot-changed. reject_stations()
         # is already sorted ring-order (station_offset_pulses ascending) --
@@ -646,6 +657,95 @@ class StationDispatcher:
                 log.debug("encoder revolution OK: %d of %d (%.1f%%)", reached, cpr, pct)
         self._rev_peak = raw_pulse
         self._rev_last_step = 0
+
+    # ------------------------------------------------------------------ #
+    # spec16: pulse-precise inspection-station firing
+    # ------------------------------------------------------------------ #
+    def _capture_target_pulse(self, station, detection_pulse: int) -> int:
+        """Same corrected-detection term as the reject target (spec12), plus
+        the station's offset, minus its trigger latency."""
+        indexer = self.resolved_config.indexer
+        sim_cfg = self.resolved_config.plc.sim
+        return (
+            detection_pulse
+            - indexer.entry_sensor_mid_offset_pulses
+            - self._ms_to_pulses(sim_cfg.entry_sensor_response_delay_ms)
+            + station.station_offset_pulses
+            - self._ms_to_pulses(getattr(station, "trigger_latency_ms", 0.0))
+        )
+
+    def _dispatch_inspection_captures(self) -> None:
+        """Every tick: for each inspection station and each occupied slot
+        whose part has a detection pulse, fire the station's cameras when
+        the ring reaches that part's target -- now if it's already crossed
+        (late <= half a slot), on a one-shot timer if it falls before the
+        next tick, or record a NOK miss if it's already long gone."""
+        now = self._home_relative_pulses
+        rate = self._pulses_per_ms
+        tick_ms = self._current_interval_s() * 1000
+        half_slot = self.tracker.pulses_per_slot // 2
+        for station in self.resolved_config.inspection_stations():
+            for slot_id in range(self.tracker.n_slots):
+                record = self.tracker.get_slot(slot_id)
+                detection = record.pulse_count_at_detection
+                if record.assign_part_id is None or detection is None:
+                    continue
+                key = (station.id, slot_id)
+                if self._capture_handled.get(key) == detection:
+                    continue
+                target = self._capture_target_pulse(station, detection)
+                part_id = record.assign_part_id
+                ahead = target - now
+                if ahead <= 0:
+                    self._capture_handled[key] = detection
+                    if -ahead > half_slot:
+                        log.error(
+                            "Part %r MISSED at inspection station %s (slot %d): ring is %d pulses "
+                            "past its capture target %d -- not imaging the wrong part; recording NOK",
+                            part_id, station.id, slot_id, -ahead, target,
+                        )
+                        self.tracker.mark_pending(slot_id, station.id, part_id=part_id)
+                        self.tracker.apply_station_result(slot_id, station.id, passed=False, part_id=part_id)
+                        continue
+                    if -ahead > 0:
+                        log.warning(
+                            "Part %r fired %d pulses late at inspection station %s (slot %d)",
+                            part_id, -ahead, station.id, slot_id,
+                        )
+                    self._fire_inspection_capture(station.id, slot_id, part_id, target)
+                elif rate > 0 and ahead <= rate * tick_ms:
+                    # Lands before the next tick: fire between ticks.
+                    self._capture_handled[key] = detection
+                    delay_s = ahead / rate / 1000
+                    timer = threading.Timer(
+                        delay_s, self._fire_inspection_capture,
+                        args=(station.id, slot_id, part_id, target),
+                    )
+                    timer.daemon = True
+                    self._capture_timers = [t for t in self._capture_timers if t.is_alive()] + [timer]
+                    timer.start()
+
+    def _fire_inspection_capture(self, station_id: str, slot_id: int, part_id, target: int) -> None:
+        """Fire one inspection station for one part. Runs on the tick thread
+        or a spec16 timer; re-checks the slot still holds this part."""
+        if self._stopped:
+            return
+        record = self.tracker.get_slot(slot_id)
+        if record.assign_part_id != part_id:
+            log.info(
+                "Skipping capture at %s for part %r: slot %d now holds %r",
+                station_id, part_id, slot_id, record.assign_part_id,
+            )
+            return
+        est_now = self._home_relative_pulses
+        if self._last_rate_sample_ts_ms is not None:  # extrapolate from the last tick
+            est_now += round(self._pulses_per_ms * (time.monotonic() * 1000 - self._last_rate_sample_ts_ms))
+        log.info(
+            "Part %r fired at inspection station %s (slot %d): target_pulse=%d, est_pulse=%d "
+            "(error %+d)", part_id, station_id, slot_id, target, est_now, est_now - target,
+        )
+        self.tracker.mark_pending(slot_id, station_id, part_id=part_id)
+        self.station_registry.fire_station(station_id, slot_id=slot_id, part_id=part_id)
 
     def _pulse_debug_snapshot(self) -> dict:
         """TEMP (2026-09-24): every number the slot calculation uses, for the
@@ -951,6 +1051,8 @@ class StationDispatcher:
         seed_sim(), which is only safe once dispatch has genuinely
         stopped) a real "fully stopped" guarantee."""
         self._stopped = True
+        for t in getattr(self, "_capture_timers", []):  # spec16 one-shot capture timers
+            t.cancel()
         for _ in range(2):
             timer = self._timer
             if timer is None:

@@ -195,6 +195,14 @@ stations:
   - id: s1
     name: "Station 1 - Dimension Measurement"
     type: inspection
+    # station_offset_pulses (spec16): encoder pulses from the part-sensor
+    # detection of a part to this station's capture point (camera FOV
+    # centre). The camera fires when the ring has moved exactly this far past
+    # THAT part's own detection pulse -- pulse-precise, between ticks if
+    # needed -- so every part is imaged at the same spot, wherever it sits
+    # in its slot. Re-centre: move by Δ = offset_mm / 0.327 pulses
+    # (π·500 mm / 4800); increase if the part hasn't reached the centre yet,
+    # decrease if it's past. Same meaning for every inspection station.
     station_offset_pulses: 267 # CONFIRMED -- measured 20deg from the presence sensor at encoder_cpr=4800 (per explicit instruction, 2026-09-11)
 
     cameras:
@@ -277,7 +285,7 @@ stations:
   - id: s2
     name: "Station 2 - Defect Detection"
     type: inspection
-    station_offset_pulses: 1000 # PLACEHOLDER
+    station_offset_pulses: 1595 # CALIBRATED 2026-09-28 on the machine: with spec16 pulse-precise firing the s2 part lands centred in cam2's FOV. See s1's note above for what this does and how to re-centre.
 
     cameras:
       cam2:
@@ -288,12 +296,12 @@ stations:
         roi: { x1: 0, y1: 0, x2: 1920, y2: 1080 }
         capture_mode: single_shot
         strobe_reg: 19
-        strobe_capture_delay_ms: 50 # PLACEHOLDER -- see cam1's note above
+        strobe_capture_delay_ms: 0 # PLACEHOLDER -- see cam1's note above
         color: false # TRI023S-C is a colour sensor, but models are trained on mono -- true switches to colour (debayered BGR)
-        exposure_us: 3300 # microseconds, auto off; also the strobe pulse length. From focus_live tuning on this camera (2026-09-24) -- re-check after lens/light changes
-        gain_db: 3.4 # dB, auto off. From the same focus_live session
+        exposure_us: 1800 # microseconds, auto off; also the strobe pulse length. Tuned on the machine 2026-09-28 -- re-check after lens/light changes
+        gain_db: 3.0 # dB, auto off. Tuned with the exposure above
         throughput_limit_mbps: 600 # stream bandwidth cap in Mbit/s -- shares the 192.168.7.x switch with the PLC; 1920x1080 @ 30 fps Mono8 needs ~500. Needs enp4s0 at 1 Gb/s (it links at 100 Mb/s today)
-        strobe: { enabled: true, line: Line1 } # camera-driven strobe (StrobeConfig): light controller on this camera's Line1, pulsed for the exposure time of every frame
+        strobe: { enabled: true, line: Line1, inverted: false } # inverted flips the STROBE SIGNAL polarity only (not the image) -- true made the light stay on except during exposure (2026-09-28); camera-driven strobe (StrobeConfig): light controller on this camera's Line1, pulsed for the exposure time of every frame
         sim:
           enabled: false
           image_path: "/home/snehal-dev/osm/osm_5044_rimcut_thard_air" # cat1-3.jpg -> NOK (real "cat" detections). noncatN_placeholder.jpg
