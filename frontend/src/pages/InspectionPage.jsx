@@ -7,7 +7,6 @@ import api from "../api/axios";
 import useLiveEvents from "../hooks/useLiveEvents";
 import useGridCapacity from "../hooks/useGridCapacity";
 import DigitalTwin from "../components/inspection/DigitalTwin";
-import PulseDebug from "../components/inspection/PulseDebug"; // TEMP pulse debug
 import EncoderAlarm from "../components/inspection/EncoderAlarm";
 import PageTabs from "../components/inspection/PageTabs";
 import StationCell from "../components/inspection/StationCell";
@@ -392,9 +391,6 @@ const InspectionPage = () => {
         </Box>
 
         <EncoderAlarm alarm={ringState?.encoder_alarm} />
-
-        {/* TEMP: live slot-calculation inputs, see PulseDebug.jsx */}
-        <PulseDebug debug={ringState?.debug} />
 
         <SessionBreakdown analysis={analysis} />
       </Box>

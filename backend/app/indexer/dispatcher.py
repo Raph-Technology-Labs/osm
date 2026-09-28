@@ -157,16 +157,6 @@ class StationDispatcher:
             # spec12 real-mode state -- see _tick_real()'s docstring.
             self._real_accumulated_pulses = 0
             self._last_raw_pulse_count: Optional[int] = None
-            # TEMP pulse debug (2026-09-24): surfaced to the Inspection page
-            # via publish_ring_state(debug=...) to diagnose "twin not
-            # rotating" on real hardware. See _pulse_debug_snapshot().
-            self._dbg_raw_pulse: Optional[int] = None
-            self._dbg_gap = 0
-            self._dbg_last_back_by = 0
-            self._dbg_backward_ticks = 0
-            self._dbg_backward_counts = 0
-            self._dbg_part_sensor: Optional[bool] = None
-            self._dbg_tick_ms = 0.0
             # Revolution-length alarm (warn only) -- see
             # _check_revolution_length(). _rev_peak is None until the first
             # PLC reset this session: the revolution in progress at session
@@ -357,7 +347,7 @@ class StationDispatcher:
                 self.tracker.mark_pending(slot_id, station.id, part_id=record.assign_part_id)
                 self.station_registry.fire_station(station.id, slot_id=slot_id, part_id=record.assign_part_id)
 
-        zeromq.publish_ring_state(self.tracker, revolutions=self.tracker.revolutions)  # sim: no pulse debug
+        zeromq.publish_ring_state(self.tracker, revolutions=self.tracker.revolutions)
         self._schedule_tick()
 
     def _try_assign_entry(self) -> None:
@@ -458,19 +448,7 @@ class StationDispatcher:
             raw_pulse, gap, self._real_accumulated_pulses + gap,
         )
         self._real_accumulated_pulses += gap
-        prev_sample_ts_ms = self._last_rate_sample_ts_ms
         self._update_pulse_rate_sample()
-        if prev_sample_ts_ms is not None:  # reuse its timestamp, no extra clock read
-            self._dbg_tick_ms = self._last_rate_sample_ts_ms - prev_sample_ts_ms
-        # Debug: a backward STEP is raw below the previous reading (not below
-        # the high-water mark -- a count still catching up to it is rising).
-        if self._dbg_raw_pulse is not None:
-            step = (raw_pulse - self._dbg_raw_pulse) % cpr
-            if step > cpr // 2:
-                self._dbg_backward_ticks += 1
-                self._dbg_backward_counts += cpr - step
-                self._dbg_last_back_by = cpr - step
-        self._dbg_raw_pulse, self._dbg_gap = raw_pulse, gap
 
         # -- 2. Entry: real part_sensor rising-edge, one-shot latch.
         # ASSUMPTION (explicit instruction, 2026-09-08): part_sensor is a
@@ -489,7 +467,6 @@ class StationDispatcher:
         # read after this point goes through _home_relative_pulses, never
         # _real_accumulated_pulses directly.
         sensor_state = bool(pulse_sensor_batch[self._sensor_offset_in_batch])
-        self._dbg_part_sensor = sensor_state
         if self._last_part_sensor_state is None:
             # First-ever poll this session -- establish baseline only, no
             # edge fires. See __init__'s comment: an already-HIGH first
@@ -526,7 +503,6 @@ class StationDispatcher:
             zeromq.publish_ring_state(
                 self.tracker,
                 revolutions=self.tracker.revolutions,
-                debug=self._pulse_debug_snapshot(),
                 encoder_alarm=self.encoder_alarm,
             )
             self._schedule_tick()
@@ -597,7 +573,6 @@ class StationDispatcher:
         zeromq.publish_ring_state(
             self.tracker,
             revolutions=self.tracker.revolutions,
-            debug=self._pulse_debug_snapshot(),
             encoder_alarm=self.encoder_alarm,
         )
         self._schedule_tick()
@@ -746,44 +721,6 @@ class StationDispatcher:
         )
         self.tracker.mark_pending(slot_id, station_id, part_id=part_id)
         self.station_registry.fire_station(station_id, slot_id=slot_id, part_id=part_id)
-
-    def _pulse_debug_snapshot(self) -> dict:
-        """TEMP (2026-09-24): every number the slot calculation uses, for the
-        Inspection page's pulse-debug panel. Plain ints/floats/bools/None
-        only (JSON). Never raises -- it runs inside the tick, and an
-        exception here would stop the dispatcher."""
-        try:
-            cpr = self.tracker.encoder_cpr
-            homed = self.home_offset_pulses is not None
-            return {
-                "raw_pulse": self._dbg_raw_pulse,  # encoder_indexer_ppr as read
-                "high_water": self._last_raw_pulse_count,  # furthest-forward raw seen
-                "gap_last_tick": self._dbg_gap,
-                "accumulated": self._real_accumulated_pulses,
-                "home_offset": self.home_offset_pulses,
-                "home_relative": self._home_relative_pulses if homed else None,
-                "tracker_pulse": self.tracker.current_raw_pulse,  # fed to on_pulse_update
-                "pulses_per_slot": self.tracker.pulses_per_slot,
-                "entry_slot_id": self.tracker._entry_slot_id,
-                "encoder_cpr": cpr,
-                "part_sensor": self._dbg_part_sensor,
-                "backward_ticks": self._dbg_backward_ticks,
-                "backward_counts": self._dbg_backward_counts,
-                "last_back_by": self._dbg_last_back_by,
-                # how far raw is behind the high-water mark right now (0 = at it)
-                "below_high_water": (
-                    (self._last_raw_pulse_count - self._dbg_raw_pulse) % cpr
-                    if self._dbg_raw_pulse is not None and self._last_raw_pulse_count is not None
-                    else None
-                ),
-                "tick_ms": round(self._dbg_tick_ms, 1),
-                "rpm": round(self._pulses_per_ms * 60_000 / cpr, 2) if cpr else None,
-                "rev_peak_so_far": self._rev_peak,
-                "revolutions_checked": self._rev_checked,
-            }
-        except Exception:  # noqa: BLE001 -- debug must never stop the tick
-            log.debug("pulse debug snapshot failed", exc_info=True)
-            return {}
 
     def _update_pulse_rate_sample(self) -> None:
         """Measures the real, currently-observed pulses/ms from consecutive

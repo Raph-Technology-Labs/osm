@@ -775,31 +775,10 @@ def test_backward_move_across_the_zero_point_is_not_a_wrap():
     assert dispatcher._real_accumulated_pulses == 8
 
 
-def test_pulse_debug_snapshot_reports_slot_calculation_inputs():
-    # TEMP pulse-debug panel: must be JSON-safe and reflect backward holds.
-    import json
-
-    dispatcher, tracker, plc = make_real_dispatcher(n_slots=16, encoder_cpr=4800)
-    samples = [1124, 1130, 1128]
-    plc.queue(PULSE_COUNT_REG, samples)
-    plc.queue(PART_SENSOR_REG, [True, True, True])
-    for _ in samples:
-        dispatcher._tick_real()
-
-    snap = dispatcher._pulse_debug_snapshot()
-    json.dumps(snap)
-    assert snap["raw_pulse"] == 1128
-    assert snap["high_water"] == 1130
-    assert snap["accumulated"] == 6
-    assert snap["backward_ticks"] == 1 and snap["last_back_by"] == 2
-    assert snap["home_offset"] is None and snap["home_relative"] is None  # not homed yet
-    assert snap["part_sensor"] is True
-
-
-def test_pulse_debug_counts_real_backward_steps_not_ticks_below_high_water():
+def test_climbing_back_toward_high_water_is_not_counted_twice():
     # Pattern from the 2026-09-24 screen recording: raw drops once, then
-    # climbs back toward the high-water mark. Only the drop is a backward
-    # step; the climbing ticks below high-water are not.
+    # climbs back toward the high-water mark. Re-covering pulses already
+    # counted must add nothing.
     dispatcher, tracker, plc = make_real_dispatcher(n_slots=16, encoder_cpr=4800)
     samples = [1461, 1464, 1385, 1409, 1443, 1457]
     plc.queue(PULSE_COUNT_REG, samples)
@@ -807,12 +786,8 @@ def test_pulse_debug_counts_real_backward_steps_not_ticks_below_high_water():
     for _ in samples:
         dispatcher._tick_real()
 
-    snap = dispatcher._pulse_debug_snapshot()
-    assert snap["backward_ticks"] == 1
-    assert snap["backward_counts"] == 1464 - 1385
-    assert snap["last_back_by"] == 79
-    assert snap["below_high_water"] == 1464 - 1457
-    assert snap["accumulated"] == 3  # only 1461 -> 1464 counted
+    assert dispatcher._last_raw_pulse_count == 1464  # high-water held
+    assert dispatcher._real_accumulated_pulses == 3  # only 1461 -> 1464 counted
 
 
 # --------------------------------------------------------------------------- #
@@ -879,7 +854,7 @@ def test_encoder_alarm_is_published_with_ring_state(monkeypatch):
     sent = []
     monkeypatch.setattr(
         dispatcher_module.zeromq, "publish_ring_state",
-        lambda tracker, revolutions, debug=None, encoder_alarm=None: sent.append(encoder_alarm),
+        lambda tracker, revolutions, encoder_alarm=None: sent.append(encoder_alarm),
     )
     _run(_ramp(3000, 4700) + _ramp(50, 1450) + [20])
     assert sent[-1] is not None and sent[-1]["reached"] == 1550
