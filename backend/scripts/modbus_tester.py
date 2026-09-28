@@ -35,7 +35,7 @@ REGISTERS = {
     "pulse_count":             {"modicon": 40001, "type": "int",  "access": "r",  "table": "holding", "desc": "Encoder actual pulse"},
     "encoder_indexer_ppr":     {"modicon": 40002, "type": "int",  "access": "r",  "table": "holding", "desc": "Reset to 0 at indexer revolution"},
     "encoder_count":           {"modicon": 40003, "type": "long", "access": "r",  "table": "holding", "desc": "Total pulses, machine start to stop"},
-    "part_sensor":             {"modicon": 40004, "type": "bool", "access": "r",  "table": "holding", "desc": "Part detection at entry"},
+    "part_sensor":             {"modicon": 40004, "type": "bool", "access": "r",  "table": "holding", "desc": "Part detection at entry (active-low on this machine: 0 = part present)"},
     "heartbeat":               {"modicon": 40005, "type": "int",  "access": "r",  "table": "holding", "desc": "Per-slot heartbeat tick count (1,2,3...)"},
     "indexing_pulse":          {"modicon": 40006, "type": "bool", "access": "r",  "table": "holding", "desc": "0/1 after reset bit sent"},
     "heartbeat_per_slot":      {"modicon": 40007, "type": "int",  "access": "rw", "table": "holding", "desc": "PC-configured heartbeat cadence (pulses)"},

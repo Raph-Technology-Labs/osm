@@ -91,9 +91,7 @@ Why it wasn't caught sooner:
 - Re-secure the coupling, run the verification above, then remove the TEMP
   PULSE DEBUG panel (or keep it behind a debug flag).
 - Decide whether the revolution-length alarm should also stop the session after N short revolutions (warn only today).
-- The part sensor is inverted (1 = no part). Fix it at the sensor (dark-on /
-  NO output) or in the PLC, or add `part_sensor_active_low` to osm. Today parts
-  are admitted on the trailing edge (part leaving the sensor).
+- Inverted part sensor: option `plc.part_sensor_active_low` exists but is currently off (reverted 2026-09-28), see [part sensor inverted](2026-09-28-part-sensor-inverted.md).
 - Related: [phantom revolution wraps](2026-09-24-phantom-revolution-wraps.md).
   Its large "wraps" were partly these short slip revolutions, not only
   standstill dither.

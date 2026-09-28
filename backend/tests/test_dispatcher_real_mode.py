@@ -67,6 +67,7 @@ class FakeRealPlc:
     sim: FakeRealPlcSim = field(default_factory=FakeRealPlcSim)
     registers: FakeRegisters = field(default_factory=FakeRegisters)
     real_poll_interval_ms: float = 20.0
+    part_sensor_active_low: bool = False
 
 
 @dataclass
@@ -146,6 +147,9 @@ class FakePlcClient:
         # KeyError.
         return [int(self.queues[reg].pop(0)) if self.queues.get(reg) else 0 for reg in range(start_reg, start_reg + count)]
 
+    def reconnect(self) -> bool:
+        return True
+
     def write_register(self, reg: int, value: int) -> None:
         self.writes.append((reg, value))
 
@@ -187,7 +191,7 @@ def make_real_dispatcher(
     dispatcher = StationDispatcher(config, registry, tracker, plc_client=plc_client)
     # Drive _tick_real() directly and deterministically -- no real timer.
     dispatcher._stopped = False
-    dispatcher._schedule_tick = lambda: None
+    dispatcher._schedule_tick = lambda *a, **k: None
     return dispatcher, tracker, plc_client
 
 
@@ -855,7 +859,7 @@ def test_encoder_alarm_is_published_with_ring_state(monkeypatch):
     sent = []
     monkeypatch.setattr(
         dispatcher_module.zeromq, "publish_ring_state",
-        lambda tracker, revolutions, encoder_alarm=None: sent.append(encoder_alarm),
+        lambda tracker, revolutions, encoder_alarm=None, **_: sent.append(encoder_alarm),
     )
     _run(_ramp(3000, 4700) + _ramp(50, 1450) + [20])
     assert sent[-1] is not None and sent[-1]["reached"] == 1550
@@ -995,3 +999,172 @@ def test_trigger_defaults_to_pulse_in_config():
     from app.config.config_loader import InspectionStation
 
     assert InspectionStation.model_fields["trigger"].default == "pulse"
+
+
+# --------------------------------------------------------------------------- #
+# plc.part_sensor_active_low
+# --------------------------------------------------------------------------- #
+def _sensor_run(raw_levels, active_low):
+    dispatcher, tracker, plc = make_real_dispatcher(
+        n_slots=75, encoder_cpr=4800, plc=FakeRealPlc(part_sensor_active_low=active_low),
+    )
+    pulses = [1000 + 10 * i for i in range(len(raw_levels))]
+    plc.queue(PULSE_COUNT_REG, pulses)
+    plc.queue(PART_SENSOR_REG, raw_levels)
+    homes = []
+    for _ in raw_levels:
+        dispatcher._tick_real()
+        homes.append(dispatcher.home_offset_pulses)
+    return dispatcher, tracker, homes
+
+
+def test_active_low_sensor_admits_part_on_arrival_1_to_0():
+    # idle reads 1; the part ARRIVES when it drops to 0 (tick 3)
+    d, tracker, homes = _sensor_run([True, True, False, False, True], active_low=True)
+    assert homes[:2] == [None, None]
+    assert homes[2] == 20  # accumulated at the 1 -> 0 edge (1020 - 1000)
+    assert tracker.get_slot(0).assign_part_id is not None
+    assert tracker.get_slot(0).pulse_count_at_detection == 0  # home-relative, at arrival
+
+
+def test_active_low_part_leaving_0_to_1_is_not_a_detection():
+    # part already in front at session start (raw 0 = present) -> baseline only;
+    # it leaving (0 -> 1) must not admit anything
+    d, tracker, homes = _sensor_run([False, False, True, True], active_low=True)
+    assert all(h is None for h in homes)
+
+
+def test_active_low_idle_high_never_admits_a_phantom_part():
+    d, tracker, homes = _sensor_run([True] * 6, active_low=True)
+    assert all(h is None for h in homes)
+
+
+def test_default_active_high_still_admits_on_0_to_1():
+    d, tracker, homes = _sensor_run([False, False, True, True], active_low=False)
+    assert homes[2] == 20
+
+
+# --------------------------------------------------------------------------- #
+# PLC outage: the tick chain must survive and reconnect (2026-09-28)
+# --------------------------------------------------------------------------- #
+from app.plc.modbus_client import PLCConnectionError  # noqa: E402
+
+
+class _FlakyPlc(FakePlcClient):
+    """Reads fail while self.down; reconnect() succeeds only once
+    self.reconnect_ok is set."""
+
+    def __init__(self):
+        super().__init__()
+        self.down = False
+        self.reconnect_ok = False
+        self.reconnects = 0
+
+    def read_registers(self, start_reg, count):
+        if self.down:
+            raise PLCConnectionError("PLC unreachable: [Connection] Failed to connect")
+        return super().read_registers(start_reg, count)
+
+    def reconnect(self):
+        self.reconnects += 1
+        if not self.reconnect_ok:
+            raise PLCConnectionError("still down")
+        self.down = False
+        return True
+
+
+def _outage_setup(monkeypatch):
+    import app.indexer.dispatcher as dm
+
+    clock = {"ms": 1_000_000.0}
+    monkeypatch.setattr(dm.time, "monotonic", lambda: clock["ms"] / 1000)
+    _FakeTimer.created = []
+    monkeypatch.setattr(dm.threading, "Timer", _FakeTimer)
+    dispatcher, tracker, _ = make_real_dispatcher(n_slots=75, encoder_cpr=4800)
+    del dispatcher._schedule_tick  # use the real scheduler (Timer is faked above)
+    plc = _FlakyPlc()
+    dispatcher.plc_client = plc
+    return dispatcher, plc, clock
+
+
+def _last_tick_delay():
+    ticks = [t for t in _FakeTimer.created if getattr(t.function, "__name__", "") == "_tick_real_guarded"]
+    return ticks[-1].interval if ticks else None
+
+
+def test_plc_error_does_not_kill_the_tick_chain_and_backs_off(monkeypatch):
+    d, plc, clock = _outage_setup(monkeypatch)
+    plc.down = True
+    d._tick_real_guarded()  # must not raise
+    assert plc.reconnects == 1
+    assert _last_tick_delay() == 0.5
+    d._tick_real_guarded()
+    assert _last_tick_delay() == 1.0
+    for _ in range(6):
+        d._tick_real_guarded()
+    assert _last_tick_delay() == 5.0  # capped
+
+
+def test_plc_recovers_and_dispatch_resumes(monkeypatch):
+    d, plc, clock = _outage_setup(monkeypatch)
+    plc.queue(PULSE_COUNT_REG, [1000])
+    plc.queue(PART_SENSOR_REG, [False])
+    d._tick_real_guarded()  # healthy baseline
+    plc.down = True
+    d._tick_real_guarded()
+    assert d._plc_down_since is not None
+    clock["ms"] += 300
+    plc.reconnect_ok = True
+    d._tick_real_guarded()  # read fails -> reconnect succeeds -> normal interval
+    assert _last_tick_delay() == d._current_interval_s()
+    plc.queue(PULSE_COUNT_REG, [1010])
+    plc.queue(PART_SENSOR_REG, [False])
+    d._tick_real_guarded()  # first good read after the outage
+    assert d._plc_down_since is None
+    assert d.plc_outage is None  # short outage, disc barely moved: tracking kept
+    assert d._real_accumulated_pulses == 10
+
+
+def test_long_outage_at_speed_flags_tracking_unreliable(monkeypatch):
+    d, plc, clock = _outage_setup(monkeypatch)
+    plc.queue(PULSE_COUNT_REG, [1000])
+    plc.queue(PART_SENSOR_REG, [False])
+    d._tick_real_guarded()
+    d._pulses_per_ms = 2.0  # ~25 rpm at 4800 cpr
+    plc.down = True
+    d._tick_real_guarded()
+    clock["ms"] += 3000  # 3 s * 2 p/ms = 6000 pulses > half a revolution
+    plc.reconnect_ok = True
+    d._tick_real_guarded()
+    plc.queue(PULSE_COUNT_REG, [1100])
+    plc.queue(PART_SENSOR_REG, [False])
+    d._tick_real_guarded()
+    assert d.plc_outage is not None
+    assert d.plc_outage["tracking_valid"] is False and d.plc_outage["est_pulses"] >= 2400
+
+
+def test_unexpected_tick_error_is_logged_and_dispatch_continues(monkeypatch):
+    d, plc, clock = _outage_setup(monkeypatch)
+
+    def boom():
+        raise RuntimeError("bug in a tick")
+
+    monkeypatch.setattr(d, "_tick_real", boom)
+    d._tick_real_guarded()  # must not raise
+    assert _last_tick_delay() == d._current_interval_s()
+    assert plc.reconnects == 0  # not treated as a PLC outage
+
+
+
+def test_outage_logs_first_failure_then_every_10_s_not_every_attempt(monkeypatch, caplog):
+    import logging
+
+    d, plc, clock = _outage_setup(monkeypatch)
+    plc.down = True
+    caplog.set_level(logging.WARNING, logger="dispatcher")
+    for _ in range(12):  # 12 failed attempts, 2 s apart = 22 s down
+        d._tick_real_guarded()
+        clock["ms"] += 2000
+    still_down = [r for r in caplog.records if "still unreachable" in r.getMessage()]
+    assert len(still_down) == 3  # t=0, t=10, t=20 -- not 12
+    assert "12 reconnect" not in still_down[-1].getMessage()

@@ -17,11 +17,13 @@ remembering. Quick typos caught before running don't need one.
 
 | Date | Report | Area | Severity | Status |
 |---|---|---|---|---|
+| 2026-09-28 | [PLC link drop stopped the dispatcher for good (no reconnect)](2026-09-28-plc-outage-stopped-dispatcher.md) | Dispatcher / PLC | High | Fixed in code, HW re-test pending |
+| 2026-09-28 | [Entry part sensor inverted: parts detected when leaving](2026-09-28-part-sensor-inverted.md) | PLC input / dispatcher | Medium | Option added, reverted in config (flag false); open |
 | 2026-09-28 | [s2 part off-centre: slot-quantized inspection trigger](2026-09-28-s2-part-off-centre-slot-trigger.md) | Indexer / dispatcher | Medium | Fixed (spec16), verified on machine |
 | 2026-09-24 | [Twin frozen / cameras not firing: encoder slipped on motor shaft](2026-09-24-encoder-slipped-on-motor-shaft.md) | Indexer hardware / PLC | High | Root cause found; coupling fix pending |
 | 2026-09-24 | [Phantom revolution wraps from encoder dither](2026-09-24-phantom-revolution-wraps.md) | Indexer / dispatcher | High | Fixed `5a7444b` |
 | 2026-09-24 | [Station 2 camera behind a 100 Mbit switch](2026-09-24-cam2-100mbit-link.md) | Network / camera | High | Fixed (switch replaced) + `5a7444b` |
-| 2026-09-24 | [Dispatcher has no tick source: PLC offline at startup](2026-09-24-plc-offline-at-startup.md) | PLC / session start | High | Worked around; follow-up open |
+| 2026-09-24 | [Dispatcher has no tick source: PLC offline at startup](2026-09-24-plc-offline-at-startup.md) | PLC / session start | High | Fixed 2026-09-28 (session-start retry) |
 | 2026-09-24 | [Backend startup fails: `KeyError: 'stations'`](2026-09-24-stations-indent-startup-failure.md) | Config | High | Fixed |
 | 2026-09-24 | [Slow session start: 9 s GigE discovery per camera](2026-09-24-slow-session-start-discovery.md) | Camera / session start | Medium | Fixed |
 | 2026-09-24 | [Cameras free-running although config said single_shot](2026-09-24-capture-mode-ignored-free-running.md) | Camera driver | Medium | Fixed (hardware test pending) |

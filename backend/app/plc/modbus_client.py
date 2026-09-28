@@ -24,6 +24,7 @@ import logging
 import threading
 
 from pymodbus.client import ModbusTcpClient
+from pymodbus.exceptions import ModbusException
 
 from app.config.config_loader import PLCConnectionConfig
 
@@ -56,7 +57,12 @@ class ModbusPLCClient:
     def __init__(self, config: PLCConnectionConfig):
         self.config = config
         host, port = resolve_plc_target(config)
-        self._client = ModbusTcpClient(host, port=port)
+        self._client = ModbusTcpClient(
+            host,
+            port=port,
+            timeout=getattr(config, "modbus_timeout_s", 1.0),
+            retries=getattr(config, "modbus_retries", 1),
+        )
         self._connected = False
         # pymodbus's sync client is one blocking TCP socket -- not safe for
         # concurrent use from multiple threads. Found live, 2026-09-15:
@@ -84,6 +90,18 @@ class ModbusPLCClient:
             log.info("PLC connected (%s)", "sim" if self.config.sim.enabled else "real hardware")
             return self._connected
 
+    def reconnect(self) -> bool:
+        """Drop the (possibly half-open) socket and open a fresh one. Raises
+        PLCConnectionError if the PLC still doesn't accept a connection --
+        StationDispatcher calls this with backoff while the PLC is down."""
+        with self._lock:
+            try:
+                self._client.close()
+            except Exception:  # noqa: BLE001 -- closing a dead socket may itself fail
+                pass
+            self._connected = False
+        return self.connect()
+
     def is_connected(self) -> bool:
         return self._connected and self._client.connected
 
@@ -105,7 +123,14 @@ class ModbusPLCClient:
         escalation (see app/plc/watchdog.py for that). Just proves the
         connection round-trips a real read."""
         with self._lock:
-            rr = self._client.read_holding_registers(_protocol_address(self.config.registers.heartbeat), count=1)
+            try:
+                rr = self._client.read_holding_registers(_protocol_address(self.config.registers.heartbeat), count=1)
+            except (ModbusException, OSError) as e:
+                # pymodbus RAISES (ConnectionException, timeouts) on a dead link rather than
+                # returning an error response -- without this, is_connected() stayed True
+                # through a real outage and the exception escaped to the caller unwrapped.
+                self._mark(False)
+                raise PLCConnectionError(f"PLC unreachable: {e}") from e
             if rr.isError():
                 self._mark(False)
                 raise PLCConnectionError(f"heartbeat read failed: {rr}")
@@ -121,7 +146,14 @@ class ModbusPLCClient:
         inspection path -- these reads are low-frequency, user-triggered or
         slow-polled."""
         with self._lock:
-            rr = self._client.read_holding_registers(_protocol_address(reg), count=1)
+            try:
+                rr = self._client.read_holding_registers(_protocol_address(reg), count=1)
+            except (ModbusException, OSError) as e:
+                # pymodbus RAISES (ConnectionException, timeouts) on a dead link rather than
+                # returning an error response -- without this, is_connected() stayed True
+                # through a real outage and the exception escaped to the caller unwrapped.
+                self._mark(False)
+                raise PLCConnectionError(f"PLC unreachable: {e}") from e
             if rr.isError():
                 self._mark(False)
                 raise PLCConnectionError(f"register {reg} read failed: {rr}")
@@ -138,7 +170,14 @@ class ModbusPLCClient:
         is a literal Modicon register number (e.g. 40001), not a protocol
         address -- converted here, same as read_register()."""
         with self._lock:
-            rr = self._client.read_holding_registers(_protocol_address(start_reg), count=count)
+            try:
+                rr = self._client.read_holding_registers(_protocol_address(start_reg), count=count)
+            except (ModbusException, OSError) as e:
+                # pymodbus RAISES (ConnectionException, timeouts) on a dead link rather than
+                # returning an error response -- without this, is_connected() stayed True
+                # through a real outage and the exception escaped to the caller unwrapped.
+                self._mark(False)
+                raise PLCConnectionError(f"PLC unreachable: {e}") from e
             if rr.isError():
                 self._mark(False)
                 raise PLCConnectionError(f"batched register read failed (start={start_reg}, count={count}): {rr}")
@@ -147,7 +186,14 @@ class ModbusPLCClient:
 
     def write_register(self, reg: int, value: int) -> None:
         with self._lock:
-            rr = self._client.write_register(_protocol_address(reg), value)
+            try:
+                rr = self._client.write_register(_protocol_address(reg), value)
+            except (ModbusException, OSError) as e:
+                # pymodbus RAISES (ConnectionException, timeouts) on a dead link rather than
+                # returning an error response -- without this, is_connected() stayed True
+                # through a real outage and the exception escaped to the caller unwrapped.
+                self._mark(False)
+                raise PLCConnectionError(f"PLC unreachable: {e}") from e
             if rr.isError():
                 self._mark(False)
                 raise PLCConnectionError(f"register {reg} write failed: {rr}")

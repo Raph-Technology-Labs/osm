@@ -55,3 +55,9 @@ Two things combined:
   `connect()` + `read_heartbeat()` once. If that still fails, return a clear
   400 such as "PLC at 192.168.7.72:502 not reachable". That removes the need
   for a backend restart and makes the error point at the real problem.
+
+## Update 2026-09-28
+The recommended change is done: `inspection_session._connect_plc()` retries the
+PLC at session start when it wasn't reachable at boot, and the dispatcher now
+reconnects on its own after a mid-session drop. See
+[PLC link drop stopped the dispatcher](2026-09-28-plc-outage-stopped-dispatcher.md).

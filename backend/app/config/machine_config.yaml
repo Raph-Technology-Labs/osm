@@ -43,6 +43,16 @@ plc:
   ip: "192.168.7.72" # was .41 -- per instrumentation team's sheet
   port: 502
   vendor: integra
+  # Entry part sensor is ACTIVE-LOW on this machine (register part_sensor
+  # reads 1 with no part, 0 while a part is present -- checked 2026-09-24/28).
+  # Kept false ON PURPOSE: with false, parts are detected on the sensor's
+  # trailing edge (part leaving), and every station offset below is
+  # calibrated for that. true (detect on arrival, offsets +55) was tried
+  # 2026-09-28 and reverted -- parts landed at varying positions, because
+  # detection is still quantized to the 50 ms poll. Retry only with edge
+  # interpolation or a PLC-latched encoder count -- planned in
+  # docs/specs/spec17_precise_part_detection.md.
+  part_sensor_active_low: false
   # Single top-level "is this machine running in simulation" switch --
   # consolidates what used to be three separate places: this connection
   # target (host/port, mock Modbus server vs real PLC), the dispatcher's own

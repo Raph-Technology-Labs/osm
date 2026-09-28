@@ -37,6 +37,8 @@ def main() -> int:
     cfg = resolve_config_for_part(load_machine_config()["machine"]["part_code"])
     regs = cfg.plc.registers
     cpr = cfg.indexer.encoder_cpr
+    active_low = cfg.plc.part_sensor_active_low  # 0 = part present when True
+    present = lambda raw: (not raw) if active_low else bool(raw)  # noqa: E731
     names = {
         "pulse_count": regs.pulse_count,
         "encoder_indexer_ppr": regs.encoder_indexer_ppr,
@@ -82,11 +84,11 @@ def main() -> int:
                 elif d:
                     back += cpr - d
                     changed.append(f"BACK {cpr - d}")
-                if v["part_sensor"] and not last["part_sensor"]:
+                if present(v["part_sensor"]) and not present(last["part_sensor"]):
                     edges += 1
-                    changed.append("PART SENSOR ON")
-                elif not v["part_sensor"] and last["part_sensor"]:
-                    changed.append("part sensor off")
+                    changed.append("PART ARRIVED")
+                elif not present(v["part_sensor"]) and present(last["part_sensor"]):
+                    changed.append("part left")
             if last is None or changed or samples % int(max(args.hz, 1)) == 0:
                 print(f"  t={args.seconds - (t_end - time.monotonic()):5.1f}s  "
                       f"ppr={enc:5d}  pulse_count={v['pulse_count']:6d}  "
@@ -107,7 +109,7 @@ def main() -> int:
     print(f"  samples: {samples}, Modbus read time median {read_ms[len(read_ms) // 2]:.1f} ms, "
           f"max {read_ms[-1]:.1f} ms")
     print(f"  encoder forward: {fwd} counts (~{rpm:.1f} rpm), backward: {back} counts")
-    print(f"  part_sensor rising edges: {edges}")
+    print(f"  parts arrived at the sensor: {edges}  (part_sensor_active_low={active_low})")
     print(f"  heartbeat: {first['heartbeat']} -> {last['heartbeat']}")
     print("\nREADING IT")
     if fwd < cpr * 0.05:
@@ -117,11 +119,12 @@ def main() -> int:
     else:
         print("  - Encoder moves fine.")
     if edges == 0:
-        print("  - Part sensor NEVER turned on -> no part ever enters the twin, so no camera "
-              "fires. Check the sensor LED when a part passes, its wiring to the PLC, and that "
-              f"the PLC copies it to register {regs.part_sensor}.")
+        print("  - No part ever ARRIVED at the sensor -> no part enters the twin, so no camera "
+              "fires. Check the sensor LED when a part passes, its wiring to the PLC, that "
+              f"the PLC copies it to register {regs.part_sensor}, and plc.part_sensor_active_low "
+              "(True if the register reads 0 while a part is present).")
     else:
-        print(f"  - Part sensor fired {edges}x -> parts should enter the twin.")
+        print(f"  - {edges} part(s) arrived -> parts should enter the twin.")
     return 0
 
 

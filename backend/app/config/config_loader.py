@@ -539,6 +539,20 @@ class PLCConnectionConfig(BaseModel):
     # precise work). Defaults to app/plc/poller.py's existing poll_hz=20.0
     # order of magnitude (1000/20=50ms), not a measured number.
     real_poll_interval_ms: float = 50.0
+    # Modbus request timeout / retries. pymodbus defaults (3 s x 3 retries)
+    # made a dead link hang a read ~9 s before failing and each reconnect
+    # attempt take 3 s (seen 2026-09-28). A healthy read takes ~1 ms on this
+    # LAN, so 1 s with 1 retry detects a drop in ~1-2 s and reconnects within
+    # ~1 s of the link coming back.
+    modbus_timeout_s: float = Field(1.0, gt=0)
+    modbus_retries: int = Field(1, ge=0)
+    # Polarity of the entry part sensor (registers.part_sensor). False: 1 =
+    # part present (the register sheet's meaning). True: the sensor is
+    # active-low -- 1 = no part, 0 = part present (dark-on/NC wiring). The
+    # dispatcher converts to "part present" before edge detection, so a part
+    # is admitted when it ARRIVES at the sensor, not when it leaves.
+    # Real-PLC mode only.
+    part_sensor_active_low: bool = False
     registers: RegisterMapConfig
     error_registers: List[ErrorRegisterConfig] = []
 

@@ -76,7 +76,9 @@ def publish_inspection_result(
     broadcast("MessageType.InspectionResult", payload)
 
 
-def publish_ring_state(tracker, revolutions: int, encoder_alarm: Optional[dict] = None) -> None:
+def publish_ring_state(
+    tracker, revolutions: int, encoder_alarm: Optional[dict] = None, plc_outage: Optional[dict] = None
+) -> None:
     """Full per-slot ring snapshot, once per dispatcher tick -- the digital
     twin's single source of truth for slot.status (DigitalTwin.jsx no
     longer reconstructs this client-side from the per-camera
@@ -113,6 +115,9 @@ def publish_ring_state(tracker, revolutions: int, encoder_alarm: Optional[dict] 
             # Latest short-revolution warning (dispatcher._check_revolution_length),
             # None if none this session. "seq" increments per new alarm.
             "encoder_alarm": encoder_alarm,
+            # Latest PLC outage long enough to break ring tracking
+            # (dispatcher._on_plc_recovered), None if none this session.
+            "plc_outage": plc_outage,
         })
     except (TypeError, ValueError):
         log.error("publish_ring_state: failed to serialize ring state -- skipping this tick's publish", exc_info=True)

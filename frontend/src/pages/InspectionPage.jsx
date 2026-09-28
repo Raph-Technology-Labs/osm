@@ -390,7 +390,7 @@ const InspectionPage = () => {
           />
         </Box>
 
-        <EncoderAlarm alarm={ringState?.encoder_alarm} />
+        <EncoderAlarm alarm={ringState?.encoder_alarm} plcOutage={ringState?.plc_outage} />
 
         <SessionBreakdown analysis={analysis} />
       </Box>

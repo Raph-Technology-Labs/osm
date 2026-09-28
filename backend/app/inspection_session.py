@@ -74,29 +74,7 @@ def load_machine(app: FastAPI) -> None:
     )
     _seed_sim_if_enabled(app, resolved)
 
-    # Create the PLC client from the PLC settings in the resolved configuration.
-    plc_client = ModbusPLCClient(resolved.plc)
-    app.state.plc_watchdog = None
-    try:
-        # Connect to the PLC and verify communication with a heartbeat read.
-        plc_client.connect()
-        plc_client.read_heartbeat()
-        app.state.plc_client = plc_client
-
-        if resolved.plc.watchdog_enabled:
-            watchdog = PLCWatchdog(plc_client, timeout_ms=resolved.plc.watchdog_timeout_ms)
-            watchdog.start()
-            app.state.plc_watchdog = watchdog
-        else:
-            log.warning(
-                "PLC watchdog DISABLED via plc.watchdog_enabled=false -- heartbeat "
-                "staleness will NOT trigger STOP_CMD. h/w integration/commissioning "
-                "use only -- re-enable before any real production run."
-            )
-    except PLCConnectionError:
-        # Keep the app running without PLC access so the health state can report the failure.
-        log.warning("PLC connect failed during machine load -- continuing without it.", exc_info=True)
-        app.state.plc_client = None
+    _connect_plc(app, resolved, context="machine load")
 
     # Mark machine setup as complete for later session-start checks.
     app.state.machine_loaded = True
@@ -187,6 +165,42 @@ def _create_part_session(part_code: str) -> Optional[int]:
         return session.id
     finally:
         db.close()
+
+
+def _connect_plc(app: FastAPI, resolved: ResolvedMachineConfig, context: str) -> bool:
+    """Create + connect the PLC client (heartbeat-verified) and start the
+    watchdog. Sets app.state.plc_client (None on failure) and returns
+    whether it connected. Used at machine load AND again at session start
+    when the PLC wasn't reachable at boot -- found 2026-09-28: after a PLC
+    restart the backend had to be restarted too, because the connection
+    was only ever attempted once, at startup."""
+    plc_client = ModbusPLCClient(resolved.plc)
+    app.state.plc_watchdog = None
+    try:
+        # Connect to the PLC and verify communication with a heartbeat read.
+        plc_client.connect()
+        plc_client.read_heartbeat()
+        app.state.plc_client = plc_client
+
+        if resolved.plc.watchdog_enabled:
+            watchdog = PLCWatchdog(plc_client, timeout_ms=resolved.plc.watchdog_timeout_ms)
+            watchdog.start()
+            app.state.plc_watchdog = watchdog
+        else:
+            log.warning(
+                "PLC watchdog DISABLED via plc.watchdog_enabled=false -- heartbeat "
+                "staleness will NOT trigger STOP_CMD. h/w integration/commissioning "
+                "use only -- re-enable before any real production run."
+            )
+        return True
+    except PLCConnectionError:
+        # Keep the app running without PLC access so the health state can report the failure.
+        log.warning(
+            "PLC connect failed during %s (%s:%s Modbus not answering) -- continuing without it.",
+            context, resolved.plc.ip, resolved.plc.port, exc_info=True,
+        )
+        app.state.plc_client = None
+        return False
 
 
 def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
@@ -406,6 +420,11 @@ def start_session(app: FastAPI, part_code: str) -> ResolvedMachineConfig:
     # reject_removed would carry stale state from whatever ran before into
     # this session (see IndexerSlotTracker.reset_session_counters).
     app.state.indexer_tracker.reset_session_counters()
+
+    # Real-PLC mode but no client (PLC unreachable at boot, e.g. restarted
+    # since): try again now instead of requiring a backend restart.
+    if not resolved.plc.sim.enabled and getattr(app.state, "plc_client", None) is None:
+        _connect_plc(app, resolved, context="session start")
 
     dispatcher = StationDispatcher(
         resolved, registry, app.state.indexer_tracker, plc_client=getattr(app.state, "plc_client", None)

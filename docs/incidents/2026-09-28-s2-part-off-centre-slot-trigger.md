@@ -62,8 +62,7 @@ spec16 (`docs/specs/spec16_pulse_precise_inspection_trigger.md`), real-PLC mode:
   The meaning is documented at the stations in `machine_config.yaml`.
 - Measure `trigger_latency_ms` (software trigger + GigE) if centring drifts
   with speed.
-- Fix the inverted part sensor: detection currently happens at the trailing
-  edge, which depends on part length.
+- Inverted part sensor: option `plc.part_sensor_active_low` exists but is currently off (reverted 2026-09-28), see [part sensor inverted](2026-09-28-part-sensor-inverted.md).
 - Reflections in the s2 image are a lighting issue (angle, diffuser,
   polariser), separate from this.
 - For < 1 mm at 900 PPM: a hardware trigger (PLC output -> camera Line0).

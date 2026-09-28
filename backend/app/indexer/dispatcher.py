@@ -72,9 +72,15 @@ import threading
 import time
 from typing import Dict, Optional, Tuple
 
+from app.plc.modbus_client import PLCConnectionError
 from app.utils import zeromq
 
 log = logging.getLogger("dispatcher")
+
+# PLC reconnect backoff while the link is down (real-PLC mode).
+RECONNECT_MIN_S = 0.5
+RECONNECT_MAX_S = 5.0
+OUTAGE_LOG_EVERY_S = 10.0  # "still unreachable" log cadence while the PLC is down
 
 MIN_INTERVAL_S = 0.05
 # PLACEHOLDER -- a new part enters the ring every N ticks (a real disc
@@ -153,7 +159,16 @@ class StationDispatcher:
                 )
             self.plc_client = plc_client
             self._tick_interval_s = resolved_config.plc.real_poll_interval_ms / 1000
-            self._tick_fn = self._tick_real
+            # Guarded: a PLC error must never end the tick chain (found live
+            # 2026-09-28 -- a Modbus ConnectionException killed the timer
+            # thread and dispatch stopped for good, UI still "RUNNING").
+            self._tick_fn = self._tick_real_guarded
+            self._plc_down_since: Optional[float] = None
+            self._rate_at_outage = 0.0
+            self._reconnect_delay_s = RECONNECT_MIN_S
+            self._reconnect_failures = 0
+            self._outage_last_log: Optional[float] = None
+            self.plc_outage: Optional[dict] = None  # latest outage that may have broken tracking
             # spec12 real-mode state -- see _tick_real()'s docstring.
             self._real_accumulated_pulses = 0
             self._last_raw_pulse_count: Optional[int] = None
@@ -286,8 +301,9 @@ class StationDispatcher:
     def _current_interval_s(self) -> float:
         return max(self._tick_interval_s / self._speed_scale, MIN_INTERVAL_S)
 
-    def _schedule_tick(self) -> None:
-        self._timer = threading.Timer(self._current_interval_s(), self._tick_fn)
+    def _schedule_tick(self, delay_s: Optional[float] = None) -> None:
+        delay = self._current_interval_s() if delay_s is None else delay_s
+        self._timer = threading.Timer(delay, self._tick_fn)
         self._timer.daemon = True
         self._timer.start()
 
@@ -466,7 +482,13 @@ class StationDispatcher:
         # detection at some arbitrary pre-existing offset. Every pulse
         # read after this point goes through _home_relative_pulses, never
         # _real_accumulated_pulses directly.
-        sensor_state = bool(pulse_sensor_batch[self._sensor_offset_in_batch])
+        # "Part present", whatever the sensor's wiring polarity: an
+        # active-low sensor reads 0 while a part is in front of it. Everything
+        # below (baseline, rising edge, homing, detection pulse) works in
+        # present-terms, so the part is admitted on ARRIVAL either way.
+        sensor_raw = bool(pulse_sensor_batch[self._sensor_offset_in_batch])
+        active_low = getattr(self.resolved_config.plc, "part_sensor_active_low", False)
+        sensor_state = (not sensor_raw) if active_low else sensor_raw
         if self._last_part_sensor_state is None:
             # First-ever poll this session -- establish baseline only, no
             # edge fires. See __init__'s comment: an already-HIGH first
@@ -475,8 +497,9 @@ class StationDispatcher:
             # miscalibrating home off a bogus reading with nothing
             # physically at the sensor.
             log.info(
-                "part_sensor baseline established: raw_pulse=%d, level=%s "
-                "-- no edge/calibration on this first read", raw_pulse, sensor_state,
+                "part_sensor baseline established: raw_pulse=%d, sensor_raw=%s, "
+                "part_present=%s (active_low=%s) -- no edge/calibration on this first read",
+                raw_pulse, sensor_raw, sensor_state, active_low,
             )
         elif sensor_state and not self._last_part_sensor_state:
             if self.home_offset_pulses is None:
@@ -504,6 +527,7 @@ class StationDispatcher:
                 self.tracker,
                 revolutions=self.tracker.revolutions,
                 encoder_alarm=self.encoder_alarm,
+                plc_outage=self.plc_outage,
             )
             self._schedule_tick()
             return
@@ -578,8 +602,96 @@ class StationDispatcher:
             self.tracker,
             revolutions=self.tracker.revolutions,
             encoder_alarm=self.encoder_alarm,
+            plc_outage=self.plc_outage,
         )
         self._schedule_tick()
+
+    # ------------------------------------------------------------------ #
+    # PLC outage handling (real-PLC mode)
+    # ------------------------------------------------------------------ #
+    def _tick_real_guarded(self) -> None:
+        """Run one real tick; whatever happens, the tick chain survives.
+
+        PLCConnectionError -> reconnect with backoff (0.5 s doubling to 5 s)
+        and try again; nothing is dispatched while the PLC is down. Any
+        other exception is a bug in this tick: logged with a traceback and
+        the next tick is scheduled normally (spec13 #7: never halt dispatch
+        silently)."""
+        try:
+            self._tick_real()
+        except PLCConnectionError:
+            self._on_plc_tick_failure()
+            return
+        except Exception:  # noqa: BLE001
+            log.exception("Dispatcher tick raised unexpectedly -- skipping this tick, dispatch continues")
+            if not self._stopped:
+                self._schedule_tick()
+            return
+        if self._plc_down_since is not None:
+            self._on_plc_recovered()
+
+    def _on_plc_tick_failure(self) -> None:
+        if self._stopped:
+            return
+        if self._plc_down_since is None:
+            self._plc_down_since = time.monotonic()
+            self._rate_at_outage = self._pulses_per_ms
+            log.error(
+                "PLC connection lost during dispatch -- pausing dispatch and reconnecting "
+                "(every %.1f s, backing off to %.0f s)", RECONNECT_MIN_S, RECONNECT_MAX_S, exc_info=True,
+            )
+        try:
+            self.plc_client.reconnect()
+        except Exception:  # noqa: BLE001 -- PLCConnectionError or a socket error
+            self._reconnect_failures += 1
+            now = time.monotonic()
+            # One line on the first failed attempt, then one every
+            # OUTAGE_LOG_EVERY_S while still down -- never silent for long,
+            # never a line per attempt.
+            if self._outage_last_log is None or now - self._outage_last_log >= OUTAGE_LOG_EVERY_S:
+                self._outage_last_log = now
+                log.warning(
+                    "PLC still unreachable at %s:%s (%d reconnect attempts, down %.1f s)",
+                    getattr(self.resolved_config.plc, "ip", "?"), getattr(self.resolved_config.plc, "port", "?"),
+                    self._reconnect_failures, now - self._plc_down_since,
+                )
+            delay = self._reconnect_delay_s
+            self._reconnect_delay_s = min(self._reconnect_delay_s * 2, RECONNECT_MAX_S)
+            self._schedule_tick(delay)
+            return
+        log.info("PLC reconnected -- resuming dispatch")
+        self._schedule_tick()  # next normal tick confirms with a real read
+
+    def _on_plc_recovered(self) -> None:
+        """First good tick after an outage. The unwrap can only follow the
+        disc if it moved < half a revolution since the last good read; if
+        the outage was long enough at the pre-outage speed to exceed that,
+        ring tracking (slots, capture and reject targets) can't be trusted."""
+        outage_s = time.monotonic() - self._plc_down_since
+        cpr = self.tracker.encoder_cpr
+        est_pulses = round(self._rate_at_outage * outage_s * 1000)
+        if est_pulses >= cpr // 2:
+            self.plc_outage = {
+                "seq": (self.plc_outage or {}).get("seq", 0) + 1,
+                "outage_s": round(outage_s, 1),
+                "est_pulses": est_pulses,
+                "tracking_valid": False,
+                "ts": time.time(),
+            }
+            log.error(
+                "PLC back after %.1f s outage, but at the pre-outage speed the disc may have moved "
+                "~%d pulses (>= half a revolution) -- ring tracking, capture and reject timing are "
+                "UNRELIABLE; stop and restart the session", outage_s, est_pulses,
+            )
+        else:
+            log.warning(
+                "PLC back after %.1f s outage (~%d pulses moved, < half a revolution) -- "
+                "tracking kept", outage_s, est_pulses,
+            )
+        self._plc_down_since = None
+        self._reconnect_delay_s = RECONNECT_MIN_S
+        self._reconnect_failures = 0
+        self._outage_last_log = None
 
     def _check_revolution_length(self, raw_pulse: int) -> None:
         """Revolution-length alarm (warn only).
