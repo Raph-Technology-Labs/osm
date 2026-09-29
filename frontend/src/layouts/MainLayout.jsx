@@ -51,8 +51,8 @@ const MainLayout = ({ title, children, noScroll: noScrollProp = false }) => {
       >
         {title && (
           <Typography
-            variant="h5"
-            sx={{ fontWeight: 700, mb: noScroll ? 1.5 : 3, flexShrink: 0 }}
+            variant="h4"
+            sx={{ fontWeight: 700,fontSize: "2rem", mb: noScroll ? 1.5 : 3, flexShrink: 0 }}
           >
             {title}
           </Typography>

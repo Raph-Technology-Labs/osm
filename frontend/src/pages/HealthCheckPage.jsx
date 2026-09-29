@@ -53,7 +53,7 @@ const HealthCheckPage = () => {
 
   return (
    <Box>
-      <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+      <Typography variant="h4" sx={{ fontWeight: 700, mb: 3 }}>
         Health Check
       </Typography>
 

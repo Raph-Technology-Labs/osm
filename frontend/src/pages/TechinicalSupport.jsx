@@ -43,7 +43,7 @@ const CONTACT_CARDS = [
 const TechnicalSupport = () => {
   return (
     <>
-      <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+      <Typography variant="h4" sx={{ fontWeight: 700, mb: 3 }}>
         Technical Support
       </Typography>
 

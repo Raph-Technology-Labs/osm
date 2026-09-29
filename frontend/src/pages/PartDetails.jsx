@@ -506,7 +506,7 @@ const PartDetails = () => {
           sx={{ mb: 3 }}
         >
           <Box>
-            <Typography variant="h5" sx={{ fontWeight: 700 }}>
+            <Typography variant="h4" sx={{ fontWeight: 700 }}>
               Part Details
             </Typography>
             <Typography variant="body2" sx={{ color: "text.secondary" }}>

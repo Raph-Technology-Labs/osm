@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef, useLayoutEffect } from "react";
 import {
   Box,
   Paper,
@@ -108,6 +108,43 @@ const DashboardPage = () => {
   const [toast, setToast] = useState({ open: false, message: "", severity: "error" });
   const notify = (message, severity = "error") => setToast({ open: true, message, severity });
 
+  // ===== one-screen layout =====
+  // While this page is mounted: switch off page/window scrolling and size the
+  // page to exactly the space below its top edge, so only the sessions table
+  // scrolls. Everything is restored on unmount, so other pages are unaffected.
+  const rootRef = useRef(null);
+  const [rootHeight, setRootHeight] = useState(null);
+
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+
+    const main = el.closest("main");
+    const targets = [document.documentElement, document.body, main].filter(Boolean);
+    const prevOverflow = targets.map((t) => t.style.overflow);
+    targets.forEach((t) => (t.style.overflow = "hidden"));
+    if (main) main.scrollTop = 0;
+    window.scrollTo(0, 0);
+
+    const fit = () => {
+      const top = el.getBoundingClientRect().top;
+      const padBottom = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0;
+      setRootHeight(Math.max(0, Math.floor(window.innerHeight - top - padBottom)));
+    };
+    fit();
+
+    window.addEventListener("resize", fit);
+    // re-fit if something above the page (e.g. an alert banner) changes size
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(fit) : null;
+    if (ro && main) ro.observe(main);
+
+    return () => {
+      window.removeEventListener("resize", fit);
+      if (ro) ro.disconnect();
+      targets.forEach((t, i) => (t.style.overflow = prevOverflow[i]));
+    };
+  }, []);
+
   const filterParams = useCallback(() => {
     const params = { time_filter: timeFilter };
     if (timeFilter === "range") {
@@ -132,8 +169,7 @@ const DashboardPage = () => {
 
   // ===== download =====
   const datesChosen = Boolean(dlStart && dlEnd);
-  const rangeError =
-    datesChosen && dlStart > dlEnd ? "Start date cannot be after end date." : "";
+  const rangeError = datesChosen && dlStart > dlEnd ? "Start date cannot be after end date." : "";
   const canDownload = datesChosen && !rangeError && !downloading;
 
   const openDownload = () => {
@@ -169,8 +205,7 @@ const DashboardPage = () => {
 
       const blob = new Blob([response.data], { type: FORMATS[dlFormat].mime });
       const filename =
-        filenameFromHeaders(response.headers) ||
-        `osm_report_${dlStart}_to_${dlEnd}.${dlFormat}`;
+        filenameFromHeaders(response.headers) || `osm_report_${dlStart}_to_${dlEnd}.${dlFormat}`;
 
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -193,13 +228,21 @@ const DashboardPage = () => {
   };
 
   return (
-    <Box>
-      <Typography variant="h5" sx={{ fontWeight: 700, mb: 3 }}>
+    <Box
+      ref={rootRef}
+      sx={{
+        height: rootHeight ?? "calc(100vh - 48px)",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
+      <Typography variant="h4" sx={{ fontWeight: 700, fontSize: "2rem", mb: 2, flexShrink: 0 }}>
         Dashboard
       </Typography>
 
       {/* Filters -- one row, above the charts */}
-      <Box sx={{ display: "flex", gap: 2, alignItems: "center", mb: 3, flexWrap: "wrap" }}>
+      <Box sx={{ display: "flex", gap: 2, alignItems: "center", mb: 2, flexWrap: "wrap", flexShrink: 0 }}>
         <Select
           size="small"
           value={timeFilter}
@@ -247,7 +290,7 @@ const DashboardPage = () => {
       </Box>
 
       {/* Headline stat tiles */}
-      <Box sx={{ display: "flex", gap: 2, mb: 3, flexWrap: "wrap" }}>
+      <Box sx={{ display: "flex", gap: 2, mb: 2, flexWrap: "wrap", flexShrink: 0 }}>
         <StatTile label="Sessions" value={stats?.total_sessions ?? "—"} />
         <StatTile label="Parts Fired" value={stats?.total_fired ?? "—"} />
         <StatTile label="Passed" value={stats?.total_passed ?? "—"} color={theme.palette.success.main} />
@@ -260,7 +303,7 @@ const DashboardPage = () => {
       </Box>
 
       {/* Charts */}
-      <Box sx={{ display: "flex", gap: 2, mb: 3, flexWrap: "wrap" }}>
+      <Box sx={{ display: "flex", gap: 2, mb: 2, flexWrap: "wrap", flexShrink: 0 }}>
         <Paper variant="outlined" sx={{ p: 2, borderRadius: "10px", flex: 1, minWidth: 340 }}>
           <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
             Pass / Fail by Station
@@ -271,7 +314,7 @@ const DashboardPage = () => {
               stacked/adjacent-touching segments. Grouped bars add real
               spacing, and LabelList adds direct value labels, so reading
               this never depends on distinguishing the two hues alone. */}
-          <ResponsiveContainer width="100%" height={260}>
+          <ResponsiveContainer width="100%" height={220}>
             <BarChart data={stationBreakdown} barGap={6}>
               <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} vertical={false} />
               <XAxis dataKey="station_id" tick={{ fontSize: 12 }} />
@@ -297,7 +340,7 @@ const DashboardPage = () => {
               No defects in this period.
             </Typography>
           ) : (
-            <ResponsiveContainer width="100%" height={260}>
+            <ResponsiveContainer width="100%" height={220}>
               <BarChart data={defectBreakdown} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} horizontal={false} />
                 <XAxis type="number" tick={{ fontSize: 12 }} allowDecimals={false} />
@@ -310,8 +353,18 @@ const DashboardPage = () => {
         </Paper>
       </Box>
 
-      {/* Recent sessions table -- pagination on top */}
-      <Paper variant="outlined" sx={{ borderRadius: "10px", overflow: "hidden" }}>
+      {/* Recent sessions table -- takes the remaining height; only this scrolls */}
+      <Paper
+        variant="outlined"
+        sx={{
+          borderRadius: "10px",
+          overflow: "hidden",
+          flex: 1,
+          minHeight: 200,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
         <Box
           sx={{
             display: "flex",
@@ -320,6 +373,7 @@ const DashboardPage = () => {
             flexWrap: "wrap",
             pl: 2,
             borderBottom: `1px solid ${theme.palette.divider}`,
+            flexShrink: 0,
           }}
         >
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
@@ -340,11 +394,12 @@ const DashboardPage = () => {
           />
         </Box>
 
-        <Box sx={{ overflowX: "auto" }}>
-          <Table size="small">
+        <Box sx={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+          <Table size="small" stickyHeader>
             <TableHead>
               <TableRow>
-                <TableCell>Session</TableCell>
+                <TableCell sx={{ width: 70 }}>Sr. No.</TableCell>
+                <TableCell>Session.No</TableCell>
                 <TableCell>Part</TableCell>
                 <TableCell>Start</TableCell>
                 <TableCell>End</TableCell>
@@ -356,13 +411,14 @@ const DashboardPage = () => {
             <TableBody>
               {sessions.data.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} align="center" sx={{ py: 5, color: "text.secondary" }}>
+                  <TableCell colSpan={8} align="center" sx={{ py: 5, color: "text.secondary" }}>
                     No sessions in this period.
                   </TableCell>
                 </TableRow>
               ) : (
-                sessions.data.map((s) => (
+                sessions.data.map((s, i) => (
                   <TableRow key={s.session_id}>
+                     <TableCell>{page * rowsPerPage + i + 1}</TableCell>
                     <TableCell>{s.session_id}</TableCell>
                     <TableCell>
                       {s.part_name}{" "}
@@ -458,11 +514,7 @@ const DashboardPage = () => {
         </DialogContent>
 
         <DialogActions sx={{ px: 3, pb: 2.5, gap: 1 }}>
-          <Button
-            onClick={closeDownload}
-            disabled={downloading}
-            sx={{ color: "text.secondary", textTransform: "none" }}
-          >
+          <Button onClick={closeDownload} disabled={downloading} sx={{ color: "text.secondary", textTransform: "none" }}>
             Cancel
           </Button>
           <Button
@@ -484,11 +536,7 @@ const DashboardPage = () => {
         onClose={() => setToast((t) => ({ ...t, open: false }))}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       >
-        <Alert
-          severity={toast.severity}
-          onClose={() => setToast((t) => ({ ...t, open: false }))}
-          sx={{ width: "100%" }}
-        >
+        <Alert severity={toast.severity} onClose={() => setToast((t) => ({ ...t, open: false }))} sx={{ width: "100%" }}>
           {toast.message}
         </Alert>
       </Snackbar>
