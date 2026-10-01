@@ -372,3 +372,24 @@ def restore_previous_config(
         "version": config.version,
         "config_path": config.config_path,
     }
+
+@router.get("/{part_id}/config/download")
+def download_part_config(
+    part_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(require_role("administrator")),
+):
+    """The active config as a .yaml attachment, straight from the DB row."""
+    part = _get_part(db, part_id)
+    config = _active(db, part_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="This part has no config")
+    return Response(
+        content=config.config_yaml,
+        media_type="application/x-yaml",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{config_filename(part.part_code)}"'
+            )
+        },
+    )

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useLayoutEffect } from "react";
+import { useEffect, useState, useCallback, useRef, useLayoutEffect, Fragment } from "react";
 import {
   Box,
   Paper,
@@ -20,9 +20,13 @@ import {
   DialogContent,
   DialogActions,
   CircularProgress,
+  IconButton,
+  Collapse,
   useTheme,
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import {
   BarChart,
   Bar,
@@ -72,14 +76,45 @@ const blobErrorMessage = async (err) => {
 
 const fieldLabelSx = { fontSize: "0.875rem", fontWeight: 600, color: "text.primary", mb: 0.5 };
 
+// Shared "section label" treatment -- small uppercase, same as the table heads,
+// so every panel on the page announces itself the same way.
+const sectionTitleSx = {
+  fontWeight: 700,
+  fontSize: "0.78rem",
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "text.secondary",
+  mb: 1,
+};
+
 const StatTile = ({ label, value, color }) => {
   const theme = useTheme();
   return (
-    <Paper variant="outlined" sx={{ p: 2, borderRadius: "10px", flex: 1, minWidth: 140 }}>
-      <Typography variant="caption" sx={{ color: theme.palette.text.secondary }}>
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 2,
+        borderRadius: "10px",
+        flex: 1,
+        minWidth: 140,
+        backgroundImage: theme.palette.gradients.subtle,
+      }}
+    >
+      <Typography
+        variant="caption"
+        sx={{
+          color: theme.palette.text.secondary,
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+          fontWeight: 600,
+        }}
+      >
         {label}
       </Typography>
-      <Typography variant="h4" sx={{ fontWeight: 700, color: color || theme.palette.text.primary }}>
+      <Typography
+        variant="h4"
+        sx={{ fontWeight: 700, lineHeight: 1.2, color: color || theme.palette.text.primary }}
+      >
         {value}
       </Typography>
     </Paper>
@@ -97,6 +132,8 @@ const DashboardPage = () => {
   const [sessions, setSessions] = useState({ total: 0, data: [] });
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
+
+  const [openRow, setOpenRow] = useState(null); // session_id of the expanded row
 
   // download dialog
   const [downloadOpen, setDownloadOpen] = useState(false);
@@ -250,7 +287,7 @@ const DashboardPage = () => {
             setTimeFilter(e.target.value);
             setPage(0);
           }}
-          sx={{ minWidth: 140 }}
+          sx={{ minWidth: 140, bgcolor: "background.paper" }}
         >
           <MenuItem value="today">Today</MenuItem>
           <MenuItem value="month">This Month</MenuItem>
@@ -269,6 +306,7 @@ const DashboardPage = () => {
                 setStartDate(e.target.value);
                 setPage(0);
               }}
+              sx={{ bgcolor: "background.paper" }}
             />
             <TextField
               size="small"
@@ -280,6 +318,7 @@ const DashboardPage = () => {
                 setEndDate(e.target.value);
                 setPage(0);
               }}
+              sx={{ bgcolor: "background.paper" }}
             />
           </>
         )}
@@ -304,10 +343,17 @@ const DashboardPage = () => {
 
       {/* Charts */}
       <Box sx={{ display: "flex", gap: 2, mb: 2, flexWrap: "wrap", flexShrink: 0 }}>
-        <Paper variant="outlined" sx={{ p: 2, borderRadius: "10px", flex: 1, minWidth: 340 }}>
-          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
-            Pass / Fail by Station
-          </Typography>
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 2,
+            borderRadius: "10px",
+            flex: 1,
+            minWidth: 340,
+            backgroundImage: theme.palette.gradients.subtle,
+          }}
+        >
+          <Typography sx={sectionTitleSx}>Pass / Fail by Station</Typography>
           {/* Grouped (not stacked) bars, deliberately: validate_palette.js
               scores this success/error pair's CVD separation at 5.4,
               below even the "legal with secondary encoding" 6-8 floor for
@@ -317,10 +363,27 @@ const DashboardPage = () => {
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={stationBreakdown} barGap={6}>
               <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} vertical={false} />
-              <XAxis dataKey="station_id" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
-              <Tooltip />
-              <Legend />
+              <XAxis
+                dataKey="station_id"
+                tick={{ fontSize: 12, fill: theme.palette.text.secondary }}
+                axisLine={{ stroke: theme.palette.divider }}
+                tickLine={false}
+              />
+              <YAxis
+                tick={{ fontSize: 12, fill: theme.palette.text.secondary }}
+                allowDecimals={false}
+                axisLine={false}
+                tickLine={false}
+              />
+              <Tooltip
+                cursor={{ fill: theme.palette.accent.light }}
+                contentStyle={{
+                  borderRadius: 6,
+                  border: `1px solid ${theme.palette.divider}`,
+                  fontSize: 12,
+                }}
+              />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar dataKey="passed" name="Passed" fill={theme.palette.success.main} radius={[4, 4, 0, 0]}>
                 <LabelList dataKey="passed" position="top" style={{ fontSize: 11, fill: theme.palette.text.primary }} />
               </Bar>
@@ -331,10 +394,17 @@ const DashboardPage = () => {
           </ResponsiveContainer>
         </Paper>
 
-        <Paper variant="outlined" sx={{ p: 2, borderRadius: "10px", flex: 1, minWidth: 340 }}>
-          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
-            Defect Frequency
-          </Typography>
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 2,
+            borderRadius: "10px",
+            flex: 1,
+            minWidth: 340,
+            backgroundImage: theme.palette.gradients.subtle,
+          }}
+        >
+          <Typography sx={sectionTitleSx}>Defect Frequency</Typography>
           {defectBreakdown.length === 0 ? (
             <Typography variant="body2" sx={{ color: theme.palette.text.secondary, py: 4, textAlign: "center" }}>
               No defects in this period.
@@ -343,10 +413,32 @@ const DashboardPage = () => {
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={defectBreakdown} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 12 }} allowDecimals={false} />
-                <YAxis type="category" dataKey="defect_label" tick={{ fontSize: 12 }} width={90} />
-                <Tooltip />
-                <Bar dataKey="count" name="Count" fill={theme.palette.primary.main} radius={[0, 4, 4, 0]} />
+                <XAxis
+                  type="number"
+                  tick={{ fontSize: 12, fill: theme.palette.text.secondary }}
+                  allowDecimals={false}
+                  axisLine={{ stroke: theme.palette.divider }}
+                  tickLine={false}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="defect_label"
+                  tick={{ fontSize: 12, fill: theme.palette.text.secondary }}
+                  width={90}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <Tooltip
+                  cursor={{ fill: theme.palette.accent.light }}
+                  contentStyle={{
+                    borderRadius: 6,
+                    border: `1px solid ${theme.palette.divider}`,
+                    fontSize: 12,
+                  }}
+                />
+                {/* Near-black, not brand red: red is reserved for failure on
+                    this page, and a red bar here reads as "these are bad". */}
+                <Bar dataKey="count" name="Count" fill={theme.palette.grey[700]} radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}
@@ -372,13 +464,12 @@ const DashboardPage = () => {
             justifyContent: "space-between",
             flexWrap: "wrap",
             pl: 2,
+            backgroundImage: theme.palette.gradients.subtle,
             borderBottom: `1px solid ${theme.palette.divider}`,
             flexShrink: 0,
           }}
         >
-          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-            Recent Sessions
-          </Typography>
+          <Typography sx={{ ...sectionTitleSx, mb: 0 }}>Recent Sessions</Typography>
           <TablePagination
             component="div"
             count={sessions.total}
@@ -398,6 +489,7 @@ const DashboardPage = () => {
           <Table size="small" stickyHeader>
             <TableHead>
               <TableRow>
+                <TableCell sx={{ width: 48 }} />
                 <TableCell sx={{ width: 70 }}>Sr. No.</TableCell>
                 <TableCell>Session.No</TableCell>
                 <TableCell>Part</TableCell>
@@ -411,31 +503,142 @@ const DashboardPage = () => {
             <TableBody>
               {sessions.data.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} align="center" sx={{ py: 5, color: "text.secondary" }}>
+                  <TableCell colSpan={9} align="center" sx={{ py: 5, color: "text.secondary" }}>
                     No sessions in this period.
                   </TableCell>
                 </TableRow>
               ) : (
                 sessions.data.map((s, i) => (
-                  <TableRow key={s.session_id}>
-                     <TableCell>{page * rowsPerPage + i + 1}</TableCell>
-                    <TableCell>{s.session_id}</TableCell>
-                    <TableCell>
-                      {s.part_name}{" "}
-                      <Typography component="span" variant="caption" sx={{ color: theme.palette.text.secondary }}>
-                        ({s.part_code})
-                      </Typography>
-                    </TableCell>
-                    <TableCell>{s.session_start ? new Date(s.session_start).toLocaleString() : "—"}</TableCell>
-                    <TableCell>{s.session_end ? new Date(s.session_end).toLocaleString() : "in progress"}</TableCell>
-                    <TableCell align="right">{s.total_fired}</TableCell>
-                    <TableCell align="right" sx={{ color: theme.palette.success.main }}>
-                      {s.total_passed}
-                    </TableCell>
-                    <TableCell align="right" sx={{ color: theme.palette.error.main }}>
-                      {s.total_failed}
-                    </TableCell>
-                  </TableRow>
+                  <Fragment key={s.session_id}>
+                    <TableRow
+                      hover
+                      sx={
+                        openRow === s.session_id
+                          ? {
+                              bgcolor: theme.palette.accent.light,
+                              "& > .MuiTableCell-root": { borderBottomColor: "transparent" },
+                            }
+                          : undefined
+                      }
+                    >
+                      <TableCell>
+                        <IconButton
+                          size="small"
+                          onClick={() => setOpenRow(openRow === s.session_id ? null : s.session_id)}
+                          disabled={!s.stations?.length}
+                          sx={{
+                            p: 0.25,
+                            borderRadius: "6px",
+                            color:
+                              openRow === s.session_id
+                                ? theme.palette.primary.contrastText
+                                : theme.palette.primary.main,
+                            backgroundImage:
+                              openRow === s.session_id ? theme.palette.gradients.primary : "none",
+                            border: `1px solid ${
+                              openRow === s.session_id ? "transparent" : theme.palette.accent.dark
+                            }`,
+                            "&:hover": {
+                              backgroundColor:
+                                openRow === s.session_id ? undefined : theme.palette.accent.main,
+                            },
+                            "&.Mui-disabled": {
+                              color: theme.palette.grey[300],
+                              borderColor: theme.palette.grey[200],
+                            },
+                          }}
+                        >
+                          {openRow === s.session_id ? (
+                            <KeyboardArrowUpIcon fontSize="small" />
+                          ) : (
+                            <KeyboardArrowDownIcon fontSize="small" />
+                          )}
+                        </IconButton>
+                      </TableCell>
+                      <TableCell>{page * rowsPerPage + i + 1}</TableCell>
+                      <TableCell sx={{ fontWeight: 600 }}>{s.session_id}</TableCell>
+                      <TableCell>
+                        {s.part_name}{" "}
+                        <Typography component="span" variant="caption" sx={{ color: theme.palette.text.secondary }}>
+                          ({s.part_code})
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{s.session_start ? new Date(s.session_start).toLocaleString() : "—"}</TableCell>
+                      <TableCell>{s.session_end ? new Date(s.session_end).toLocaleString() : "in progress"}</TableCell>
+                      <TableCell align="right">{s.total_fired}</TableCell>
+                      <TableCell align="right" sx={{ color: theme.palette.success.main, fontWeight: 600 }}>
+                        {s.total_passed}
+                      </TableCell>
+                      <TableCell align="right" sx={{ color: theme.palette.error.main, fontWeight: 600 }}>
+                        {s.total_failed}
+                      </TableCell>
+                    </TableRow>
+
+                    <TableRow>
+                      <TableCell
+                        colSpan={9}
+                        sx={{
+                          py: 0,
+                          backgroundImage: theme.palette.gradients.peach,
+                          borderBottom:
+                            openRow === s.session_id ? `1px solid ${theme.palette.divider}` : "none",
+                        }}
+                      >
+                        <Collapse in={openRow === s.session_id} timeout="auto" unmountOnExit>
+                          <Box sx={{ py: 1.5, pl: 6, pr: 2 }}>
+                            <Typography sx={{ ...sectionTitleSx, mb: 0.75, color: theme.palette.primary.dark }}>
+                              Per station
+                            </Typography>
+                            <Table
+                              size="small"
+                              sx={{
+                                maxWidth: 560,
+                                bgcolor: "background.paper",
+                                border: `1px solid ${theme.palette.sidebar.surfaceBorder}`,
+                                borderRadius: "6px",
+                                overflow: "hidden",
+                                boxShadow: theme.palette.sidebar.activeShadow,
+                                "& .MuiTableCell-head": {
+                                  bgcolor: theme.palette.accent.light,
+                                  color: theme.palette.primary.dark,
+                                  fontSize: "0.72rem",
+                                  letterSpacing: "0.04em",
+                                  textTransform: "uppercase",
+                                },
+                              }}
+                            >
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell>Station</TableCell>
+                                  <TableCell align="right">Total</TableCell>
+                                  <TableCell align="right">Passed</TableCell>
+                                  <TableCell align="right">Failed</TableCell>
+                                  <TableCell align="right">Pass rate</TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                                {(s.stations ?? []).map((st) => (
+                                  <TableRow key={st.station_id}>
+                                    <TableCell sx={{ fontWeight: 600 }}>{st.station_id}</TableCell>
+                                    <TableCell align="right">{st.total}</TableCell>
+                                    <TableCell align="right" sx={{ color: theme.palette.success.main, fontWeight: 600 }}>
+                                      {st.passed}
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ color: theme.palette.error.main, fontWeight: 600 }}>
+                                      {st.failed}
+                                    </TableCell>
+                                    <TableCell align="right">
+                                      {st.total ? `${((st.passed / st.total) * 100).toFixed(1)}%` : "—"}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </Box>
+                        </Collapse>
+                      </TableCell>
+                    </TableRow>
+                  </Fragment>
                 ))
               )}
             </TableBody>

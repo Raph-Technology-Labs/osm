@@ -121,6 +121,33 @@ def recent_sessions(
 
     total = q.count()
     rows = q.order_by(PartSession.session_start.desc()).offset((page - 1) * limit).limit(limit).all()
+
+    # Per-station pass/fail for just this page's sessions -- one grouped query,
+    # not one per row.
+    per_station: dict = {}
+    session_ids = [r.id for r in rows]
+    if session_ids:
+        breakdown = (
+            db.query(
+                SessionResult.session_id,
+                SessionResult.station_id,
+                func.count(SessionResult.id),
+                func.sum(case((SessionResult.overall_passed.is_(True), 1), else_=0)),
+                func.sum(case((SessionResult.overall_passed.is_(False), 1), else_=0)),
+            )
+            .filter(SessionResult.session_id.in_(session_ids))
+            .group_by(SessionResult.session_id, SessionResult.station_id)
+            .order_by(SessionResult.session_id, SessionResult.station_id)
+            .all()
+        )
+        for sid, station_id, total_fires, passed, failed in breakdown:
+            per_station.setdefault(sid, []).append({
+                "station_id": station_id,
+                "total": total_fires,
+                "passed": passed or 0,
+                "failed": failed or 0,
+            })
+
     return {
         "total": total,
         "page": page,
@@ -135,11 +162,11 @@ def recent_sessions(
                 "total_fired": r.total_fired,
                 "total_passed": r.total_passed,
                 "total_failed": r.total_failed,
+                "stations": per_station.get(r.id, []),
             }
             for r in rows
         ],
     }
-
 
 @router.get("/station-breakdown")
 def station_breakdown(
@@ -354,3 +381,5 @@ def download_report(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="osm_report_{stamp}.pdf"'},
     )
+
+
